@@ -1137,6 +1137,73 @@ private def testMigrations : IO Unit := do
   expectErr (← migrate migDbPath [grown] (apply := false)) "migrate"
     "invalid stored schema metadata must be reported"
 
+
+/-! ## Migration error paths restore the session PRAGMAs (#71)
+
+A failed migration must leave the session connection as it found it. The
+live #71 scenario: a custom step commits the transaction away, so the
+migration's own COMMIT fails ("no transaction is active") and the catch's
+ROLLBACK fails the same way — the failure used to escape with
+`foreign_keys=OFF` and `legacy_alter_table=ON` still in force. -/
+
+private def migLeakDbPath : System.FilePath := ".lake" / "leandb_test_mig_leak.sqlite"
+
+private def testMigrationErrorPragmas : IO Unit := do
+  if ← migLeakDbPath.pathExists then IO.FS.removeFile migLeakDbPath
+  let v1 : TableSpec := ⟨"author", #[col "name" .text]⟩
+  let v2 : TableSpec := ⟨"author", #[col "name" .text, col "nick" .text (nullable := true)]⟩
+  discard <| expectOk (← withDb migLeakDbPath [v1] (pure ())) "create v1"
+  let conn ← expectOk (← openDbRaw migLeakDbPath) "reopen v1"
+  let m : Migration :=
+    { fromFingerprint := fingerprint [v1]
+      toFingerprint := fingerprint [v2]
+      snapshot := [v2]
+      steps := [.custom "commit early" (fun c => c.raw.exec "COMMIT")] }
+  expectErr (← m.applyOn conn [v1] (toVersion := 1) (allowDestructive := false) (backup := none))
+    "migrate" "a commit-early custom step must fail the migration"
+  let fk ← conn.raw.prepare "PRAGMA foreign_keys"
+  discard <| fk.step
+  check ((← fk.columnInt64 0) == 1)
+    s!"foreign_keys restored after a failed migration (got {← fk.columnInt64 0})"
+  let lat ← conn.raw.prepare "PRAGMA legacy_alter_table"
+  discard <| lat.step
+  check ((← lat.columnInt64 0) == 0) "legacy_alter_table restored after a failed migration"
+  -- the failed ROLLBACK poisoned the connection (#72): later verbs refuse
+  match ← (insert Author ⟨"Ada", 36⟩).run conn with
+  | .error e =>
+      check ((e.message.splitOn "poisoned").length > 1)
+        s!"the refusal names the poison: {e.message}"
+  | .ok _ => throw <| IO.userError "FAIL: a poisoned connection must refuse insert"
+
+/-! ## A poisoned connection refuses every verb loudly (#72)
+
+`transaction` no longer discards a failed ROLLBACK; the resulting poison
+flag must gate the verbs. Forcing a real ROLLBACK failure needs a systemic
+fault (disk full), so the flag's semantics are exercised directly. -/
+
+private def poisonDbPath : System.FilePath := ".lake" / "leandb_test_poison.sqlite"
+
+private def testPoisonedConn : IO Unit := do
+  if ← poisonDbPath.pathExists then IO.FS.removeFile poisonDbPath
+  discard <| expectOk (← withDb poisonDbPath schema (pure ())) "create"
+  let conn ← expectOk (← openDbRaw poisonDbPath) "open"
+  check ((← conn.poisoned.get).isNone) "a fresh connection is not poisoned"
+  conn.poisoned.set (some "disk full (simulated)")
+  match ← (insert Author ⟨"Ada", 36⟩).run conn with
+  | .error e =>
+      check ((e.message.splitOn "poisoned").length > 1)
+        s!"the refusal names the poison: {e.message}"
+  | .ok _ => throw <| IO.userError "FAIL: a poisoned connection must refuse insert"
+  match ← (select [Author] (fun _ => true)).run conn with
+  | .error e =>
+      check ((e.message.splitOn "poisoned").length > 1)
+        s!"the refusal names the poison: {e.message}"
+  | .ok _ => throw <| IO.userError "FAIL: a poisoned connection must refuse select"
+  -- a healthy connection is untouched by another's poison flag
+  let other ← expectOk (← openDbRaw poisonDbPath) "open a second connection"
+  check ((← other.poisoned.get).isNone) "the poison is per connection"
+  discard <| expectOk (← (insert Author ⟨"Ada", 36⟩).run other) "other connection still writes"
+
 private def quoteDbPath : System.FilePath := ".lake" / "leandb_test_quote.sqlite"
 
 private def testSqlQuoting : IO Unit := do
@@ -3383,6 +3450,8 @@ def main : IO UInt32 := do
   testParamSplitEndToEnd
   testQuantifiersEndToEnd
   testMigrations
+  testMigrationErrorPragmas
+  testPoisonedConn
   testSqlQuoting
   testEmptyEntity
   testBlobColumn

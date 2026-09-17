@@ -46,9 +46,14 @@ structure Conn where
   logConfig : LogConfig := {}
   /-- Writes since the last retention pass on this connection. -/
   logWrites : IO.Ref Nat
+  /-- Set after a ROLLBACK failed and a transaction may still be open with
+      partially-applied writes (#72): later verbs refuse loudly instead of
+      writing into a transaction that will never commit. -/
+  poisoned : IO.Ref (Option String)
 
 def Conn.ofRaw (raw : SQLite) (logConfig : LogConfig := {}) : IO Conn := do
-  return { raw, queryName := ← IO.mkRef none, logConfig, logWrites := ← IO.mkRef 0 }
+  let poisoned ← IO.mkRef (none : Option String)
+  return { raw, queryName := ← IO.mkRef none, logConfig, logWrites := ← IO.mkRef 0, poisoned }
 
 /-- The database monad: a connection, typed errors, IO. -/
 abbrev DbM := ReaderT Conn (ExceptT DbError IO)
@@ -218,11 +223,25 @@ private def logOp (verb detail : String) (ok : Bool) (error : Option String) (ro
     return .ok ()
   catch _ => return .ok ()
 
+/-- A connection poisoned by a failed ROLLBACK (#72) refuses every verb:
+    its last transaction may still be open with partially-applied writes,
+    and writing into a transaction that will never commit is a black hole. -/
+private def checkPoisoned (verb : String) : DbM (Option DbError) :=
+  fun conn => ExceptT.mk do
+    match ← conn.poisoned.get with
+    | some why =>
+        pure (Except.error
+          (DbError.sqlite s!"connection poisoned by a failed rollback ({why}); refusing {verb}"))
+    | none => pure (Except.ok none)
+
 /-- Run an operation and log it: verb, detail, outcome, row count, and for
     a select the plan as data. The query log is the audit trail and the
     agent's episodic memory (plan.md §4.4) — on by default. -/
 private def withLog (verb detail : String) (count : α → Nat) (act : DbM α)
     (plan : Option String := none) : DbM α := do
+  if let some e ← checkPoisoned verb then
+    logOp verb detail false (some e.code) 0 plan
+    throw e
   match ← fun conn => ExceptT.mk (.ok <$> (act conn).run) with
   | .ok a =>
       logOp verb detail true none (count a) plan
@@ -250,10 +269,25 @@ Reads cost one engine-internal statement per child table per fetch —
 row. Writes run inside a transaction. -/
 
 /-- Run `act` inside `BEGIN … COMMIT`; any failure rolls back and re-raises
-    the typed error. Used by the verbs that write more than one row. -/
+    the typed error. Used by the verbs that write more than one row.
+
+    A failed ROLLBACK is never discarded (#72): the same systemic fault that
+    broke the act or the COMMIT usually breaks the ROLLBACK too, leaving an
+    open transaction with partially-applied writes — single writes then
+    accumulate into it, never durable, and every later multi-row write dies
+    on "cannot start a transaction within a transaction". So the error names
+    both failures, and the connection is poisoned: later verbs refuse
+    loudly instead of writing into a black hole. -/
 private def transaction (act : DbM α) : DbM α := fun conn => ExceptT.mk do
   let exec (sql : String) : IO (Except DbError Unit) :=
     try conn.raw.exec sql; pure (.ok ()) catch e => pure (.error (.sqlite (toString e)))
+  let finish (first : DbError) : IO (Except DbError α) := do
+    match ← exec "ROLLBACK" with
+    | .ok () => pure (.error first)
+    | .error rb =>
+        conn.poisoned.set (some rb.message)
+        pure (.error (.sqlite
+          s!"{first.message}; ROLLBACK also failed: {rb.message} (connection poisoned)"))
   match ← exec "BEGIN" with
   | .error e => return .error e
   | .ok () =>
@@ -262,8 +296,8 @@ private def transaction (act : DbM α) : DbM α := fun conn => ExceptT.mk do
     | .ok a =>
         match ← exec "COMMIT" with
         | .ok () => return .ok a
-        | .error e => discard <| exec "ROLLBACK"; return .error e
-    | .error e => discard <| exec "ROLLBACK"; return .error e
+        | .error e => finish e
+    | .error e => finish e
 
 /-- How many parent ids one child fetch names: SQLite's default parameter
     limit is far above this, and the statement text stays small. -/

@@ -449,58 +449,77 @@ def migrateOn (conn : Conn) (specs : List TableSpec) (opts : MigrateOpts) :
         if plan.isDestructive && !allowDestructive then
           return .error (.migrate
             "plan is destructive (drops tables or columns); pass --allow-destructive")
-        -- the full backup precedes the transaction: VACUUM INTO cannot run
-        -- inside one, and the file it writes is what `migrate rollback` restores
-        if let some dest := opts.backup then
-          backupTo conn dest
-        let fromVer := ((← readMeta db "schema_version").bind (·.toNat?)).getD 0
-        let toVer := fromVer + 1
-        db.exec "PRAGMA foreign_keys = OFF"
-        -- a rebuild renames the scratch table over the old one; an adopted file may
-        -- carry views over it (uncarried by the importer), which the modern rename
-        -- check rejects — the legacy behaviour is the one the swap needs
-        db.exec "PRAGMA legacy_alter_table = ON"
-        db.exec "BEGIN"
-        try
-          for step in plan.steps do
-            for sql in step.sql do
-              db.exec sql
-          -- referential integrity must survive the migration
-          let stmt ← db.prepare "PRAGMA foreign_key_check"
-          if ← stmt.step then
-            let t ← stmt.columnText 0
-            throw <| IO.userError s!"foreign_key_check failed on table {t}"
-          writeStoredSchema db specs
-          -- version bump + journal, atomic with the migration itself
-          writeMeta db "schema_version" (toString toVer)
-          let j ← db.prepare
-            "INSERT INTO _leandb_migrations (steps, fingerprint, ok, from_version, to_version, backup) \
+        -- every exit from the guarded region restores the session PRAGMAs
+        -- (#71): an exception between the first PRAGMA and the inner catch,
+        -- or one thrown *by* the inner catch (a ROLLBACK that fails after
+        -- SQLite auto-ended the transaction), used to reach the outer catch
+        -- with foreign_keys=OFF and legacy_alter_table=ON still in force —
+        -- FK enforcement silently off for the session's remaining lifetime.
+        -- One restore point runs on success and on every failure path.
+        let guarded : IO (Except DbError (Option MigPlan × Option MigrateReport)) := do
+          try
+            -- the full backup precedes the transaction: VACUUM INTO cannot run
+            -- inside one, and the file it writes is what `migrate rollback` restores
+            if let some dest := opts.backup then
+              backupTo conn dest
+            let fromVer := ((← readMeta db "schema_version").bind (·.toNat?)).getD 0
+            let toVer := fromVer + 1
+            db.exec "PRAGMA foreign_keys = OFF"
+            -- a rebuild renames the scratch table over the old one; an adopted file may
+            -- carry views over it (uncarried by the importer), which the modern rename
+            -- check rejects — the legacy behaviour is the one the swap needs
+            db.exec "PRAGMA legacy_alter_table = ON"
+            let began ← IO.mkRef false
+            let runTxn : IO (Except DbError (Option MigPlan × Option MigrateReport)) := do
+              try
+                db.exec "BEGIN"
+                began.set true
+                for step in plan.steps do
+                  for sql in step.sql do
+                    db.exec sql
+                -- referential integrity must survive the migration
+                let stmt ← db.prepare "PRAGMA foreign_key_check"
+                if ← stmt.step then
+                  let t ← stmt.columnText 0
+                  throw <| IO.userError s!"foreign_key_check failed on table {t}"
+                writeStoredSchema db specs
+                -- version bump + journal, atomic with the migration itself
+                writeMeta db "schema_version" (toString toVer)
+                let j ← db.prepare
+                  "INSERT INTO _leandb_migrations (steps, fingerprint, ok, from_version, to_version, backup) \
 VALUES (?, ?, 1, ?, ?, ?)"
-          j.bindText 1 (Lean.Json.arr
-            (plan.steps.map (Lean.Json.str ·.describe)).toArray).compress
-          j.bindText 2 (fingerprint specs)
-          j.bindInt64 3 (Int64.ofNat fromVer)
-          j.bindInt64 4 (Int64.ofNat toVer)
-          match opts.backup with
-          | some dest => j.bindText 5 dest.toString
-          | none => j.bindNull 5
-          j.exec
-          db.exec "COMMIT"
-        catch e =>
-          db.exec "ROLLBACK"
-          db.exec "PRAGMA legacy_alter_table = OFF"
-          db.exec "PRAGMA foreign_keys = ON"
-          return .error (.migrate (toString e))
+                j.bindText 1 (Lean.Json.arr
+                  (plan.steps.map (Lean.Json.str ·.describe)).toArray).compress
+                j.bindText 2 (fingerprint specs)
+                j.bindInt64 3 (Int64.ofNat fromVer)
+                j.bindInt64 4 (Int64.ofNat toVer)
+                match opts.backup with
+                | some dest => j.bindText 5 dest.toString
+                | none => j.bindNull 5
+                j.exec
+                db.exec "COMMIT"
+                let report : MigrateReport := {
+                  applied := plan.steps.map (·.describe)
+                  notes := plan.notes
+                  fingerprint := fingerprint specs
+                  fromVersion := some fromVer
+                  toVersion := some toVer
+                  backup := opts.backup.map (·.toString) }
+                return .ok (some plan, some report)
+              catch e =>
+                -- only a transaction that actually began can roll back; a failed
+                -- ROLLBACK must not skip the restore (it poisons instead, #72)
+                if ← began.get then
+                  began.set false
+                  try db.exec "ROLLBACK" catch rb => conn.poisoned.set (some (toString rb))
+                return .error (.migrate (toString e))
+            runTxn
+          catch e =>
+            return .error (.sqlite (toString e))
+        let r ← guarded
         db.exec "PRAGMA legacy_alter_table = OFF"
         db.exec "PRAGMA foreign_keys = ON"
-        let report : MigrateReport := {
-          applied := plan.steps.map (·.describe)
-          notes := plan.notes
-          fingerprint := fingerprint specs
-          fromVersion := some fromVer
-          toVersion := some toVer
-          backup := opts.backup.map (·.toString) }
-        return .ok (some plan, some report)
+        return r
   catch e =>
     return .error (.sqlite (toString e))
 
