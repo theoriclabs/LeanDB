@@ -279,8 +279,11 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
     return .error (.migrate "plan is destructive (drops tables or columns); pass --allow-destructive")
   let db := conn.raw
   try
-    if let some dest := backup then
-      backupTo conn dest
+    -- A same-second collision (#74) is resolved by `backupToUniquified`,
+    -- so an immediate `migrate apply` retry never wedges on the clock.
+    let backup ← match backup with
+      | some dest => some <$> backupToUniquified conn dest
+      | none => pure none
     db.exec "PRAGMA foreign_keys = OFF"
     -- a rebuild renames the scratch table over the old one; an adopted file may
     -- carry views over it (uncarried by the importer), which the modern rename

@@ -450,9 +450,12 @@ def migrateOn (conn : Conn) (specs : List TableSpec) (opts : MigrateOpts) :
           return .error (.migrate
             "plan is destructive (drops tables or columns); pass --allow-destructive")
         -- the full backup precedes the transaction: VACUUM INTO cannot run
-        -- inside one, and the file it writes is what `migrate rollback` restores
-        if let some dest := opts.backup then
-          backupTo conn dest
+        -- inside one, and the file it writes is what `migrate rollback` restores.
+        -- A same-second collision (#74) is resolved by `backupToUniquified`,
+        -- so an immediate `migrate apply` retry never wedges on the clock.
+        let backup ← match opts.backup with
+          | some dest => some <$> backupToUniquified conn dest
+          | none => pure none
         let fromVer := ((← readMeta db "schema_version").bind (·.toNat?)).getD 0
         let toVer := fromVer + 1
         db.exec "PRAGMA foreign_keys = OFF"
@@ -481,7 +484,7 @@ VALUES (?, ?, 1, ?, ?, ?)"
           j.bindText 2 (fingerprint specs)
           j.bindInt64 3 (Int64.ofNat fromVer)
           j.bindInt64 4 (Int64.ofNat toVer)
-          match opts.backup with
+          match backup with
           | some dest => j.bindText 5 dest.toString
           | none => j.bindNull 5
           j.exec
@@ -499,7 +502,7 @@ VALUES (?, ?, 1, ?, ?, ?)"
           fingerprint := fingerprint specs
           fromVersion := some fromVer
           toVersion := some toVer
-          backup := opts.backup.map (·.toString) }
+          backup := backup.map (·.toString) }
         return .ok (some plan, some report)
   catch e =>
     return .error (.sqlite (toString e))
