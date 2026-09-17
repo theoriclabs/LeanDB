@@ -49,9 +49,17 @@ def rawType (c : ColumnSpec) : String :=
     re-elaborates to the very same double — `toString`'s six decimals would
     phantom-diff the snapshot against `base.specs`. A non-finite REAL has
     no literal; `migrate freeze` validates the schema (and so refuses one)
-    before rendering, so meeting one here is a caller bug: panic. -/
+    before rendering, so meeting one here is a caller bug: panic. INTs
+    render via `Int64.ofNat` (negated for negatives): Lean parses a bare
+    `f -5` as binary subtraction, not application, and even parenthesized
+    a negative literal's magnitude (`Int64.minValue`) is outside Int64
+    literal range — `ofNat` reduces mod 2^64 to the exact value either
+    way, mirroring the derive's own syntax-level emitter. -/
 def colLit : Col → String
-  | .int v => s!"LeanDb.Col.int {v}"
+  | .int v =>
+      let n : Nat := v.toInt.natAbs
+      if v.toInt < 0 then s!"LeanDb.Col.int (-(Int64.ofNat {n}))"
+      else s!"LeanDb.Col.int (Int64.ofNat {n})"
   | .text v => s!"LeanDb.Col.text {String.quote v}"
   | .real v =>
       match renderRealExact v with

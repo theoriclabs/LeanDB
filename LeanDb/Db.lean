@@ -446,7 +446,15 @@ def fetchFiltered (α : Type) [Entity α] {ts : List Type} (pred : Pred ts)
   let (whereSql, binds) := pred.render fun _ => "t0"
   -- a caller-supplied cap ships to SQL as a bound parameter, so the
   -- fetch (and the child-list attachment under it) is bounded by the
-  -- cap, not by the table (issue: `rows --limit` never reached SQL)
+  -- cap, not by the table (issue: `rows --limit` never reached SQL).
+  -- Like the CLI's `limitOf`, a cap beyond Int64 range is refused loudly:
+  -- a bare `Int64.ofNat` would wrap `2^63` to a negative LIMIT, and
+  -- SQLite reads a negative LIMIT as *no limit* — the caller's own cap
+  -- silently gone, with the whole child forest under it.
+  match limit with
+  | some n => if n > Int64.maxValue.toNatClampNeg then
+                throw (.sqlite s!"limit out of Int64 range: {n}")
+  | none => pure ()
   let limitBind : Array LeanDb.Col := match limit with
     | some n => #[LeanDb.Col.int (Int64.ofNat n)]
     | none => #[]

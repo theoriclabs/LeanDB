@@ -224,6 +224,30 @@ private def testRealLiterals : IO Unit := do
   | .error _ => pure ()
   | .ok _ => throw <| IO.userError "FAIL: a NaN REAL default must be refused"
 
+private def testIntDefaultRender : IO Unit := do
+  -- `f -5` parses as binary subtraction in Lean, not application to a
+  -- negative literal, and even parenthesized the magnitude of
+  -- `Int64.minValue` is outside Int64 literal range: a frozen snapshot
+  -- renders ints via `Int64.ofNat` (negated when negative), mirroring
+  -- the derive's own emitter, so the text re-elaborates to the same
+  -- value (`migrate freeze` must produce compilable Lean, issue #61)
+  check (Render.colLit (.int (-5)) == "LeanDb.Col.int (-(Int64.ofNat 5))")
+    s!"a negative Int64 default renders as a negated ofNat, got {Render.colLit (.int (-5))}"
+  check (Render.colLit (.int 7) == "LeanDb.Col.int (Int64.ofNat 7)")
+    s!"a non-negative default renders via ofNat, got {Render.colLit (.int 7)}"
+  check (Render.colLit (.int Int64.minValue) == "LeanDb.Col.int (-(Int64.ofNat 9223372036854775808))")
+    s!"Int64.minValue renders compilably, got {Render.colLit (.int Int64.minValue)}"
+  check (Render.colLit (.int Int64.maxValue) == "LeanDb.Col.int (Int64.ofNat 9223372036854775807)")
+    s!"Int64.maxValue renders via ofNat, got {Render.colLit (.int Int64.maxValue)}"
+  -- a schema with a negative Int64 default freezes to a snapshot that
+  -- carries the compilable literal
+  let neg : TableSpec :=
+    ⟨"negint", #[{ name := "offset", sqlType := .integer, nullable := false, fkTable := none,
+                   dflt := some (.int (-5)) }]⟩
+  let snap := Render.specsLit [neg]
+  check ((snap.splitOn "LeanDb.Col.int (-(Int64.ofNat 5))").length == 2)
+    s!"frozen snapshot must carry the compilable negative literal, got {snap}"
+
 
 private def testClosedEnum : IO Unit := do
   check (roundtrip Status.inProgress && roundtrip Status.done) "closed enum roundtrip"
@@ -3296,6 +3320,42 @@ private def testRowsLimitPushdown : IO Unit := do
   let capped ← withDb rowsDbPath schema do fetchFiltered (α := Author) (ts := [Author]) .tt (some 3)
   check ((← expectOk capped "capped fetch").size == 3) "the cap bounds the fetch"
 
+private def testFetchFilteredLimitBound : IO Unit := do
+  -- `Int64.ofNat` wraps mod 2^64 and SQLite reads a negative LIMIT as
+  -- *no limit*: an unguarded cap ≥ 2^63 silently unbounds the fetch
+  -- (issue #58). `fetchFiltered` refuses loudly, like the CLI's `limitOf`
+  if ← rowsDbPath.pathExists then IO.FS.removeFile rowsDbPath
+  discard <| expectOk (← withDb rowsDbPath schema do
+    discard <| insert Author ⟨"Ada", 36⟩) "seed one author"
+  expectErr (← withDb rowsDbPath schema do
+    fetchFiltered (α := Author) (ts := [Author]) .tt (some (2^63))) "sqlite"
+    "a 2^63 limit is refused, not wrapped to a negative LIMIT"
+  expectErr (← withDb rowsDbPath schema do
+    fetchFiltered (α := Author) (ts := [Author]) .tt (some (2^64))) "sqlite"
+    "a 2^64 limit is refused, not wrapped to 0"
+  let rows ← expectOk (← withDb rowsDbPath schema do
+    fetchFiltered (α := Author) (ts := [Author]) .tt (some Int64.maxValue.toNatClampNeg))
+    "the largest Int64 limit is accepted"
+  check (rows.size == 1) s!"the boundary limit still fetches, got {rows.size} rows"
+
+private def testCliArgNatBound : IO Unit := do
+  -- registered-query parameters (CLI and HTTP args both) parse through
+  -- `CliArg Nat` and bind through the `Nat` codec's documented wrap: a
+  -- param ≥ 2^63 would make the planned SQL diverge from the reference
+  -- lambda or poison rows — refused at the argv boundary (issue #80)
+  check ((Cli.CliArg.parse (α := Nat) "0").toOption == some 0) "0 parses"
+  check ((Cli.CliArg.parse (α := Nat) "9223372036854775807").toOption == some 9223372036854775807)
+    "the largest Int64 still parses"
+  for s in ["9223372036854775808", "18446744073709551615", "18446744073709551616"] do
+    check ((Cli.CliArg.parse (α := Nat) s).toOption.isNone) s!"a Nat param beyond Int64 range is refused: {s}"
+  -- the popArg boundary query handlers compile to surfaces the refusal
+  expectErr (← withDb rowsDbPath schema do
+    discard <| Cli.popArg Nat "n" ["18446744073709551616"]) "decode"
+    "a wrapped Nat query param is refused at the popArg boundary"
+  -- row ids share the same bound through the `Id` parse
+  check ((Cli.CliArg.parse (α := LeanDb.Id Author) "18446744073709551616").toOption.isNone)
+    "a row id beyond Int64 range is refused"
+
 private def testModuleNameOk : IO Unit := do
   for s in ["Tickets", "tickets", "A.B.C", "_Private", "M1.Migrations", "a_b'c"] do
     check (Freeze.moduleNameOk s) s!"a plain dotted identifier is accepted: {s}"
@@ -3355,6 +3415,9 @@ def main : IO UInt32 := do
   testCliLimits
   testStrictSchemaJson
   testRowsLimitPushdown
+  testFetchFilteredLimitBound
+  testCliArgNatBound
+  testIntDefaultRender
   testFreezeNames
   testPortOf
   testModuleNameOk
