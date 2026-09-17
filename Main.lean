@@ -143,7 +143,11 @@ def runNew (a : NewArgs) : IO UInt32 := do
   unless LeanDb.Scaffold.validName name do
     return ← usageErr s!"new: base name must be lowercase snake_case, got {String.quote name}"
   let source ← match a.path, a.git with
-    | some p, none => pure (LeanDb.Scaffold.Source.path p)
+    | some p, none =>
+      -- `--rev` only means anything to the git form; ignoring it here let
+      -- users believe they pinned a revision of a path checkout (issue #69).
+      if a.rev.isSome then return ← usageErr "new: --rev applies only to --leandb-git"
+      pure (LeanDb.Scaffold.Source.path p)
     | none, some url => pure (LeanDb.Scaffold.Source.git url (a.rev.getD "main"))
     | some _, some _ => return ← usageErr "new: give either --leandb-path or --leandb-git, not both"
     | none, none => return ← usageErr "new: where is the engine? --leandb-path <path> (a checkout) or --leandb-git <url> [--rev <tag>]"
