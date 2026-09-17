@@ -3351,6 +3351,92 @@ private def testStdioLineCap : IO Unit := do
   let r ← Cli.LineReader.new (IO.FS.Stream.ofBuffer buf) 4
   check ((← r.next) matches .line "abcd") "a line at the budget reads"
 
+/-- The host spec parser (issue #62, comma-in-path): a raw comma splits
+    the launch line, `\,` is a literal comma, in name, exe, and args. -/
+private def testHostSpecParsing : IO Unit := do
+  let ok (s : String) : IO (String × String × List String) :=
+    match Host.parseSpec s with
+    | .ok r => pure r
+    | .error m => throw <| IO.userError s!"FAIL: {String.quote s} should parse: {m}"
+  let bad (s : String) : IO Unit :=
+    match Host.parseSpec s with
+    | .ok _ => throw <| IO.userError s!"FAIL: {String.quote s} should not parse"
+    | .error _ => pure ()
+  let (n, e, as) ← ok "a=exe"
+  check (n == "a" && e == "exe" && as == []) "a plain name=exe spec parses"
+  let (n, e, as) ← ok "a=exe,--db,path"
+  check (n == "a" && e == "exe" && as == ["--db", "path"]) "exe and args split on raw commas"
+  let (n, e, as) ← ok "probe=/opt/my\\,tools/leandb"
+  check (n == "probe" && e == "/opt/my,tools/leandb" && as == [])
+    "an escaped comma inside the exe path is a literal comma"
+  let (_, _, as) ← ok "a=exe,--db,my\\,db.sqlite"
+  check (as == ["--db", "my,db.sqlite"]) "an escaped comma inside an arg is a literal comma"
+  let (n, _, _) ← ok "my\\,name=exe"
+  check (n == "my,name") "an escaped comma inside the name is a literal comma"
+  let (n, e, as) ← ok "a=exe=x,--db,y=2"
+  check (n == "a" && e == "exe=x" && as == ["--db", "y=2"]) "later =s stay inside the launch line"
+  bad "=exe"
+  bad "a="
+  bad "justname"
+
+/-- The host's `--port` resolves through `Cli.portOf` (issue #56: the
+    wrap bug bound port mod 2^16 while the banner echoed the raw Nat). -/
+private def testHostPortWiring : IO Unit := do
+  match Host.parseArgs ["--port", "70000", "a=exe"] with
+  | .ok (p, h, _, specs) =>
+      check (p == some "70000") "the --port flag survives as its string"
+      check (h == "127.0.0.1" && specs == ["a=exe"]) "the rest of the argv still parses"
+      check ((Cli.portOf (p.getD "")).toOption.isNone) "a port beyond 65535 is refused, not wrapped"
+  | .error m => check false s!"host argv should parse: {m}"
+  match Host.parseArgs ["--port", "0", "a=exe"] with
+  | .ok (p, _, _, _) =>
+      check ((Cli.portOf (p.getD "")).toOption.isNone) "port 0 is refused"
+  | .error m => check false s!"host argv should parse: {m}"
+  match Host.parseArgs ["--port", "7654", "a=exe"] with
+  | .ok (p, _, _, _) =>
+      check ((Cli.portOf (p.getD "")).toOption == some 7654) "an in-range port resolves as-is"
+  | .error m => check false s!"host argv should parse: {m}"
+
+/-- The response-line guard (issue #62, uncapped read + desync): only a
+    JSON object line is a response; eof, an over-cap line, or a stray
+    non-object line is a transport error, and the tooLong refusal names
+    the cap. -/
+private def testProcessLineGuard : IO Unit := do
+  check ((Client.processLine (.line "{\"ok\":true}")).toOption.isSome) "a JSON object line is a response"
+  check ((Client.processLine (.line "hello from the base")).toOption.isNone)
+    "a stray non-JSON line is a transport error, not a response"
+  check ((Client.processLine (.line "[1,2,3]")).toOption.isNone)
+    "a stray JSON non-object line is a transport error"
+  check ((Client.processLine .eof).toOption.isNone) "eof is a transport error"
+  match Client.processLine .tooLong with
+  | .error m =>
+      check ((m.splitOn "cap").length > 1) s!"the tooLong refusal names the cap: {m}"
+  | .ok _ => check false "an over-cap line must be refused"
+
+/-- The capped child-stdout reader: `Handle.read n` is `fread` and would
+    wedge on a live pipe with a partial line, so the reader reads
+    byte-wise; the cap bounds what an uncapped `getLine` would buffer. -/
+private def testNextLineCap : IO Unit := do
+  let p : System.FilePath := ".lake" / "leandb_test_line.txt"
+  IO.FS.writeFile p "ping\npong\ntail"
+  try
+    let h ← IO.FS.Handle.mk p .read
+    check ((← Client.nextLine h) matches .line "ping") "first line"
+    check ((← Client.nextLine h) matches .line "pong") "next line still reads"
+    check ((← Client.nextLine h) matches .line "tail") "unterminated final line"
+    check ((← Client.nextLine h) matches .eof) "eof after the last line"
+  finally IO.FS.removeFile p
+  IO.FS.writeFile p "abcdef\nok\n"
+  try
+    let h ← IO.FS.Handle.mk p .read
+    check ((← Client.nextLine h 3) matches .tooLong) "a line beyond the budget is refused"
+  finally IO.FS.removeFile p
+  IO.FS.writeFile p "abcd\n"
+  try
+    let h ← IO.FS.Handle.mk p .read
+    check ((← Client.nextLine h 4) matches .line "abcd") "a line at the budget reads"
+  finally IO.FS.removeFile p
+
 def main : IO UInt32 := do
   testCliLimits
   testStrictSchemaJson
@@ -3363,6 +3449,7 @@ def main : IO UInt32 := do
   testLogPolicy
   testCodecs
   testBaseSpecs
+  testNextLineCap
   testSession
   testRestoreSafety
   testChain
@@ -3372,6 +3459,9 @@ def main : IO UInt32 := do
   testPlans
   testTypedPred
   testQuantifiers
+  testHostSpecParsing
+  testHostPortWiring
+  testProcessLineGuard
   testCoherence
   testClosedEnum
   testDefaults
