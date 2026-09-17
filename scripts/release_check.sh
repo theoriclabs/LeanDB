@@ -31,12 +31,19 @@ for base in tickets crm shop gpumarket eats; do
   )
 done
 
-# dashboard: the same typed query in-process, over stdio, and over leanhttp
-(
-  cd examples/dashboard
-  lake build
-  .lake/build/bin/dashboard
-)
+# dashboard: the same typed query in-process, over stdio, and over leanhttp.
+# examples/dashboard requires the untracked sibling ../../../leandb-http
+# (see RELEASING.md); skip with a message on a fresh clone rather than
+# dying mid-run.
+if [[ ! -d "$repo_root/../leandb-http" ]]; then
+  echo "skipping dashboard checks: $repo_root/../leandb-http is missing (see RELEASING.md)"
+else
+  (
+    cd examples/dashboard
+    lake build
+    .lake/build/bin/dashboard
+  )
+fi
 
 # scaffold round trip: leandb new against this checkout builds and passes its tests
 (
