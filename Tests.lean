@@ -2906,6 +2906,91 @@ private def testRestoreSafety : IO Unit := do
   let rows ← b.handle inst sess ["rows", "probe"]
   check ((rows.getObjValAs? Nat "count").toOption == some 1) "the restored instance holds the backup's rows"
 
+private def resilienceDbPath : System.FilePath := ".lake" / "leandb_test_restore_resilience.sqlite"
+
+/-- #59/#77: restore failure paths leave the session consistent. The
+    transient case (first reopen fails, retry succeeds) cannot be forced
+    deterministically, so the gate recompute is proven on the reachable
+    paths: an early failure touches neither gate nor dead flag, and a
+    successful swap always re-derives the gate from the connection that
+    was actually installed. The deterministic stand-in for a reopen that
+    fails twice is a valid SQLite source whose `_leandb_log` is a VIEW:
+    validation (magic + quick_check) passes, the swap happens, and both
+    `openDbRaw` attempts then fail on the `CREATE TABLE IF NOT EXISTS`. -/
+private def testRestoreResilience : IO Unit := do
+  if ← resilienceDbPath.pathExists then IO.FS.removeFile resilienceDbPath
+  let poison : System.FilePath := ".lake" / "leandb_test_restore_poison.sqlite"
+  if ← poison.pathExists then IO.FS.removeFile poison
+  let garbage : System.FilePath := ".lake" / "leandb_test_restore_res_garbage.txt"
+  IO.FS.writeFile garbage "dear instance, I am not a database"
+  let other : System.FilePath := ".lake" / "leandb_test_restore_other.sqlite"
+  if ← other.pathExists then IO.FS.removeFile other
+  let b : Base := { name := "rr", tables := [CliTable.of Probe] }
+  let inst := Instance.ofPath resilienceDbPath
+  discard <| expectOk (← withDb resilienceDbPath [Entity.spec Probe] (pure ())) "create the live instance"
+  let sess ← expectOk (← Cli.Session.open b inst) "open the live instance"
+  discard <| b.handle inst sess ["insert", "probe", "{\"label\":\"live\"}"]
+  let bk ← b.handle inst sess ["backup"]
+  let bkPath := (bk.getObjValAs? String "backup").toOption.getD ""
+  let code := fun (j : Lean.Json) => (j.getObjValAs? String "code").toOption.getD ""
+  -- an early failure (no swap) poisons nothing: the gate and the dead
+  -- flag stay as they were, and the session still serves its data
+  let refused ← b.handle inst sess ["restore", garbage.toString]
+  check (code refused == "migrate") s!"garbage source refused: {refused}"
+  check ((← sess.gate.get).isNone && (← sess.dead.get).isNone) "an early failure poisons nothing"
+  let rows ← b.handle inst sess ["rows", "probe"]
+  check ((rows.getObjValAs? Nat "count").toOption == some 1) "session still serves the live data"
+  -- a successful swap re-derives the gate from the installed connection:
+  -- a foreign-schema file restores, but the session is gated for drift
+  discard <| expectOk (← withDb other [Entity.spec Author] (pure ())) "create a foreign-schema source"
+  let drifted ← b.handle inst sess ["restore", other.toString]
+  check ((drifted.getObjValAs? Bool "ok").toOption == some true) s!"restore of the foreign file succeeds: {drifted}"
+  check ((drifted.getObjValAs? Bool "in_sync").toOption == some false) "the recomputed gate says out of sync"
+  let rows ← b.handle inst sess ["rows", "probe"]
+  check (code rows == "schema_mismatch") "the session is gated by the recomputed gate"
+  let back ← b.handle inst sess ["restore", bkPath]
+  check ((back.getObjValAs? Bool "ok").toOption == some true
+    && (back.getObjValAs? Bool "in_sync").toOption == some true) s!"restore back: {back}"
+  -- the reopen that fails twice: the poison source swaps in, then both
+  -- `openDbRaw` attempts fail — the gate is set, and the dead flag marks
+  -- the session as serving the old unlinked inode
+  let pdb ← SQLite.open poison
+  pdb.exec "CREATE TABLE filler (x INTEGER)"
+  pdb.exec "CREATE VIEW _leandb_log AS SELECT 1"
+  let dead ← b.handle inst sess ["restore", poison.toString]
+  check ((dead.getObjValAs? Bool "ok").toOption == some false
+    && code dead == "sqlite") s!"post-swap reopen failure reported: {dead}"
+  check ((← sess.dead.get).isSome) "both reopens failing sets the dead flag"
+  check (code (← b.handle inst sess ["version"]) == "sqlite") "version refuses on a dead session (#77)"
+  check (code (← b.handle inst sess ["backup"]) == "sqlite") "backup refuses on a dead session"
+  check (code (← b.handle inst sess ["migrate", "status"]) == "sqlite") "migrate refuses on a dead session"
+  let gated ← b.handle inst sess ["rows", "probe"]
+  check (code gated == "sqlite") "gated verbs answer the gate error"
+
+private def boundaryDbPath : System.FilePath := ".lake" / "leandb_test_boundary.sqlite"
+
+/-- #73: a raw IO exception inside a verb comes back as `ok:false` JSON —
+    one bad query must not kill the serve/MCP loops or drop the HTTP
+    response. Dropping the journal table under the session's feet (via a
+    second connection) makes `migrate history`'s raw `conn.raw.prepare`
+    throw "no such table". -/
+private def testHandleBoundary : IO Unit := do
+  if ← boundaryDbPath.pathExists then IO.FS.removeFile boundaryDbPath
+  let b : Base := { name := "xb", tables := [CliTable.of Probe] }
+  discard <| expectOk (← withDb boundaryDbPath [Entity.spec Probe] (pure ())) "create the boundary instance"
+  let inst := Instance.ofPath boundaryDbPath
+  let sess ← expectOk (← Cli.Session.open b inst) "open"
+  let v ← b.handle inst sess ["version"]
+  check ((v.getObjValAs? Bool "ok").toOption == some true) "normal verbs answer"
+  (← SQLite.open boundaryDbPath).exec "DROP TABLE _leandb_migrations"
+  -- must not throw: the boundary catch turns the raw error into JSON
+  let r ← b.handle inst sess ["migrate", "history"]
+  check ((r.getObjValAs? Bool "ok").toOption == some false
+    && (r.getObjValAs? String "code").toOption == some "sqlite")
+    s!"an escaped IO error comes back as ok:false JSON: {r}"
+  let v2 ← b.handle inst sess ["version"]
+  check ((v2.getObjValAs? Bool "ok").toOption == some true) "the session keeps serving after the caught failure"
+
 /-! ## Chains: a typed transform carries rows the mechanical diff refuses -/
 
 /-- `author` as stored at V0 (what `migrate freeze` would generate). -/
@@ -3351,6 +3436,37 @@ private def testStdioLineCap : IO Unit := do
   let r ← Cli.LineReader.new (IO.FS.Stream.ofBuffer buf) 4
   check ((← r.next) matches .line "abcd") "a line at the budget reads"
 
+private def testStdioInvalidUtf8 : IO Unit := do
+  -- #57: a request line whose bytes are not valid UTF-8 used to decode to
+  -- "" and be skipped silently — the peer waited forever for a response.
+  -- It now surfaces as its own `StdLine` case; only genuinely empty lines
+  -- stay silent.
+  let bad : ByteArray := (ByteArray.empty.push 0xFF).push 0xFE
+  let buf ← IO.mkRef { data := bad ++ "\n\n[\"version\"]\n".toUTF8, pos := 0 }
+  let r ← Cli.LineReader.new (IO.FS.Stream.ofBuffer buf)
+  check ((← r.next) matches .undecodable) "an invalid-UTF-8 line is undecodable, not empty"
+  check ((← r.next) matches .line "") "a genuinely empty line still reads as empty"
+  check ((← r.next) matches .line "[\"version\"]") "good lines around it still read"
+  check ((← r.next) matches .eof) "eof after the last line"
+  -- invalid bytes after a valid prefix poison the whole line
+  let buf ← IO.mkRef { data := "[\"ver".toUTF8 ++ bad ++ "\n".toUTF8, pos := 0 }
+  let r ← Cli.LineReader.new (IO.FS.Stream.ofBuffer buf)
+  check ((← r.next) matches .undecodable) "a valid prefix does not rescue bad bytes"
+
+-- #96: `Handle.read n` on a pipe is `fread` and blocks until *n* bytes or
+-- EOF, so a peer whose line is shorter than the read chunk wedged `serve`.
+-- Byte-wise reads fix it; model the pipe deterministically by clamping
+-- every read to one byte and asserting lines still assemble.
+private def testStdioShortReads : IO Unit := do
+  let buf ← lineStream "[\"version\"]\n[\"ping\"]\ntail"
+  let slow := IO.FS.Stream.ofBuffer buf
+  let s := { slow with read := fun _ => slow.read 1 }
+  let r ← Cli.LineReader.new s
+  check ((← r.next) matches .line "[\"version\"]") "a line assembles across one-byte reads"
+  check ((← r.next) matches .line "[\"ping\"]") "pushback still works with one-byte reads"
+  check ((← r.next) matches .line "tail") "an unterminated line still assembles"
+  check ((← r.next) matches .eof) "eof still surfaces"
+
 def main : IO UInt32 := do
   testCliLimits
   testStrictSchemaJson
@@ -3359,12 +3475,16 @@ def main : IO UInt32 := do
   testPortOf
   testModuleNameOk
   testStdioLineCap
+  testStdioInvalidUtf8
+  testStdioShortReads
   testHttpBodyLimits
   testLogPolicy
   testCodecs
   testBaseSpecs
   testSession
   testRestoreSafety
+  testRestoreResilience
+  testHandleBoundary
   testChain
   testFootprints
   testDerivedSpec
