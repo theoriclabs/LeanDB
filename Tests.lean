@@ -1391,7 +1391,161 @@ private def testImportUnusableNames : IO Unit := do
         (r.splitOn "field symbol").length > 1)
     "the skip reason says why"
 
-end Importer
+
+/-- Issue #66: column names that are Lean keywords (either list) or
+    structure auto-members are skipped by name — every one of them once
+    passed the old guards and produced a package that failed to parse
+    (`suffices`), refused the binder (`mk`) or clashed in the kernel
+    (`noConfusion`). The generated Entities.lean must not mention them. -/
+private def testImportHostileNames : IO Unit := do
+  let col (n : String) : RawColumn :=
+    { name := n, declType := "TEXT", notnull := false, pkIndex := 0, defaultSql := none }
+  let t : RawTable :=
+    { name := "hostile"
+      createSql :=
+        "CREATE TABLE hostile (id INTEGER PRIMARY KEY, suffices TEXT, mk TEXT, \
+noConfusion TEXT, forall TEXT, ok TEXT)"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+          defaultSql := none },
+        col "suffices", col "mk", col "noConfusion", col "forall", col "ok"]
+      fks := #[]
+      indexes := #[] }
+  let plan := planOf "hn" "Hn" { tables := #[t], views := #[], triggers := #[], indexes := #[] }
+  let some tp := plan.tables.find? (·.table == "hostile")
+    | throw <| IO.userError "FAIL: hostile table planned"
+  check ((tp.skippedColumns.map (·.1)).toList == ["suffices", "mk", "noConfusion", "forall"])
+    s!"the hostile names are skipped by name, got {repr tp.skippedColumns.toList}"
+  check (tp.skippedColumns.all fun (_, r) =>
+      (r.splitOn "Lean keyword or a structure auto-member").length > 1)
+    "each skip reason names the refusal class"
+  check ((tp.fields.map (·.column)).toList == ["ok"]) "the ordinary column is still carried"
+  let files := renderFiles plan "." "h.db" "h.db" "test"
+  let some entities := (files.find? (·.1 == "Hn/Entities.lean")).map (·.2)
+    | throw <| IO.userError "FAIL: Entities.lean was generated"
+  for n in ["suffices", "mk", "noConfusion", "forall"] do
+    check ((entities.splitOn n).length == 1)
+      s!"Entities.lean never mentions {n}"
+  check ((entities.splitOn "  ok : Option HostileOk").length > 1)
+    "the carried binder is emitted as a plain identifier"
+
+/-- Issue #67: `WITHOUT ROWID` is a token decision over `bareWords`, not
+    a raw DDL substring — a string default containing the phrase must not
+    exclude a perfectly importable rowid table, while a real WITHOUT
+    ROWID table is still refused. -/
+private def testImportWithoutRowidPhrase : IO Unit := do
+  let phrase : RawTable :=
+    { name := "note"
+      createSql :=
+        "CREATE TABLE note (\n" ++
+        "  id INTEGER PRIMARY KEY,\n" ++
+        "  tag TEXT DEFAULT 'WITHOUT ROWID' -- WITHOUT ROWID\n" ++
+        ")"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+          defaultSql := none },
+        { name := "tag", declType := "TEXT", notnull := false, pkIndex := 0,
+          defaultSql := some "'WITHOUT ROWID'" }]
+      fks := #[]
+      indexes := #[] }
+  let real : RawTable :=
+    { name := "w"
+      createSql := "CREATE TABLE w (a TEXT) WITHOUT ROWID"
+      columns := #[{ name := "a", declType := "TEXT", notnull := false,
+                     pkIndex := 0, defaultSql := none }]
+      fks := #[]
+      indexes := #[] }
+  let plan := planOf "wr" "Wr"
+    { tables := #[phrase, real], views := #[], triggers := #[], indexes := #[] }
+  check ((plan.tables.map (·.table)) == #["note"])
+    "a string default containing the phrase does not exclude the table"
+  let skipped := plan.skippedTables.filter (·.1 == "w")
+  check (skipped.size == 1) "a real WITHOUT ROWID table is still skipped"
+  check (skipped.any fun (_, r) => (r.splitOn "WITHOUT ROWID").length > 1)
+    "the skip reason still says WITHOUT ROWID"
+
+/-- Issue #68: a column targeted by two single-column foreign keys
+    cannot carry a typed reference — a `Ref` points at only one parent,
+    and typing the first silently lost the second. It is imported as
+    Int64 with the targets named in `notCarried`; a single-FK column
+    still types as `Ref`. -/
+private def fkRow (fromCol toTable : String) (gid : Nat) : RawFk :=
+  { groupId := gid, fromCol, toTable, toCol := some "id",
+    onUpdate := "RESTRICT", onDelete := "RESTRICT", matchClause := "NONE" }
+
+private def dualFkParent : RawTable :=
+  { name := "parent"
+    createSql := "CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT)"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "name", declType := "TEXT", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[]
+    indexes := #[] }
+
+private def dualFkOther : RawTable :=
+  { name := "other"
+    createSql := "CREATE TABLE other (id INTEGER PRIMARY KEY, tag TEXT)"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "tag", declType := "TEXT", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[]
+    indexes := #[] }
+
+/-- The issue's dual_fk fixture: `pid` carries two single-column FKs. -/
+private def dualFkTable : RawTable :=
+  { name := "dual_fk"
+    createSql :=
+      "CREATE TABLE dual_fk (id INTEGER PRIMARY KEY, pid INTEGER, \
+FOREIGN KEY (pid) REFERENCES parent(id), FOREIGN KEY (pid) REFERENCES other(id))"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "pid", declType := "INTEGER", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[fkRow "pid" "parent" 0, fkRow "pid" "other" 1]
+    indexes := #[] }
+
+/-- A column with exactly one single-column FK keeps its typed `Ref`. -/
+private def singleFkTable : RawTable :=
+  { name := "single"
+    createSql :=
+      "CREATE TABLE single (id INTEGER PRIMARY KEY, pid INTEGER, \
+FOREIGN KEY (pid) REFERENCES parent(id))"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "pid", declType := "INTEGER", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[fkRow "pid" "parent" 0]
+    indexes := #[] }
+
+private def testImportDualFk : IO Unit := do
+  let plan := planOf "df" "Df"
+    { tables := #[dualFkParent, dualFkOther, dualFkTable, singleFkTable],
+      views := #[], triggers := #[], indexes := #[] }
+  let pid := (plan.tables.find? (·.table == "dual_fk")).bind fun tp =>
+    tp.fields.find? (·.column == "pid")
+  check (pid.any fun f => f.mapping == Mapping.int64)
+    "the dual-FK column is imported as Int64, not Ref"
+  check (pid.any fun f => f.notes.any fun n =>
+      (n.splitOn "parent").length > 1 && (n.splitOn "other").length > 1)
+    "the field note names both FK targets"
+  let nc := plan.notCarried.filter fun e =>
+    e.kind == "foreign-key" && e.name == "dual_fk.pid"
+  check (nc.size == 1) "the untyped FKs are reported by name in notCarried"
+  check (nc.any fun e =>
+      (e.reason.splitOn "parent").length > 1 && (e.reason.splitOn "other").length > 1)
+    "the notCarried reason names both targets"
+  let spid := (plan.tables.find? (·.table == "single")).bind fun tp =>
+    tp.fields.find? (·.column == "pid")
+  check (spid.any fun f => f.mapping == Mapping.ref "parent" "Parent")
+    "a single single-column FK still types the column as Ref"
+
+ end Importer
 
 /-! ## LEP-0003 B: JSON columns with a declared shape, derived columns -/
 
@@ -3393,6 +3547,9 @@ def main : IO UInt32 := do
   testAdoptAffinity
   testForeignFileRefused
   testImportUnusableNames
+  testImportHostileNames
+  testImportWithoutRowidPhrase
+  testImportDualFk
   Lep3.run
   EnumSetA.run
   testOptionalParamPlans
