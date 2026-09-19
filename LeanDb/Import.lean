@@ -578,6 +578,25 @@ private def renderFieldType (f : FieldPlan) : String :=
   if f.nullable then
     if hasSub base " " then s!"Option ({base})" else s!"Option {base}"
   else base
+/-- The SQLite affinity of a declared type, following the type rules at
+    https://www.sqlite.org/datatype3.html (`INT` → INTEGER; `CHAR`/`CLOB`/
+    `TEXT` → TEXT; `BLOB` or empty → BLOB; `REAL`/`FLOA`/`DOUB` → REAL;
+    else NUMERIC). Generated Lean renders a column's declared type *only*
+    as this fixed-vocabulary label: the raw declared type is interpolated
+    verbatim into nothing that the Lean compiler parses, because SQLite
+    lets a quoted identifier carry arbitrary text as the declared type,
+    and embedding it in a doc comment once let a payload like
+    `x]-/ def pwn : Nat := 137 /-` close the comment and compile as top
+    level Lean (issue #65). The raw string stays visible where it is
+    inert data — `import-report.json` and `IMPORT.md`, which quote it. -/
+private def affinityOf (declType : String) : String :=
+  let d := upperStr declType
+  if d.isEmpty then "BLOB affinity (no declared type)"
+  else if hasSub d "INT" then "INTEGER affinity"
+  else if hasSub d "CHAR" || hasSub d "CLOB" || hasSub d "TEXT" then "TEXT affinity"
+  else if hasSub d "BLOB" then "BLOB affinity"
+  else if hasSub d "REAL" || hasSub d "FLOA" || hasSub d "DOUB" then "REAL affinity"
+  else "NUMERIC affinity"
 
 private def scalarsFile (p : Plan) : String := _root_.Id.run do
   let mut decls : Array String := #[]
@@ -585,7 +604,7 @@ private def scalarsFile (p : Plan) : String := _root_.Id.run do
     for f in tp.fields do
       if let .newtype n := f.mapping then
         decls := decls.push <| String.intercalate "\n" [
-          s!"/-- `{tp.table}.{f.column}` (declared `{f.declType}`). Identity validator — tighten here. -/",
+          s!"/-- `{tp.table}.{f.column}` ({affinityOf f.declType}). Identity validator — tighten here. -/",
           s!"structure {n} where",
           "  raw : String",
           "  deriving Repr, DecidableEq",

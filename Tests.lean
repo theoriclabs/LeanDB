@@ -1416,7 +1416,74 @@ private def testImportUnusableNames : IO Unit := do
         (r.splitOn "field symbol").length > 1)
     "the skip reason says why"
 
-end Importer
+
+/-- Issue #65: a SQLite declared type is interpolated into the generated
+    Lean — and SQLite lets a quoted identifier carry arbitrary text. The
+    payload below once closed the `Scalars.lean` doc comment and compiled
+    as top-level Lean (`def Docbase.pwn : Nat := 137`). Generated Lean
+    must now render only the normalized affinity; the raw type survives
+    as inert data in `import-report.json` and `IMPORT.md`. -/
+private def testImportHostileDeclType : IO Unit := do
+  let payload := "x]-/ def pwn : Nat := 137 /-"
+  let t : RawTable :=
+    { name := "doc"
+      createSql :=
+        "CREATE TABLE doc (id INTEGER PRIMARY KEY, body \"x]-/ def pwn : Nat := 137 /-\")"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+          defaultSql := none },
+        { name := "body", declType := payload, notnull := false, pkIndex := 0,
+          defaultSql := none }]
+      fks := #[]
+      indexes := #[] }
+  let plan := planOf "docbase" "Docbase"
+    { tables := #[t], views := #[], triggers := #[], indexes := #[] }
+  -- The column still imports: a text newtype with the (bogus) declared type.
+  let body := (plan.tables.find? (·.table == "doc")).bind fun tp =>
+    tp.fields.find? (·.column == "body")
+  check (body.any fun f => match f.mapping with | .newtype _ => true | _ => false)
+    "the hostile column still imports as a text newtype"
+  -- Generated Lean: no attacker code, no unbalanced comment, and only the
+  -- affinity label where the declared type used to sit.
+  let files := renderFiles plan "." "doc.db" "doc.db" "test"
+  let some scalars := (files.find? (·.1 == "Docbase/Scalars.lean")).map (·.2)
+    | throw <| IO.userError "FAIL: Scalars.lean was generated"
+  check ((scalars.splitOn "def pwn").length == 1) "no injected declaration in Scalars.lean"
+  check ((scalars.splitOn "137").length == 1) "no attacker tokens in Scalars.lean"
+  check ((scalars.splitOn "]-/").length == 1) "no comment-closer payload in Scalars.lean"
+  check ((scalars.splitOn "/-").length == (scalars.splitOn "-/").length)
+    "the generated block comments stay balanced"
+  check ((scalars.splitOn "(NUMERIC affinity). Identity validator").length > 1)
+    "the doc comment carries the affinity, not the raw type"
+  -- The raw declared type is still reported, as inert data.
+  let some md := (files.find? (·.1 == "IMPORT.md")).map (·.2)
+    | throw <| IO.userError "FAIL: IMPORT.md was generated"
+  check ((md.splitOn payload).length > 1) "the raw declared type stays in IMPORT.md"
+  let some json := (files.find? (·.1 == "import-report.json")).map (·.2)
+    | throw <| IO.userError "FAIL: import-report.json was generated"
+  check ((json.splitOn payload).length > 1) "the raw declared type stays in import-report.json"
+  -- Normal types still read naturally.
+  let clean : RawTable :=
+    { name := "plain"
+      createSql := "CREATE TABLE plain (id INTEGER PRIMARY KEY, note VARCHAR(20))"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+          defaultSql := none },
+        { name := "note", declType := "VARCHAR(20)", notnull := false, pkIndex := 0,
+          defaultSql := none }]
+      fks := #[]
+      indexes := #[] }
+  let plan2 := planOf "docbase" "Docbase"
+    { tables := #[clean], views := #[], triggers := #[], indexes := #[] }
+  let files2 := renderFiles plan2 "." "doc.db" "doc.db" "test"
+  let some scalars2 := (files2.find? (·.1 == "Docbase/Scalars.lean")).map (·.2)
+    | throw <| IO.userError "FAIL: Scalars.lean was generated for the clean table"
+  check ((scalars2.splitOn "(TEXT affinity). Identity validator").length > 1)
+    "a VARCHAR column reads as TEXT affinity"
+  check ((scalars2.splitOn "VARCHAR(20)").length == 1)
+    "even a benign declared type stays out of generated Lean"
+
+ end Importer
 
 /-! ## LEP-0003 B: JSON columns with a declared shape, derived columns -/
 
@@ -3487,6 +3554,7 @@ def main : IO UInt32 := do
   testAdoptAffinity
   testForeignFileRefused
   testImportUnusableNames
+  testImportHostileDeclType
   Lep3.run
   EnumSetA.run
   testOptionalParamPlans
