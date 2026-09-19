@@ -39,9 +39,6 @@ complete entity rows; applications can map the results in Lean.
 Extend pushdown to column arithmetic, aggregates, sorting, and limits.
 Sorting and aggregate calculations currently run in Lean.
 
-The CLI's `rows --limit` limits returned rows after fetching them.
-It does not currently add a SQL `LIMIT`.
-
 ### Stronger preservation proofs
 
 Connect the original Lean predicate, generated plan, SQL rendering, and

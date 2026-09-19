@@ -11,6 +11,11 @@ for base in tickets crm shop gpumarket eats legacy dashboard; do
   fi
 done
 
+if ! cmp -s lean-toolchain "benchmarks/b2t2/lean-toolchain"; then
+  echo "release check failed: benchmarks/b2t2/lean-toolchain differs from root" >&2
+  exit 1
+fi
+
 lake build leandb leandb_tests
 .lake/build/bin/leandb_tests
 
