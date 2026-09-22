@@ -146,6 +146,9 @@ def TableSpec.toJson (t : TableSpec) : Json :=
      ("columns", Json.arr (t.columns.map (·.toJson)))]
     ++ (if t.indexes.isEmpty then [] else
       [("indexes", Json.arr (t.indexes.map (·.toJson)))])
+    ++ (match t.invariant with
+      | some n => [("invariant", Json.str n)]
+      | none => [])
 
 def SqlType.fromJson? (j : Json) : Except String SqlType := do
   match ← j.getStr? with
@@ -203,7 +206,10 @@ def TableSpec.fromJson? (j : Json) : Except String TableSpec := do
   let indexes ← match j.getObjVal? "indexes" with
     | .ok v => (← v.getArr?).mapM IndexSpec.fromJson?
     | .error _ => pure #[]
-  return { name, columns := ← cols.mapM ColumnSpec.fromJson?, indexes }
+  let invariant ← match j.getObjVal? "invariant" with
+    | .ok v => some <$> (v.getStr? |>.mapError fun m => s!"{name}: malformed \"invariant\": {m}")
+    | .error _ => pure none
+  return { name, columns := ← cols.mapM ColumnSpec.fromJson?, indexes, invariant }
 
 /-- Serialize/parse a whole schema — how an instance remembers the shape
     it was last migrated to. -/

@@ -119,6 +119,12 @@ inductive DbError where
   | poisoned (message : String)
   /-- A write verb ran on a connection opened read-only (LDB-09). -/
   | readOnly (verb : String)
+  /-- A value read or about to be written fails its entity's declared
+      invariant (LDB-16). It is never handed out, and never stored. -/
+  | invariant (table name : String)
+  /-- `append` was given a child list that does not continue the stored
+      one (LDB-15). That is an `update`. -/
+  | notAppend (table detail : String)
   deriving Repr
 
 def DbError.code : DbError → String
@@ -137,6 +143,8 @@ def DbError.code : DbError → String
   | .transport .. => "transport"
   | .poisoned .. => "poisoned"
   | .readOnly .. => "read_only"
+  | .invariant .. => "invariant"
+  | .notAppend .. => "not_append"
 
 def DbError.message : DbError → String
   | .decode table field msg => s!"{table}.{field}: {msg}"
@@ -158,6 +166,8 @@ it was not created by this base's history (restore a known version, or migrate b
   | .transport msg => msg
   | .poisoned msg => s!"connection poisoned: {msg}"
   | .readOnly verb => s!"{verb}: connection is read-only"
+  | .invariant table name => s!"{table}: row does not satisfy the invariant {name}"
+  | .notAppend table detail => s!"{table}: not an append: {detail}"
 
 instance : ToString DbError := ⟨fun e => s!"[{e.code}] {e.message}"⟩
 
@@ -599,6 +609,10 @@ structure TableSpec where
   name : String
   columns : Array ColumnSpec
   indexes : Array IndexSpec := #[]
+  /-- The name of the entity's declared invariant (LDB-16), if any. The
+      check itself is a Lean function on the entity; its name is what the
+      schema records, so declaring or renaming it is a migration. -/
+  invariant : Option String := none
   deriving Repr, BEq
 
 /-- An auxiliary object next to the fingerprinted schema (LDB-11). -/

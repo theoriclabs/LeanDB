@@ -12,16 +12,16 @@ namespace V1
 /-- The schema at version 1: fingerprint `17105251411370212804`. -/
 def schema : List LeanDb.TableSpec :=
   [
-  ⟨"customers", #[
+  { name := "customers", columns := #[
       { name := "name", sqlType := LeanDb.SqlType.text, nullable := false, fkTable := none },
       { name := "email", sqlType := LeanDb.SqlType.text, nullable := true, fkTable := none },
       { name := "balance", sqlType := LeanDb.SqlType.real, nullable := false, fkTable := none }
-    ]⟩,
-  ⟨"orders", #[
+    ] },
+  { name := "orders", columns := #[
       { name := "customer_id", sqlType := LeanDb.SqlType.integer, nullable := false, fkTable := some ("customers") },
       { name := "item", sqlType := LeanDb.SqlType.text, nullable := false, fkTable := none },
       { name := "size", sqlType := LeanDb.SqlType.text, nullable := false, fkTable := none, enum := some (#["small", "bulk"]) }
-    ]⟩
+    ] }
 ]
 
 /-- `customers` as stored at this version (`id` excluded). -/

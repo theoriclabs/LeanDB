@@ -692,6 +692,30 @@ private def checkSymNames (who : String) (declName : Name) (gens : Array FieldGe
 generated as a LeanDB field symbol (an inductive constructor with that name is refused by Lean); \
 rename the field"
 
+/-- `@[leandb_invariant]` marks `T.invariant : T → Bool` as the condition
+    every stored `T` satisfies (LDB-16). `deriving LeanDb.Entity` for `T`
+    reads it, so it is declared first, and the instance derived after it
+    (`deriving instance LeanDb.Entity for T`). Tagging it once `Entity T`
+    exists is refused: that instance would never check it. -/
+initialize invariantAttr : TagAttribute ←
+  registerTagAttribute `leandb_invariant
+    "the condition LeanDB checks on every stored value of its type (LDB-16)"
+    fun declName => do
+      let .str typeName "invariant" := declName
+        | throwError "@[leandb_invariant]: name the check `<Type>.invariant`, got {declName}"
+      let info ← getConstInfo declName
+      match info.type with
+      | .forallE _ (.const t []) (.const b []) _ =>
+          unless t == typeName && b == ``Bool do
+            throwError "@[leandb_invariant]: {declName} must have type {typeName} → Bool"
+      | _ => throwError "@[leandb_invariant]: {declName} must have type {typeName} → Bool"
+      let derived ← Meta.MetaM.run' do
+        return (← Meta.synthInstance? (mkApp (mkConst ``LeanDb.Entity) (mkConst typeName))).isSome
+      if derived then
+        throwError "@[leandb_invariant]: LeanDb.Entity {typeName} already exists and would \
+not check {declName}. Declare the invariant first, then \
+`deriving instance LeanDb.Entity for {typeName}`."
+
 /-- `deriving LeanDb.Entity` for `declName`. `tableName?` overrides the
     table name (a generated child's `<parent>_<field>`); `cascade` names
     the `Ref` fields whose FK cascades and the table each references (a
@@ -722,8 +746,13 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
         (fun n t c => deriveEntityCore n t c)
       childNames := childNames.push (i, childName)
   -- 3. The instances.
+  let invName := declName ++ `invariant
+  let hasInvariant := invariantAttr.hasTag (← getEnv) invName
   let cmds ← liftTermElabM do
     let b ← buildShared declName gens
+    let invariant : Term ←
+      if hasInvariant then `(some ($(quote (toString invName)), $(mkCIdent invName)))
+      else `(none)
     let bodyCheck ← mkDecodeBody declName gens (some tblName) (checking := true)
     let bodyRecompute ← mkDecodeBody declName gens (some tblName) (checking := false)
     let links ← childNames.mapM fun (i, childName) => mkChildLink declName tblName gens i childName
@@ -750,7 +779,8 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
           if row.size == $n then $bodyRecompute
           else Except.error (LeanDb.DbError.decode $(quote tblName) "*"
                  s!"expected {$n} columns, found {row.size}")
-        children := [$links,*])
+        children := [$links,*]
+        invariant := $invariant)
     let fieldOfCmd : TSyntax `command ← `(@[reducible] instance :
         LeanDb.FieldOf $(mkCIdent fieldTyName) $(mkCIdent declName) := ⟨fun f => f⟩)
     return (entityCmd, fieldOfCmd)

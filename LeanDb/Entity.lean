@@ -89,6 +89,10 @@ class Entity (α : Type) where
       how to read the list off a value and attach it back. `decode`
       leaves every child list empty; the executor attaches them. -/
   children : List (ChildLink α) := []
+  /-- A condition every stored value satisfies (LDB-16): its name, as the
+      schema records it, and the check. The executor checks it after the
+      child lists are attached on every read, and before every write. -/
+  invariant : Option (String × (α → Bool)) := none
 
 /- Instance lookup reduces types only at reducible transparency, so a type
    stated through a class projection (`SqlOrd (Entity.fieldTy f)`,
@@ -200,7 +204,8 @@ instance (priority := low) {α : Type} : Indexes α := ⟨#[]⟩
 
 def Entity.spec (α : Type) [Entity α] [Indexes α] : TableSpec :=
   { name := Entity.tableName α, columns := Entity.columns α,
-    indexes := Indexes.indexes α }
+    indexes := Indexes.indexes α,
+    invariant := (Entity.invariant (α := α)).map (·.1) }
 
 /-- Every table an entity contributes: its own, then its child tables
     (LEP-0003 D) in field order. Child tables get `(parent, position)
@@ -367,13 +372,15 @@ names unknown column {String.quote col}")
     column (`table.column=shape`, one per line) and the variant list of
     every `EnumSet` column (`table.column=<a|b|c>` — the DDL sees only
     the mask, and a renamed or reordered variant changes what a stored
-    bit *means*). A schema without either hashes exactly its DDL, as it
-    always has. Checked against `_leandb_meta` at open. -/
+    bit *means*), then the name of every declared invariant
+    (`table:invariant=<name>`, LDB-16). A schema with none of these hashes
+    exactly its DDL, as it always has. Checked against `_leandb_meta` at open. -/
 def fingerprint (specs : List TableSpec) : String :=
   let ddl := String.intercalate ";\n" (specs.map (·.fullDdl))
   let shapes := specs.flatMap fun t => t.columns.toList.filterMap fun c =>
     (c.shape.map fun s => s!"{t.name}.{c.name}={s}") <|>
       (c.enumSet.map fun vs => s!"{t.name}.{c.name}={JsonShape.closed vs}")
+  let shapes := shapes ++ specs.filterMap fun t => t.invariant.map fun n => s!"{t.name}:invariant={n}"
   toString <| hash <| if shapes.isEmpty then ddl else ddl ++ "\n" ++ String.intercalate "\n" shapes
 
 end LeanDb
