@@ -41,6 +41,9 @@ inductive MigStep where
   | restampShape (table col : String)
   | addIndex (table : String) (ix : IndexSpec)
   | dropIndex (table : String) (ix : IndexSpec)
+  /-- The declared invariant changed (LDB-16). No SQL: the check is Lean
+      code, and every row is checked again when it is read. -/
+  | restampInvariant (table : String) (old new : Option String)
   deriving Repr
 
 def MigStep.describe : MigStep → String
@@ -53,6 +56,9 @@ def MigStep.describe : MigStep → String
   | .restampShape t c => s!"restamp shape of \"{t}\".\"{c}\""
   | .addIndex t ix => s!"add index \"{ix.resolvedName t}\""
   | .dropIndex t ix => s!"drop index \"{ix.resolvedName t}\""
+  | .restampInvariant t old new =>
+      let render := fun (n : Option String) => n.getD "(none)"
+      s!"invariant of \"{t}\": {render old} → {render new}"
 
 def MigStep.destructive : MigStep → Bool
   | .dropColumn .. | .dropTable .. => true
@@ -75,6 +81,7 @@ def MigStep.sql : MigStep → List String
   | .addIndex t ix =>
       ({ name := t, columns := #[], indexes := #[ix] } : TableSpec).indexDdl.toList
   | .dropIndex t ix => [s!"DROP INDEX IF EXISTS {quoteIdent (ix.resolvedName t)}"]
+  | .restampInvariant .. => []
 
 /-! ## Shapes
 
@@ -290,6 +297,12 @@ def planMigration (old new : List TableSpec) (covered : List String := []) :
     | none => steps := steps ++ [.createTable spec]
     | some oldSpec =>
         if oldSpec == spec then continue
+        if oldSpec.invariant != spec.invariant then
+          steps := steps ++ [.restampInvariant spec.name oldSpec.invariant spec.invariant]
+          if spec.invariant.isSome then
+            notes := notes ++ [s!"\"{spec.name}\" declares invariant {spec.invariant.get!}: \
+existing rows are checked when read, and a row that fails it is refused, not returned"]
+          if { oldSpec with invariant := spec.invariant } == spec then continue
         if covered.contains spec.name then
           notes := notes ++ [s!"\"{spec.name}\" is rewritten by a typed transform"]
           steps := steps ++ [.rebuildTable spec (spec.columns.toList.filterMap fun c =>

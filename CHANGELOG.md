@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- **LDB-15 (#129).** `append old new`: grow an entity's child lists against
+  the value that was read. Only the added child rows are written, at the
+  positions after the stored ones; the parent's columns are written under
+  `update`'s compare-and-swap. A list that moved on since the read, or a
+  parent that did, is `.stale`, in one connection or across processes
+  (`BEGIN IMMEDIATE`, backed by the `(parent, position)` UNIQUE index). A
+  list that does not continue the stored one is `.notAppend`. `update`'s
+  docstring now says plainly that its CAS does not see child lists.
+- **LDB-16 (#130).** Entity invariants. `@[leandb_invariant] def T.invariant
+  : T → Bool`, declared before `deriving instance LeanDb.Entity for T`, is
+  checked on every read (after the child lists are attached) and before
+  every write (`insert`, `insertMany`, `update`, `patch`, `append`). A row
+  that fails is `.invariant table name`: never returned, never stored. The
+  attribute refuses a check declared after `Entity T` exists. The name is
+  part of the schema: `TableSpec.invariant`, `schema_json`, the fingerprint
+  (`table:invariant=<name>`; unchanged for a table without one), and a
+  journaled `restampInvariant` migration step.
+- **Freeze (#131).** Frozen snapshots are written with named fields and
+  include `indexes` and `invariant`. Since 0.4.0 they were written as
+  `⟨name, #[…]⟩`, which does not compile against a three-field
+  `TableSpec`. The legacy example's snapshots are updated.
+- **Breaking.** `TableSpec` has a fourth field, `invariant`. Code that
+  builds one positionally (`⟨name, columns, indexes⟩`) adds `, none`, or
+  switches to named fields. New `DbError` constructors: `invariant`,
+  `notAppend`.
+
 ## 0.4.0 - 2026-09-18
 
 Public transaction combinator, runtime service, and the LeanGD engine

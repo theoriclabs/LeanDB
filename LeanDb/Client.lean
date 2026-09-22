@@ -78,6 +78,8 @@ def DbError.ofJson (j : Json) : DbError :=
   | some "migrate" => .migrate msg
   | some "unknown_lineage" => .unknownLineage msg []
   | some "transport" => .transport msg
+  | some "invariant" => .invariant "remote" msg
+  | some "not_append" => .notAppend "remote" msg
   | _ => .sqlite msg
 
 /-- A connection to a served base. Transports implement one JSON argv request

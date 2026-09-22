@@ -356,7 +356,7 @@ private def rowCount (conn : Conn) (table : String) : IO Nat := do
 private def stepTable : MigStep → Option String
   | .createTable spec => some spec.name
   | .addColumn t _ | .dropColumn t _ | .dropTable t | .restampShape t _
-  | .addIndex t _ | .dropIndex t _ => some t
+  | .addIndex t _ | .dropIndex t _ | .restampInvariant t _ _ => some t
   | .rebuildTable spec _ => some spec.name
 
 /-- One pending migration as `status` reports it: its steps with row

@@ -377,7 +377,8 @@ row. Writes run inside a transaction. -/
     re-raises the typed error. Reentrant: a nested call (a read burst
     inside a write, or `selectP` snapshotting via `fetchAll`) joins the
     open transaction instead of issuing a second `BEGIN`. -/
-private def transaction (act : DbM α) : DbM α := fun conn => ExceptT.mk do
+private def transaction (act : DbM α) (begin : String := "BEGIN DEFERRED") : DbM α :=
+    fun conn => ExceptT.mk do
   let exec (sql : String) : IO (Except DbError Unit) :=
     try conn.raw.exec sql; pure (.ok ()) catch e => pure (.error (.sqlite (toString e)))
   match ← conn.poisoned.get with
@@ -403,7 +404,7 @@ private def transaction (act : DbM α) : DbM α := fun conn => ExceptT.mk do
         | .ok () => return .ok a
         | .error e => rollback e
     | .error e => rollback e
-  match ← exec "BEGIN DEFERRED" with
+  match ← exec begin with
   | .error e => conn.txDepth.set depth; return .error e
   | .ok () =>
     let r ← try (act conn).run catch e => pure (.error (.sqlite (toString e)))
@@ -419,7 +420,7 @@ private def childChunk : Nat := 500
     `ChildLink.attach` (which also checks derived columns computed from
     the list). Order and length of `rows` are preserved; an entity without
     children costs nothing. -/
-private def attachChildren (α : Type) [Entity α] (rows : Array (Stored α)) :
+private def attachLists (α : Type) [Entity α] (rows : Array (Stored α)) :
     DbM (Array (Stored α)) := do
   let links := Entity.children (α := α)
   if links.isEmpty || rows.isEmpty then return rows
@@ -458,10 +459,26 @@ private def attachChildren (α : Type) [Entity α] (rows : Array (Stored α)) :
       return ⟨r.id, v⟩
   return rows
 
-/-- Write the child rows of one list for parent `id`: positions `0…`, the
-    record's columns after `parent` and `position`. -/
-private def insertChildren [Entity α] (link : ChildLink α) (id : Int64) (a : α) : DbM Unit := do
-  let rows := link.rows a
+/-- The entity's declared invariant (LDB-16) on one value. -/
+private def checkInvariant [Entity α] (a : α) : DbM Unit :=
+  match Entity.invariant (α := α) with
+  | some (name, holds) =>
+      if holds a then pure () else throw (.invariant (Entity.tableName α) name)
+  | none => pure ()
+
+/-- Every typed read ends here: the child lists attached (`attachLists`),
+    then the entity's invariant checked on each whole value (LDB-16). A row
+    that fails is refused with `.invariant`, never returned. -/
+private def attachChildren (α : Type) [Entity α] (rows : Array (Stored α)) :
+    DbM (Array (Stored α)) := do
+  let rows ← attachLists α rows
+  if (Entity.invariant (α := α)).isSome then rows.forM (checkInvariant ·.val)
+  return rows
+
+/-- Write child rows of one list for parent `id`, at positions `start…`:
+    the record's columns after `parent` and `position`. -/
+private def insertChildRows [Entity α] (link : ChildLink α) (id : Int64) (start : Nat)
+    (rows : Array (Array Col)) : DbM Unit := do
   if rows.isEmpty then return
   let names := String.intercalate ", " (link.spec.columns.toList.map (quoteId ·.name))
   let sql := s!"INSERT INTO {quoteId link.table} ({names}) VALUES ({placeholders link.spec.columns.size})"
@@ -471,15 +488,20 @@ private def insertChildren [Entity α] (link : ChildLink α) (id : Int64) (a : �
       stmt.reset
       stmt.clearBindings
       stmt.bindInt64 1 id
-      stmt.bindInt64 2 (Int64.ofNat i)
+      stmt.bindInt64 2 (Int64.ofNat (start + i))
       bindCols stmt 3 rows[i]
       stmt.exec
+
+/-- Write the child rows of one list for parent `id`: positions `0…`. -/
+private def insertChildren [Entity α] (link : ChildLink α) (id : Int64) (a : α) : DbM Unit :=
+  insertChildRows link id 0 (link.rows a)
 
 /-- `INSERT` a value; returns it with its assigned identity. A parent with
     child lists writes its own row and then every child row, in one
     transaction. -/
 def insert (α : Type) [Entity α] (a : α) : DbM (Stored α) := withLog "insert" (Entity.tableName α) (fun _ => 1) do
   requireWritable "insert"
+  checkInvariant a
   let spec := Entity.spec α
   let links := Entity.children (α := α)
   let names := String.intercalate ", " (spec.columns.toList.map (quoteId ·.name))
@@ -528,9 +550,12 @@ def fetchAll (α : Type) [Entity α] : DbM (Array (Stored α)) := transaction do
     clobber. `IS` (not `=`) so `NULL` columns pin correctly. The CAS is on
     the parent's own columns; once it holds, every child list is replaced
     wholesale (`DELETE … WHERE parent = ?`, then re-inserted), in the same
-    transaction. -/
+    transaction. The CAS does not see the child lists: a writer whose
+    parent columns match `old` but whose lists moved on is not refused.
+    To grow a list against a stale read, use `append` (LDB-15). -/
 def update [Entity α] (old : Stored α) (new : α) : DbM (Stored α) := withLog "update" (Entity.tableName α) (fun _ => 1) do
   requireWritable "update"
+  checkInvariant new
   let spec := Entity.spec α
   let links := Entity.children (α := α)
   let cas : DbM Unit := do
@@ -568,6 +593,68 @@ def update [Entity α] (old : Stored α) (new : α) : DbM (Stored α) := withLog
       insertChildren link old.id.toInt64 new
     return ⟨old.id, new⟩
   if links.isEmpty then act else transaction act
+
+/-- `update` for a value that grows its child lists (LDB-15): each child
+    list of `new` continues the same list of `old`. Only the added child
+    rows are written, at the positions after the stored ones; no stored
+    child row is rewritten. The parent's own columns are written as
+    `update` writes them, so a column derived from a list can move with it.
+
+    Refused with `.stale` when the parent's columns, or the length of any
+    child list, changed since `old` was read. It runs under `BEGIN
+    IMMEDIATE`, so the check and the write hold one write lock; a writer in
+    another process that wins anyway meets the `(parent, position)` UNIQUE
+    index, and that is `.stale` too. A list in `new` that does not continue
+    the stored one is `.notAppend`: that is an `update`. -/
+def append [Entity α] (old : Stored α) (new : α) : DbM (Stored α) :=
+    withLog "append" (Entity.tableName α) (fun _ => 1) do
+  requireWritable "append"
+  let spec := Entity.spec α
+  let table := spec.name
+  let id := old.id.toInt64
+  let mut added : Array (ChildLink α × Nat × Array (Array Col)) := #[]
+  for link in Entity.children (α := α) do
+    let before := link.rows old.val
+    let after := link.rows new
+    unless before.size ≤ after.size && after.extract 0 before.size == before do
+      throw (.notAppend link.table "the list does not continue the stored one")
+    added := added.push (link, before.size, after.extract before.size after.size)
+  checkInvariant new
+  transaction (begin := "BEGIN IMMEDIATE") do
+    -- the parent: `update`'s compare-and-swap against `old`
+    let pins := spec.columns.toList.map fun c => s!"{quoteId c.name} IS ?"
+    let sets := spec.columns.toList.map fun c => s!"{quoteId c.name} = ?"
+    let setSql := if sets.isEmpty then "id = id" else String.intercalate ", " sets
+    let n := spec.columns.size
+    let changed ← sqliteWith (constraintError table (.missingRef table)) fun db => do
+      let stmt ← db.prepare
+        s!"UPDATE {quoteId table} SET {setSql} WHERE {String.intercalate " AND " ("id = ?" :: pins)}"
+      bindCols stmt 1 (Entity.encode new)
+      stmt.bindInt64 (Int32.ofNat (n + 1)) id
+      bindCols stmt (n + 2) (Entity.encode old.val)
+      stmt.exec
+      db.changes
+    if changed == 0 then
+      let present ← sqlite fun db => do
+        let stmt ← db.prepare s!"SELECT 1 FROM {quoteId table} WHERE id = ?"
+        stmt.bindInt64 1 id
+        stmt.step
+      if present then throw (.stale table id) else throw (.notFound table id)
+    -- each list: still `old`'s length, then only the new rows
+    for (link, stored, rows) in added do
+      let parentCol := (link.spec.columns.getD 0 default).name
+      let count ← sqlite fun db => do
+        let stmt ← db.prepare
+          s!"SELECT COUNT(*) FROM {quoteId link.table} WHERE {quoteId parentCol} = ?"
+        stmt.bindInt64 1 id
+        discard stmt.step
+        stmt.columnInt64 0
+      unless count.toNatClampNeg == stored do throw (.stale table id)
+      try insertChildRows link id stored rows
+      catch
+        | .duplicate .. => throw (.stale table id)
+        | e => throw e
+    return ⟨old.id, new⟩
 
 /-- Delete by typed identity. Rows referenced elsewhere refuse with
     `.restricted` (FK RESTRICT) — destruction is loud. A parent's own child
@@ -1195,32 +1282,41 @@ inductive PatchResult where
 def patch [Entity α] (id : Id α) (p : Patch α) (guard : Pred [α] := .tt) :
     DbM PatchResult := withLog "patch" (Entity.tableName α) (fun _ => 1) do
   requireWritable "patch"
-  let spec := Entity.spec α
-  if p.sets.isEmpty then
+  let run : DbM PatchResult := do
+    let spec := Entity.spec α
+    if p.sets.isEmpty then
+      match ← get id with
+      | some _ => return .updated
+      | none => return .notFound
+    let sets := String.intercalate ", " (p.sets.toList.map fun a =>
+      s!"{quoteId (Entity.fieldName a.field)} = ?")
+    let (whereSql, binds) := guard.render fun _ => "t0"
+    let sql := s!"UPDATE {quoteId spec.name} AS t0 SET {sets} WHERE t0.id = ? AND {whereSql}"
+    let changed ← sqliteWith (constraintError spec.name (.missingRef spec.name)) fun db => do
+      let stmt ← db.prepare sql
+      bindCols stmt 1 (p.sets.map (·.encoded))
+      stmt.bindInt64 (Int32.ofNat (p.sets.size + 1)) id.toInt64
+      bindCols stmt (p.sets.size + 2) binds
+      stmt.exec
+      db.changes
+    if changed != 0 then return .updated
     match ← get id with
-    | some _ => return .updated
+    | some _ => return .guardFailed
     | none => return .notFound
-  let sets := String.intercalate ", " (p.sets.toList.map fun a =>
-    s!"{quoteId (Entity.fieldName a.field)} = ?")
-  let (whereSql, binds) := guard.render fun _ => "t0"
-  let sql := s!"UPDATE {quoteId spec.name} AS t0 SET {sets} WHERE t0.id = ? AND {whereSql}"
-  let changed ← sqliteWith (constraintError spec.name (.missingRef spec.name)) fun db => do
-    let stmt ← db.prepare sql
-    bindCols stmt 1 (p.sets.map (·.encoded))
-    stmt.bindInt64 (Int32.ofNat (p.sets.size + 1)) id.toInt64
-    bindCols stmt (p.sets.size + 2) binds
-    stmt.exec
-    db.changes
-  if changed != 0 then return .updated
-  match ← get id with
-  | some _ => return .guardFailed
-  | none => return .notFound
+  -- a declared invariant (LDB-16) is checked on the patched row before the
+  -- transaction commits: `get` refuses a row that fails it, which rolls back
+  if (Entity.invariant (α := α)).isNone then run
+  else transaction do
+    let r ← run
+    if r == .updated then discard <| get id
+    return r
 
 /-! ## LDB-08: `insertMany` and `scan` -/
 
 def insertMany (α : Type) [Entity α] (rows : Array α) : DbM (Array (Stored α)) :=
   withLog "insertMany" (Entity.tableName α) (·.size) do
     requireWritable "insertMany"
+    rows.forM checkInvariant
     if rows.isEmpty then return #[]
     let spec := Entity.spec α
     let links := Entity.children (α := α)

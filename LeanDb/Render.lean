@@ -85,15 +85,31 @@ def columnLit (c : ColumnSpec) : String :=
     (if c.cascade then ["cascade := true"] else [])
   "{ " ++ String.intercalate ", " fields ++ " }"
 
-/-- A `TableSpec` as Lean source, one column per line. -/
+/-- An `IndexSpec` as a Lean structure-instance literal. -/
+def indexLit (ix : IndexSpec) : String :=
+  let fields : List String :=
+    [s!"unique := {ix.unique}", s!"columns := {strArr ix.columns}"] ++
+    (if ix.partialWhere.isSome then [s!"partialWhere := {opt String.quote ix.partialWhere}"] else []) ++
+    (if ix.name.isSome then [s!"name := {opt String.quote ix.name}"] else [])
+  "{ " ++ String.intercalate ", " fields ++ " }"
+
+/-- A `TableSpec` as Lean source, one column per line. Named fields, so a
+    field added to `TableSpec` later does not break a frozen snapshot, and
+    every part of the spec the fingerprint reads is written: the indexes
+    and the declared invariant (LDB-16) as well as the columns. -/
 def tableLit (indent : String) (t : TableSpec) : String :=
-  let cols := t.columns.toList.map fun c => s!"{indent}    {columnLit c}"
-  String.intercalate "\n" <|
-    [s!"{indent}⟨{String.quote t.name}, #["] ++
-    (match cols with
-      | [] => []
-      | _ => [String.intercalate ",\n" cols]) ++
-    [s!"{indent}  ]⟩"]
+  let block (field : String) (items : List String) : String :=
+    String.intercalate "\n" <|
+      [s!"{indent}  {field} := #["] ++
+      (if items.isEmpty then [] else [String.intercalate ",\n" (items.map (s!"{indent}    " ++ ·))]) ++
+      [s!"{indent}  ]"]
+  let parts : List String :=
+    [s!"{indent}\{ name := {String.quote t.name}", block "columns" (t.columns.toList.map columnLit)] ++
+    (if t.indexes.isEmpty then [] else [block "indexes" (t.indexes.toList.map indexLit)]) ++
+    (match t.invariant with
+      | some n => [s!"{indent}  invariant := some {String.quote n}"]
+      | none => [])
+  String.intercalate ",\n" parts ++ s!" }"
 
 /-- `List TableSpec` as Lean source. -/
 def specsLit (specs : List TableSpec) : String :=

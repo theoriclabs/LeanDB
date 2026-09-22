@@ -18,6 +18,12 @@ name = "LeanDb"
 name = "TestsLdb01"
 
 [[lean_lib]]
+name = "TestsLdb15"
+
+[[lean_lib]]
+name = "TestsLdb16"
+
+[[lean_lib]]
 name = "FixturePortable"
 
 [[lean_exe]]
