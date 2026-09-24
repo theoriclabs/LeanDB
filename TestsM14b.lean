@@ -354,6 +354,8 @@ private def eqApp :
     | .error .gone, .error .gone => true
     | .error (.stale a), .error (.stale b) => storedEq a b
     | .error (.notAppend x), .error (.notAppend y) => lfUserEq x y
+    | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x y && h1 == h2
+    | .error (.missingRef x), .error (.missingRef y) => fkUserEq x y
     | _, _ => false
 
 private def eqDelTeam :

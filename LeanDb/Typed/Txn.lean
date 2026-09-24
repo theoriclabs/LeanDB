@@ -70,7 +70,7 @@ inductive Txn (σ : Type) (s : Type) [IsSchema s] (ε : Type) : Type → Type 1 
       [IsSchema.Has s α]
       (row : Current σ α) (fs : Fields α) (new : Checked α) :
       Txn σ s ε (Except (SetError α fs) (Current σ α))
-  | append (α : Type) [Entity α] [HasListField α]
+  | append (α : Type) [Entity α] [HasListField α] [HasUnique α] [HasForeignKey α]
       [IsSchema.Has s α]
       (old : Valid α) (new : Checked α) :
       Txn σ s ε (Except (AppendError α) (Stored α))
@@ -160,7 +160,7 @@ def firstMissingWithin {s α} [IsSchema s] [Entity α] [HasForeignKey α]
 
 def listsMoved {α} [Entity α] (stored old : α) : Bool :=
   (Entity.children (α := α)).any fun link =>
-    (link.rows stored).size != (link.rows old).size
+    link.rows stored != link.rows old
 
 def firstNotAppend {α} [Entity α] [HasListField α] (old new : α) : Option (ListField α) :=
   (Entity.children (α := α)).findSome? fun link =>
@@ -344,7 +344,7 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
                       let st' := @replaceValid s α inferInstance _ent _has st v
                       (.ok (.ok (Current.ofValid v)), st')
                   | none => (.ok (.error .gone), st)
-  | _, @Txn.append _ _ _ _ α _ent _hl _has old new, st =>
+  | _, @Txn.append _ _ _ _ α _ent _hl _hu _hf _has old new, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
       | some cur =>
@@ -354,8 +354,14 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
             match @firstNotAppend α _ent _hl old.val new.val with
             | some lf => (.ok (.error (.notAppend lf)), st)
             | none =>
-                let st' := @replaceRow s α inferInstance _ent _has st old.id new
-                (.ok (.ok ⟨old.id, new.val⟩), st')
+                match @firstDuplicate s α inferInstance _ent _hu _has new.val st (some old.id) with
+                | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
+                | none =>
+                    match @firstMissingRef s α inferInstance _ent _hf new.val st with
+                    | some fk => (.ok (.error (.missingRef fk)), st)
+                    | none =>
+                        let st' := @replaceRow s α inferInstance _ent _has st old.id new
+                        (.ok (.ok ⟨old.id, new.val⟩), st')
   | _, @Txn.delete _ _ _ _ α _ent _hr _has id, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id) with
       | none => (.ok (.error .gone), st)
@@ -528,7 +534,7 @@ def patchExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
                         | some v => return .ok (Current.ofValid v)
                         | none => return .error .gone
 
-def appendExec {α} [Entity α] [HasListField α]
+def appendExec {α} [Entity α] [HasListField α] [HasUnique α] [HasForeignKey α]
     (old : Valid α) (new : Checked α) : Db (Except (AppendError α) (Stored α)) :=
   withTransaction do
     match ← LeanDb.get old.id with
@@ -539,8 +545,14 @@ def appendExec {α} [Entity α] [HasListField α]
         match firstNotAppend old.val new.val with
         | some lf => return .error (.notAppend lf)
         | none =>
-            let row ← LeanDb.append old.toStored new.val
-            return .ok row
+            match ← firstDuplicateDb new.val (some old.id) with
+            | some (ix, holder) => return .error (.duplicate ix holder)
+            | none =>
+                match ← firstMissingRefDb new.val with
+                | some fk => return .error (.missingRef fk)
+                | none =>
+                    let row ← LeanDb.append old.toStored new.val
+                    return .ok row
 
 def deleteExec {s α} [IsSchema s] [Entity α] [HasReferencedBy s α] (id : Id α) :
     Db (Except (DeleteError s α) (Stored α)) :=
@@ -596,8 +608,8 @@ def exec.go {σ s ε : Type} [IsSchema s] :
       Except.ok <$> @setExec σ α _ent _hu _hf row (Fields.all α) new
   | _, @Txn.patch _ _ _ _ α _ent _hu _hf _has row fs new =>
       Except.ok <$> @patchExec σ α _ent _hu _hf row fs new
-  | _, @Txn.append _ _ _ _ α _ent _hl _has old new =>
-      Except.ok <$> @appendExec α _ent _hl old new
+  | _, @Txn.append _ _ _ _ α _ent _hl _hu _hf _has old new =>
+      Except.ok <$> @appendExec α _ent _hl _hu _hf old new
   | _, @Txn.delete _ _ _ _ α _ent _hr _has id =>
       Except.ok <$> deleteExec (s := s) (α := α) id
 

@@ -200,11 +200,16 @@ inductive SetError (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
   | duplicate (ix : Unique.Touching fs) (holder : Id α)
   | missingRef (fk : ForeignKey.Within fs)
 
-/-- Failures of `append` (child lists must grow). -/
-inductive AppendError (α : Type) [Entity α] [HasListField α] where
+/-- Failures of `append` (child lists must grow). Unique and foreign-key
+    constraints on the parent's columns are checked: `append` writes
+    those columns under the same CAS as `update`. -/
+inductive AppendError (α : Type) [Entity α] [HasListField α]
+    [HasUnique α] [HasForeignKey α] where
   | stale (current : Stored α)
   | gone
   | notAppend (list : ListField α)
+  | duplicate (ix : Unique α) (holder : Id α)
+  | missingRef (fk : ForeignKey α)
 
 /-- Failures of `delete`. `restricted` names who still references the
     row, and how many such rows. -/
@@ -259,12 +264,15 @@ instance {s α : Type} [IsSchema s] [Entity α] [HasReferencedBy s α]
         Std.Format.bracket "DeleteError.restricted ("
           (repr (ReferencedBy.Restricting.val b) ++ ", " ++ repr n) ")"
 
-instance {α : Type} [Entity α] [HasListField α] [BEq (ListField α)] :
+instance {α : Type} [Entity α] [HasListField α] [HasUnique α] [HasForeignKey α]
+    [BEq α] [BEq (ListField α)] [BEq (Unique α)] [BEq (ForeignKey α)] :
     BEq (AppendError α) where
   beq
     | .gone, .gone => true
     | .notAppend a, .notAppend b => a == b
-    | .stale c1, .stale c2 => c1.id == c2.id
+    | .stale c1, .stale c2 => c1.id == c2.id && c1.val == c2.val
+    | .duplicate i1 h1, .duplicate i2 h2 => i1 == i2 && h1 == h2
+    | .missingRef f1, .missingRef f2 => f1 == f2
     | _, _ => false
 
 instance {α : Type} [Entity α] [HasUnique α] [HasForeignKey α]

@@ -190,8 +190,10 @@ private def eqAppLabels :
   eqEmpty fun
     | .ok a, .ok b => a == b
     | .error .gone, .error .gone => true
-    | .error (.stale a), .error (.stale b) => a.id == b.id
+    | .error (.stale a), .error (.stale b) => a.id == b.id && a.val == b.val
     | .error (.notAppend _), .error (.notAppend _) => true
+    | .error (.duplicate ..), .error (.duplicate ..) => true
+    | .error (.missingRef _), .error (.missingRef _) => true
     | _, _ => false
 
 /-! ## D1: filters on child-list contents -/
@@ -471,7 +473,7 @@ def run : IO Unit := do
   check d1 "D1 child-list any/all: run equals denote"
   check d2 "D2 two-level cascade already agrees (M15-pre2 deleteAt)"
   check d3 "D3 Option Ref: missingRef / restricted in both"
-  check (!d4) "D4 still reproduces (append)"
+  check d4 "D4 append: list CAS and parent unique/FK"
   check (!d5) "D5 still reproduces (ClosedEnum orderBy all)"
   check d6 "D6 forged Current: run equals denote (both skip CAS); constructor is still public"
   check (!d7) "D7 still reproduces (set of Nat 2^63 is a DbFault; patch clamps in both)"
