@@ -167,9 +167,11 @@ instance {α : Type} [Entity α] [hf : HasForeignKey α] [IsEmpty hf.ForeignKey]
 
 def ReferencedBy.count {s α : Type} [IsSchema s] [h : HasReferencedBy s α]
     (r : ReferencedBy s α) (st : DbState s) (id : Id α) : Nat :=
+  let inst := h.sourceEntity r
   let tbl := DbState.getSource (s := s) (α := α) st r
-  tbl.rows.foldl (init := 0) fun n row =>
-    if (h.getFk r row.val).toInt64 == id.toInt64 then n + 1 else n
+  (@Table.rows (h.Source r) inst tbl).foldl (init := 0) fun n row =>
+    if (h.getFk r (@Valid.val (h.Source r) inst row)).toInt64 == id.toInt64 then n + 1
+    else n
 
 /-! ## Failure types -/
 

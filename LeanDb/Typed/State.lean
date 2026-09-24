@@ -16,21 +16,34 @@ is function update; `load` reads every table under one `readSnapshot`.
 /-- The production monad. `DbState.load : Db (DbState s)`. -/
 abbrev Db := DbM
 
-/-- A table's contents: the AUTOINCREMENT counter, and rows by id.
-    No `[Entity α]` on the structure so `ty_eq ▸` transports it. -/
-structure Table (α : Type) where
+/-- A table's contents: the AUTOINCREMENT counter, and rows with their
+    invariant proofs. `get`/`set` transport along `ty_eq` with
+    `Has.entity_eq` (not bare `▸`, which cannot synthesize `Entity`
+    for the motive's bound type). -/
+structure Table (α : Type) [Entity α] where
   next : Nat := 1
-  rows : List (Stored α) := []
-  deriving Repr
+  rows : List (Valid α) := []
+
+/-- Transport `Table` along `ty_eq` given `entity_eq`. Reduces on `rfl`. -/
+def Table.cast {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb) (t : @Table α ea) : @Table β eb :=
+  match e, he with
+  | rfl, rfl => t
+
+theorem Entity.eq_symm {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb) :
+    (e.symm ▸ eb : Entity α) = ea :=
+  match e, he with
+  | rfl, rfl => rfl
 
 /-- The whole database: one table per entity of `s`. The Pi lives in
     `Type` because each `Table _` does, so `DbState s` is a `DbM` result. -/
 structure DbState (s : Type) [i : IsSchema s] : Type where
-  tables : (t : Fin i.nTables) → Table (i.pack t).ty
+  tables : (t : Fin i.nTables) → @Table (i.pack t).ty (i.pack t).entity
 
 /-- Ids strictly increase, are positive, and stay below `next`. -/
 def Table.idsOk [Entity α] (t : Table α) : Bool :=
-  let rec go (prev : Option Int64) : List (Stored α) → Bool
+  let rec go (prev : Option Int64) : List (Valid α) → Bool
     | [] => true
     | r :: rs =>
         let id := r.id.toInt64
@@ -74,7 +87,7 @@ def Table.childrenOk [Entity α] (t : Table α) : Bool :=
 /-- Unique-index keys are unique among rows. -/
 def Table.uniquesOk [Entity α] [HasUnique α] (t : Table α) : Bool :=
   (Unique.all α).all fun ix =>
-    let rec distinct : List (Stored α) → Bool
+    let rec distinct : List (Valid α) → Bool
       | [] => true
       | r :: rs =>
           let enc := Unique.encodeKey ix (Unique.keyOf ix r.val)
@@ -89,56 +102,74 @@ def Table.check [Entity α] [HasUnique α] (t : Table α) : Bool :=
 
 def Table.WF [Entity α] [HasUnique α] (t : Table α) : Prop := t.check = true
 
+/-- Empty table for a packed entity (the instance is `p.entity`, not synthesized). -/
+def Table.ofPacked (p : PackedEntity) (next : Nat := 1)
+    (rows : List (@Valid p.ty p.entity) := []) : @Table p.ty p.entity :=
+  @Table.mk p.ty p.entity next rows
+
+/-- Drop the row with this id, keeping the packed `Entity` instance. -/
+def Table.eraseIdP (p : PackedEntity) (t : @Table p.ty p.entity) (id : Int64) :
+    @Table p.ty p.entity :=
+  Table.ofPacked p (@Table.next p.ty p.entity t)
+    ((@Table.rows p.ty p.entity t).filter fun r =>
+      (@Valid.id p.ty p.entity r).toInt64 != id)
+
 /-- No rows, every AUTOINCREMENT counter at 1. -/
 def DbState.empty {s : Type} [i : IsSchema s] : DbState s where
-  tables := fun _ => { next := 1, rows := [] }
+  tables := fun t => Table.ofPacked (i.pack t)
 
 /-- Rows of `α` in this state. `α` must be a table of `s`. -/
-def DbState.get {s α : Type} [i : IsSchema s] [Entity α] [h : IsSchema.Has s α]
+def DbState.get {s α : Type} [i : IsSchema s] [ent : Entity α] [h : IsSchema.Has s α]
     (st : DbState s) : Table α :=
-  h.ty_eq ▸ st.tables h.id
+  Table.cast h.ty_eq h.entity_eq (st.tables h.id)
 
 /-- Replace the table for `α` by function update. -/
-def DbState.set {s α : Type} [i : IsSchema s] [Entity α] [h : IsSchema.Has s α]
+def DbState.set {s α : Type} [i : IsSchema s] [ent : Entity α] [h : IsSchema.Has s α]
     (st : DbState s) (tbl : Table α) : DbState s where
   tables := fun t =>
     if hEq : t = h.id then
-      hEq.symm ▸ (h.ty_eq.symm ▸ tbl)
+      hEq.symm ▸ Table.cast h.ty_eq.symm (Entity.eq_symm h.ty_eq h.entity_eq) tbl
     else
       st.tables t
 
 /-- Direct access by schema-table index. -/
 def DbState.getAt {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.nTables) :
-    Table (i.pack t).ty :=
+    @Table (i.pack t).ty (i.pack t).entity :=
   st.tables t
 
 /-- The inbound-key source table, transported along `sourceTy_eq`. -/
 def DbState.getSource {s α : Type} [i : IsSchema s] [h : HasReferencedBy s α]
-    (st : DbState s) (r : h.ReferencedBy) : Table (h.Source r) :=
-  h.sourceTy_eq r ▸ st.tables (h.sourceId r)
+    (st : DbState s) (r : h.ReferencedBy) : @Table (h.Source r) (h.sourceEntity r) :=
+  Table.cast (h.sourceTy_eq r) (h.sourceEntity_eq r) (st.tables (h.sourceId r))
 
-/-- `eq.rec` along `e` then `e.symm` is the identity, for `Table`. -/
-private theorem Table.eq_rec_cancel {α β : Type} (e : α = β) (t : Table β) :
-    e ▸ (e.symm ▸ t : Table α) = t := by
+/-- `Table.cast` along `e` then `e.symm` is the identity. -/
+private theorem Table.cast_cancel {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : e ▸ ea = eb) (t : @Table β eb) :
+    Table.cast e he (Table.cast e.symm (Entity.eq_symm e he) t) = t := by
   cases e
+  cases he
   rfl
 
-private theorem Table.transport_nil_rows {α β : Type} (e : α = β) :
-    (e ▸ ({ next := 1, rows := [] } : Table α)).rows = [] := by
+private theorem Table.cast_nil_rows {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb) :
+    (Table.cast e he ({ next := 1, rows := [] } : @Table α ea)).rows = [] := by
   cases e
+  cases he
   rfl
 
-private theorem Table.transport_nil_next {α β : Type} (e : α = β) :
-    (e ▸ ({ next := 1, rows := [] } : Table α)).next = 1 := by
+private theorem Table.cast_nil_next {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb) :
+    (Table.cast e he ({ next := 1, rows := [] } : @Table α ea)).next = 1 := by
   cases e
+  cases he
   rfl
 
-theorem DbState.get_set_same {s α : Type} [i : IsSchema s] [Entity α]
+theorem DbState.get_set_same {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] (st : DbState s) (tbl : Table α) :
     DbState.get (α := α) (st.set tbl) = tbl := by
   unfold DbState.get DbState.set
   simp only [dif_pos]
-  exact Table.eq_rec_cancel h.ty_eq tbl
+  exact Table.cast_cancel h.ty_eq h.entity_eq tbl
 
 theorem DbState.get_set_other {s α β : Type} [i : IsSchema s]
     [Entity α] [Entity β] [ha : IsSchema.Has s α] [hb : IsSchema.Has s β]
@@ -147,17 +178,19 @@ theorem DbState.get_set_other {s α β : Type} [i : IsSchema s]
   unfold DbState.get DbState.set
   simp [dif_neg (Ne.symm hneq)]
 
-theorem DbState.empty_rows {s α : Type} [i : IsSchema s] [Entity α]
+theorem DbState.empty_rows {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] :
     (DbState.get (α := α) (DbState.empty (s := s))).rows = [] := by
   unfold DbState.get DbState.empty
-  exact Table.transport_nil_rows h.ty_eq
+  simp only [Table.ofPacked]
+  exact Table.cast_nil_rows h.ty_eq h.entity_eq
 
-theorem DbState.empty_next {s α : Type} [i : IsSchema s] [Entity α]
+theorem DbState.empty_next {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] :
     (DbState.get (α := α) (DbState.empty (s := s))).next = 1 := by
   unfold DbState.get DbState.empty
-  exact Table.transport_nil_next h.ty_eq
+  simp only [Table.ofPacked]
+  exact Table.cast_nil_next h.ty_eq h.entity_eq
 
 /-- The next AUTOINCREMENT id: `sqlite_sequence` if present, otherwise
     one past the greatest stored id (1 on an empty table). -/
@@ -179,23 +212,31 @@ def DbState.loadNext (α : Type) [Entity α] (rows : Array (Stored α)) : Db Nat
 
 /-- Build a `DbState` from a list of packed tables (id order of `tables`). -/
 def DbState.ofList {s : Type} [i : IsSchema s]
-    (packed : List (Σ t : Fin i.nTables, Table (i.pack t).ty)) : DbState s where
+    (packed : List (Σ t : Fin i.nTables, @Table (i.pack t).ty (i.pack t).entity)) : DbState s where
   tables := fun t =>
-    let rec find : List (Σ t : Fin i.nTables, Table (i.pack t).ty) → Table (i.pack t).ty
-      | [] => { next := 1, rows := [] }
+    let rec find : List (Σ t : Fin i.nTables, @Table (i.pack t).ty (i.pack t).entity) →
+        @Table (i.pack t).ty (i.pack t).entity
+      | [] => Table.ofPacked (i.pack t)
       | ⟨t', tbl⟩ :: rest =>
           if h : t' = t then h ▸ tbl else find rest
     find packed
+
+/-- Wrap a decoded row; invariant failure is corruption, never a stored row. -/
+def Valid.ofStoredM [Entity α] (r : Stored α) : Db (Valid α) :=
+  match Valid.ofStored? r with
+  | some v => (Pure.pure (f := Db) v)
+  | none => throw (.invariant (Entity.tableName α) "Valid.ofStored?")
 
 /-- Read every table of `s` in id order, under one deferred snapshot. -/
 def DbState.load {s : Type} [i : IsSchema s] : Db (DbState s) :=
   readSnapshot do
     let packed ← i.tables.toList.mapM fun t => do
       let p := i.pack t
-      have : Entity p.ty := p.entity
-      let rows ← fetchAll p.ty
-      let next ← DbState.loadNext p.ty rows
-      pure (⟨t, { next, rows := rows.toList }⟩ : Σ t : Fin i.nTables, Table (i.pack t).ty)
+      let rows ← @fetchAll p.ty p.entity
+      let next ← @DbState.loadNext p.ty p.entity rows
+      let wrapped ← rows.toList.mapM (@Valid.ofStoredM p.ty p.entity)
+      pure (⟨t, Table.ofPacked p next wrapped⟩ :
+        Σ t : Fin i.nTables, @Table (i.pack t).ty (i.pack t).entity)
     return DbState.ofList packed
 
 /-- Whether any schema table named `tableName` contains `id`. -/
@@ -203,9 +244,9 @@ def DbState.containsId {s : Type} [i : IsSchema s] (st : DbState s)
     (tableName : String) (id : Int64) : Bool :=
   i.tables.any fun t =>
     let p := i.pack t
-    have : Entity p.ty := p.entity
-    Entity.tableName p.ty == tableName &&
-      (st.tables t).rows.any fun row => row.id.toInt64 == id
+    @Entity.tableName p.ty p.entity == tableName &&
+      (@Table.rows p.ty p.entity (st.tables t)).any fun row =>
+        (@Valid.id p.ty p.entity row).toInt64 == id
 
 /-- Every foreign key of `α` resolves to a row in the target table. -/
 def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
@@ -221,7 +262,6 @@ def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
 def DbState.checkPacked {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.nTables) : Bool :=
   let p := i.pack t
   let tbl := st.tables t
-  have : Entity p.ty := p.entity
   @Table.check p.ty p.entity p.unique tbl &&
     @Table.fksOk s p.ty inferInstance p.entity p.foreignKey st tbl
 
@@ -238,7 +278,9 @@ def DbState.WF {s : Type} [i : IsSchema s] (st : DbState s) : Prop :=
 
 /-- Total number of rows across every schema table. Bounds `deleteCascading`. -/
 def DbState.rowCount {s : Type} [i : IsSchema s] (st : DbState s) : Nat :=
-  i.tables.foldl (init := 0) fun acc t => acc + (st.tables t).rows.length
+  i.tables.foldl (init := 0) fun acc t =>
+    let p := i.pack t
+    acc + (@Table.rows p.ty p.entity (st.tables t)).length
 
 /-- Gather in-memory rows for a table list of schema `s`. Each position
     is `get`, so `Query.denote` does not need a polymorphic `Source`. -/
@@ -247,25 +289,25 @@ class GatherState (s : Type) (ts : List Type) [IsSchema s] where
 
 instance {s α : Type} [IsSchema s] [Entity α] [IsSchema.Has s α] :
     GatherState s [α] where
-  gather st := (DbState.get (α := α) st).rows.toArray
+  gather st := ((DbState.get (α := α) st).rows.map Valid.toStored).toArray
 
 instance {s α β : Type} {ts : List Type} [IsSchema s] [Entity α] [IsSchema.Has s α]
     [GatherState s (β :: ts)] : GatherState s (α :: β :: ts) where
   gather st :=
-    let heads := (DbState.get (α := α) st).rows.toArray
+    let heads := ((DbState.get (α := α) st).rows.map Valid.toStored).toArray
     let tails := GatherState.gather (s := s) (ts := β :: ts) st
     heads.flatMap fun h => tails.map fun t => (h, t)
 
-/-- Rows of `α`, via `get`. -/
+/-- Rows of `α`, via `get`, as `Stored` (for `Pred`). -/
 def DbState.rows {s α : Type} [IsSchema s] [Entity α] [IsSchema.Has s α]
     (st : DbState s) : Array (Stored α) :=
-  (st.get (α := α)).rows.toArray
+  ((st.get (α := α)).rows.map Valid.toStored).toArray
 
 /-- A `Pred.Snapshot` of every table, for quantifier denotation. -/
 def DbState.snapshot {s : Type} [i : IsSchema s] (st : DbState s) : Pred.Snapshot :=
   i.tables.foldl (init := Pred.Snapshot.empty) fun snap t =>
     let p := i.pack t
-    have : Entity p.ty := p.entity
-    Pred.Snapshot.add (β := p.ty) snap (st.tables t).rows.toArray
+    @Pred.Snapshot.add snap p.ty p.entity
+      ((@Table.rows p.ty p.entity (st.tables t)).map (@Valid.toStored p.ty p.entity)).toArray
 
 end LeanDb

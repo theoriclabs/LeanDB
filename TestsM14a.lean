@@ -56,7 +56,7 @@ theorem insert_team_on_empty :
     | .ok (.error e) => nomatch (e : InsertError Team)
     | .ok (.ok row) =>
         let tbl := DbState.get (α := Team) st
-        tbl.rows = [⟨row.id, v⟩] ∧ tbl.next = 2 := by
+        (tbl.rows.map Valid.toStored) = [⟨row.id, v⟩] ∧ tbl.next = 2 := by
   have hU : Unique.all (α := Team) = #[] := rfl
   have hF : ForeignKey.all (α := Team) = #[] := rfl
   simp [Txn.denote, Txn.denote.go, Txn.firstDuplicate, Txn.firstMissingRef,
@@ -73,6 +73,18 @@ private def fresh (p : System.FilePath) : IO Unit := do
   for suffix in ["-wal", "-shm"] do
     let side : System.FilePath := p.toString ++ suffix
     if ← side.pathExists then IO.FS.removeFile side
+
+private def vTeam (r : Stored Team) : Valid Team :=
+  Valid.ofStored r (by unfold Invariant; trivial)
+
+private def vUser (r : Stored User) : Valid User :=
+  if h : Invariant User r.val then Valid.ofStored r h
+  else
+    let dummy : User := ⟨"_", r.val.email, r.val.team, r.val.tags⟩
+    Valid.ofStored ⟨r.id, dummy⟩ <| by
+      unfold Invariant
+      change (dummy.name != "") = true
+      rfl
 
 private def userEq (a b : Stored User) : Bool :=
   a.id == b.id && a.val == b.val
@@ -184,14 +196,14 @@ private def testSeeded : IO Unit := do
     let (eng, ops, ada, alonzo, grace) ← seed
     let stHand :=
       (DbState.empty (s := App)
-        |>.set (α := Team) { next := 3, rows := [eng, ops] }
-        |>.set (α := User) { next := 4, rows := [ada, alonzo, grace] })
+        |>.set (α := Team) { next := 3, rows := [vTeam eng, vTeam ops] }
+        |>.set (α := User) { next := 4, rows := [vUser ada, vUser alonzo, vUser grace] })
     let st ← DbState.load (s := App)
     check' ((DbState.get (α := User) st).rows.length == 3) "loaded 3 users"
     check' ((DbState.get (α := User) st).next == 4) "user next"
     check' ((DbState.get (α := Team) st).next == 3) "team next"
     match (DbState.get (α := User) st).rows with
-    | u :: _ => check' (userEq u ada) "load ada"
+    | u :: _ => check' (userEq u.toStored ada) "load ada"
     | [] => throw (.sqlite "FAIL: load ada: no users")
     check' (listUser
         (Read.denote (s := App) (Read.all usersQ) stHand)

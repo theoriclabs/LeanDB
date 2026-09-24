@@ -209,9 +209,13 @@ def IsSchema.specs (s : Type) [i : IsSchema s] : List TableSpec :=
     @Entity.specs p.ty p.entity p.indexes
 
 /-- `α` is a table of schema `s`. Generated per entity listed in `schema`. -/
-class IsSchema.Has (s : Type) (α : Type) [i : IsSchema s] [Entity α] where
+class IsSchema.Has (s : Type) (α : Type) [i : IsSchema s] [ent : Entity α] where
   id : Fin i.nTables
   ty_eq : (i.pack id).ty = α
+  /-- The packed `Entity` instance is the one in scope, so `Table` / `Valid`
+      (which mention `Entity`) transport along `ty_eq` the same way `Table`
+      of `Stored` did. Generated as `rfl`. -/
+  entity_eq : ty_eq ▸ (i.pack id).entity = ent
 
 /-! ## Inbound references, over a schema -/
 
@@ -236,6 +240,9 @@ class HasReferencedBy (s : Type) (α : Type) [i : IsSchema s] where
   sourceId : ReferencedBy → Fin i.nTables
   /-- `(pack (sourceId r)).ty` is the source entity. -/
   sourceTy_eq : (r : ReferencedBy) → (i.pack (sourceId r)).ty = Source r
+  /-- Packed `Entity` of the source is `sourceEntity r`. Generated as `rfl`. -/
+  sourceEntity_eq :
+      (r : ReferencedBy) → sourceTy_eq r ▸ (i.pack (sourceId r)).entity = sourceEntity r
 
 @[reducible] instance (priority := low) {s α : Type} [IsSchema s] : HasReferencedBy s α where
   ReferencedBy := Empty
@@ -248,6 +255,7 @@ class HasReferencedBy (s : Type) (α : Type) [i : IsSchema s] where
   all := #[]
   sourceId := fun x => nomatch x
   sourceTy_eq := fun x => nomatch x
+  sourceEntity_eq := fun x => nomatch x
 
 abbrev ReferencedBy (s : Type) (α : Type) [IsSchema s] [HasReferencedBy s α] :=
   HasReferencedBy.ReferencedBy s α
@@ -823,6 +831,7 @@ def elabSchema : CommandElab := fun stx => do
       @[reducible] instance : @LeanDb.IsSchema.Has $schemaId $(typeIdent t) $instId inferInstance where
         id := ⟨$iLit, by decide⟩
         ty_eq := rfl
+        entity_eq := rfl
     ))
   -- ReferencedBy: inbound FKs, per target in the schema.
   for tgt in types do
@@ -849,6 +858,7 @@ def elabSchema : CommandElab := fun stx => do
     let mut cascadeAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut sourceIdAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut sourceTyAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
+    let mut sourceEntityEqAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut allLits : Array Term := #[]
     let env ← getEnv
     for (src, f) in inbound do
@@ -873,6 +883,8 @@ def elabSchema : CommandElab := fun stx => do
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => ⟨$srcLit, by decide⟩))
       sourceTyAlts := sourceTyAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => rfl))
+      sourceEntityEqAlts := sourceEntityEqAlts.push
+        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => rfl))
       allLits := allLits.push (← `(term| .$ctorId:ident))
     let anyR := inbound.any fun (src, f) =>
       !(LeanDb.Derive.cascadeExt.getState env).any fun e =>
@@ -894,6 +906,7 @@ def elabSchema : CommandElab := fun stx => do
         all := #[$allLits,*]
         sourceId $sourceIdAlts:matchAlt*
         sourceTy_eq $sourceTyAlts:matchAlt*
+        sourceEntity_eq $sourceEntityEqAlts:matchAlt*
     ))
 
 end LeanDb

@@ -74,7 +74,7 @@ def lookupDenote {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has s 
   let enc := Unique.encodeKey ix key
   (DbState.get (α := α) st).rows.findSome? fun r =>
     if Unique.encodeKey ix (Unique.keyOf ix r.val) == enc then
-      Valid.ofStored? r
+      some r
     else none
 
 /-- Wrap a stored row; an invalid value is not a returned row (corruption). -/
@@ -86,8 +86,7 @@ def denote {s : Type} [IsSchema s] : {α : Type} → Read s α → DbState s →
   | _, .pure a, _ => a
   | _, .bind r f, st => denote (f (denote r st)) st
   | _, @Read.get _ _ α _ent _has id, st =>
-      ((@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id)).bind
-        Valid.ofStored?
+      ((@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id))
   | _, @Read.lookup _ _ α _ent _hu _has ix key, st =>
       @lookupDenote s α inferInstance _ent _hu _has st ix key
   | _, @Read.firstQ _ _ ts ρ _gs q, st =>

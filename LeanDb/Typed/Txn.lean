@@ -178,9 +178,15 @@ def firstRestricted {s α} [IsSchema s] [HasReferencedBy s α]
   else none
 
 def replaceRow {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
-    (st : DbState s) (id : Id α) (v : α) : DbState s :=
+    (st : DbState s) (id : Id α) (c : Checked α) : DbState s :=
   let tbl := DbState.get (α := α) st
-  st.set { tbl with rows := tbl.rows.map fun r => if r.id == id then ⟨id, v⟩ else r }
+  st.set { tbl with rows := tbl.rows.map fun r =>
+    if r.id == id then Valid.ofChecked id c else r }
+
+def replaceValid {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
+    (st : DbState s) (v : Valid α) : DbState s :=
+  let tbl := DbState.get (α := α) st
+  st.set { tbl with rows := tbl.rows.map fun r => if r.id == v.id then v else r }
 
 def removeRow {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
     (st : DbState s) (id : Id α) : DbState s :=
@@ -200,18 +206,15 @@ def deleteAt {s : Type} [i : IsSchema s]
       DbState s :=
     match fuel with
     | 0 =>
-        let tbl := st.tables t
+        let p := i.pack t
         { tables := fun t2 =>
-            if h : t2 = t then
-              h ▸ { tbl with rows := tbl.rows.filter (fun r => r.id.toInt64 != id) }
+            if h : t2 = t then h ▸ Table.eraseIdP p (st.tables t) id
             else st.tables t2 }
     | fuel + 1 =>
         let pDel := i.pack t
-        have : Entity pDel.ty := pDel.entity
-        let delName := Entity.tableName pDel.ty
+        let delName := @Entity.tableName pDel.ty pDel.entity
         let st := i.tables.foldl (init := st) fun st t' =>
           let p' := i.pack t'
-          have : Entity p'.ty := p'.entity
           let hf := p'.foreignKey
           hf.all.toList.foldl (init := st) fun st fk =>
             if @ForeignKey.cascade p'.ty p'.entity hf fk then
@@ -219,16 +222,16 @@ def deleteAt {s : Type} [i : IsSchema s]
               let tgtName := @Entity.tableName (hf.Target fk) inst
               if tgtName == delName then
                 let tbl' := st.tables t'
-                let victims := tbl'.rows.filter fun row =>
-                  (hf.get fk row.val).toInt64 == id
+                let victims := (@Table.rows p'.ty p'.entity tbl').filter fun row =>
+                  (@ForeignKey.get p'.ty p'.entity hf fk
+                    (@Valid.val p'.ty p'.entity row)).toInt64 == id
                 victims.foldl (init := st) fun st row =>
-                  go fuel st t' row.id.toInt64
+                  go fuel st t' (@Valid.id p'.ty p'.entity row).toInt64
               else st
             else st
-        let tbl := st.tables t
+        let p := i.pack t
         { tables := fun t2 =>
-            if h : t2 = t then
-              h ▸ { tbl with rows := tbl.rows.filter (fun r => r.id.toInt64 != id) }
+            if h : t2 = t then h ▸ Table.eraseIdP p (st.tables t) id
             else st.tables t2 }
   go (DbState.rowCount st) st t id
 
@@ -238,11 +241,11 @@ def deleteCascading {s α} [i : IsSchema s] [Entity α] [IsSchema.Has s α]
     (st : DbState s) (id : Id α) : DbState s :=
   deleteAt (s := s) st (IsSchema.Has.id (s := s) (α := α)) id.toInt64
 
-def assign {s α} [IsSchema s] [Entity α] [IsSchema.Has s α] (st : DbState s) (v : α) :
-    Stored α × DbState s :=
+def assign {s α} [IsSchema s] [Entity α] [IsSchema.Has s α] (st : DbState s) (c : Checked α) :
+    Valid α × DbState s :=
   let tbl := DbState.get (α := α) st
   let id : Id α := ⟨Int64.ofNat tbl.next⟩
-  let row : Stored α := ⟨id, v⟩
+  let row := Valid.ofChecked id c
   (row, st.set { next := tbl.next + 1, rows := tbl.rows ++ [row] })
 
 /-- Inner interpreter; `st0` is the state at the start of the program (abort). -/
@@ -256,7 +259,7 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
   | _, .liftRead r, st => (.ok (Read.denote (s := s) r st), st)
   | _, @Txn.get _ _ _ _ α _ent _has id, st =>
       let found := (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id)
-      (.ok (found.bind Valid.ofStored? |>.map Current.ofValid), st)
+      (.ok (found.map Current.ofValid), st)
   | _, @Txn.lookup _ _ _ _ α _ent _hu _has ix key, st =>
       let found := @Read.lookupDenote s α inferInstance _ent _hu _has st ix key
       (.ok (found.map Current.ofValid), st)
@@ -278,14 +281,14 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
           match @firstMissingRef s α inferInstance _ent _hf v.val st with
           | some fk => (.ok (.error (.missingRef fk)), st)
           | none =>
-              let (row, st') := @assign s α inferInstance _ent _has st v.val
-              (.ok (.ok ⟨⟨row.id, v.val⟩, v.property⟩), st')
+              let (row, st') := @assign s α inferInstance _ent _has st v
+              (.ok (.ok (Current.ofValid row)), st')
   | _, @Txn.update _ _ _ _ α _ent _hu _hf _has old new, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
       | some cur =>
           if !@parentEq α _ent cur.val old.val then
-            (.ok (.error (.stale cur)), st)
+            (.ok (.error (.stale cur.toStored)), st)
           else
             match @firstDuplicate s α inferInstance _ent _hu _has new.val st (some old.id) with
             | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
@@ -293,7 +296,7 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
                 match @firstMissingRef s α inferInstance _ent _hf new.val st with
                 | some fk => (.ok (.error (.missingRef fk)), st)
                 | none =>
-                    let st' := @replaceRow s α inferInstance _ent _has st old.id new.val
+                    let st' := @replaceRow s α inferInstance _ent _has st old.id new
                     (.ok (.ok ⟨old.id, new.val⟩), st')
   | _, @Txn.set _ _ _ _ α _ent _hu _hf _has row new, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == row.id) with
@@ -305,7 +308,7 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
               match @firstMissingWithin s α inferInstance _ent _hf (Fields.all α) new.val st with
               | some fk => (.ok (.error (.missingRef fk)), st)
               | none =>
-                  let st' := @replaceRow s α inferInstance _ent _has st row.id new.val
+                  let st' := @replaceRow s α inferInstance _ent _has st row.id new
                   (.ok (.ok ⟨⟨row.id, new.val⟩, new.property⟩), st')
   | _, @Txn.patch _ _ _ _ α _ent _hu _hf _has row fs new, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == row.id) with
@@ -318,21 +321,22 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
               match @firstMissingWithin s α inferInstance _ent _hf fs merged st with
               | some fk => (.ok (.error (.missingRef fk)), st)
               | none =>
-                  let st' := @replaceRow s α inferInstance _ent _has st row.id merged
                   match Valid.ofStored? ⟨row.id, merged⟩ with
-                  | some v => (.ok (.ok (Current.ofValid v)), st')
+                  | some v =>
+                      let st' := @replaceValid s α inferInstance _ent _has st v
+                      (.ok (.ok (Current.ofValid v)), st')
                   | none => (.ok (.error .gone), st)
   | _, @Txn.append _ _ _ _ α _ent _hl _has old new, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
       | some cur =>
           if !@parentEq α _ent cur.val old.val || @listsMoved α _ent cur.val old.val then
-            (.ok (.error (.stale cur)), st)
+            (.ok (.error (.stale cur.toStored)), st)
           else
             match @firstNotAppend α _ent _hl old.val new.val with
             | some lf => (.ok (.error (.notAppend lf)), st)
             | none =>
-                let st' := @replaceRow s α inferInstance _ent _has st old.id new.val
+                let st' := @replaceRow s α inferInstance _ent _has st old.id new
                 (.ok (.ok ⟨old.id, new.val⟩), st')
   | _, @Txn.delete _ _ _ _ α _ent _hr _has id, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id) with
@@ -340,7 +344,7 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
       | some row =>
           match @firstRestricted s α inferInstance _hr st id with
           | some (who, n) => (.ok (.error (.restricted who n)), st)
-          | none => (.ok (.ok row), @deleteCascading s α inferInstance _ent _has _hr st id)
+          | none => (.ok (.ok row.toStored), @deleteCascading s α inferInstance _ent _has _hr st id)
 
 /-- Pure meaning. An abort (`throw` / `orAbort`) returns the original state. -/
 def denote {σ s ε α : Type} [IsSchema s] (p : Txn σ s ε α) (st : DbState s) :

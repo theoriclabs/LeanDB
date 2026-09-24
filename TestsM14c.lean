@@ -253,7 +253,19 @@ private def testPatchMergeDenote : IO Unit := do
   check (DbState.checkWF st3) "after patch denote is WF"
 
 /-- Decidable `checkWF`: empty is WF; duplicate unique, dangling FK,
-    id ≥ next, and a broken invariant are not. -/
+    and id ≥ next are not. A broken invariant cannot inhabit `Valid`. -/
+private def vTeam (r : Stored Team) : Valid Team :=
+  Valid.ofStored r (by unfold Invariant; trivial)
+
+private def vUser (r : Stored User) : Valid User :=
+  if h : Invariant User r.val then Valid.ofStored r h
+  else
+    let dummy : User := ⟨"_", r.val.email, r.val.team, r.val.tags⟩
+    Valid.ofStored ⟨r.id, dummy⟩ <| by
+      unfold Invariant
+      change (dummy.name != "") = true
+      rfl
+
 private def testCheckWF : IO Unit := do
   let empty := DbState.empty (s := App)
   check (DbState.checkWF empty) "empty is WF"
@@ -261,26 +273,23 @@ private def testCheckWF : IO Unit := do
   let ada : Stored User := ⟨⟨1⟩, ⟨"ada", "ada@x", ⟨1⟩, [⟨"lead"⟩]⟩⟩
   let good :=
     empty
-      |>.set (α := Team) { next := 2, rows := [team] }
-      |>.set (α := User) { next := 2, rows := [ada] }
+      |>.set (α := Team) { next := 2, rows := [vTeam team] }
+      |>.set (α := User) { next := 2, rows := [vUser ada] }
   check (DbState.checkWF good) "seeded is WF"
   let dup := good.set (α := User) {
     next := 3
-    rows := [ada, ⟨⟨2⟩, ⟨"bob", "ada@x", ⟨1⟩, []⟩⟩]
+    rows := [vUser ada, vUser ⟨⟨2⟩, ⟨"bob", "ada@x", ⟨1⟩, []⟩⟩]
   }
   check (!DbState.checkWF dup) "duplicate email is not WF"
   let dangling := good.set (α := User) {
     next := 2
-    rows := [⟨⟨1⟩, ⟨"ada", "ada@x", ⟨99⟩, []⟩⟩]
+    rows := [vUser ⟨⟨1⟩, ⟨"ada", "ada@x", ⟨99⟩, []⟩⟩]
   }
   check (!DbState.checkWF dangling) "missing FK is not WF"
-  let badId := good.set (α := Team) { next := 1, rows := [team] }
+  let badId := good.set (α := Team) { next := 1, rows := [vTeam team] }
   check (!DbState.checkWF badId) "id not < next is not WF"
-  let inv := good.set (α := User) {
-    next := 2
-    rows := [⟨⟨1⟩, ⟨"", "ada@x", ⟨1⟩, []⟩⟩]
-  }
-  check (!DbState.checkWF inv) "invariant failure is not WF"
+  check (Valid.ofStored? (⟨⟨1⟩, ⟨"", "ada@x", ⟨1⟩, []⟩⟩ : Stored User)).isNone
+    "empty name is not Valid"
 
 private def seedAda : DbM (Stored Team × Stored User) := do
   let eng ← LeanDb.insert Team ⟨"eng"⟩
