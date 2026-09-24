@@ -12,8 +12,7 @@
   `exact_plan` is kernel-reducible (`decide`, not `native_decide`).
   `scripts/CheckAxioms.lean` allowlists `propext` / `Classical.choice` /
   `Quot.sound`. Harness compares production `load` to `denote` through
-  lawful `get`. `TestsM14c.lean` random harness: 100 cases covering
-  field-subset `patch`, cascade delete, and exact joins.
+  lawful `get`.
 - **M15-pre (part 2).** `Table.rows : List (Valid α)` so read evidence
   is by construction (`Has.entity_eq` / `Table.cast`). `Read.first` /
   `all` / `page` answer `Valid α` (joins `Valid α × Valid β`);
@@ -21,7 +20,8 @@
   `DbFault.corruption`. `deleteAt` erases before walking (fuel =
   `rowCount` suffices on a finite cascade graph). LeanAPI `writeStep`'s
   invariant `if` can be deleted: `Read.first` on a filtered query
-  already returns `Valid`.
+  already returns `Valid`. `TestsM14c.lean` random harness: 100 cases
+  covering field-subset `patch`, cascade delete, and exact joins.
 - **M14c.** Close remaining QUERIES.md §3 / §5 gaps: `patch` writes only
   the named fields (meaning merge and SQL `UPDATE`); `SetError` lists
   only constraints over written fields (`Unique.Touching` /
