@@ -41,6 +41,17 @@ namespace Query
 /-- Exactness: no opaque leaf, so a pushed window/count/exists is sound. -/
 def exact {s ts ρ} (q : Query s ts ρ) : Bool := !q.pred.hasOpaque
 
+open Lean Elab Tactic
+
+/-- Succeeds when the goal is `q.exact = true`. Used as the default
+    argument of `first`/`count`/`exists`/`page`/`withWindow`. -/
+syntax "exact_plan" : tactic
+
+elab_rules : tactic
+  | `(tactic| exact_plan) => do
+      evalTactic (← `(tactic| first | rfl | native_decide)) <|>
+        throwError "this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)"
+
 /-- The base query: every row of `α`, id order. -/
 def «from» (α : Type) [Entity α] {s : Type} [IsSchema s] [IsSchema.Has s α] :
     Query s [α] (Stored α) where
@@ -85,7 +96,8 @@ def orderBy {s α} [Entity α] (q : Query s [α] (Stored α)) (k : OrderKey α)
     sortBy := andSort q.sortBy (keySort k)
     order := q.order.push { column := Entity.fieldName k.field, dir := k.dir } }
 
-def withWindow {s ts ρ} (q : Query s ts ρ) (w : Window) : Query s ts ρ :=
+def withWindow {s ts ρ} (q : Query s ts ρ) (w : Window)
+    (_h : q.exact = true := by exact_plan) : Query s ts ρ :=
   { q with window := w }
 
 /-- Extend a single-table column reference to a two-table plan. -/
@@ -115,21 +127,26 @@ def Pred.extend {α β : Type} : Pred [α] → Pred [α, β]
   | .«forall» (ent := _) parent fk body =>
       .opaque fun r => (Pred.«forall» parent fk body).denote .empty r.1
 
+/-- `eq2` of the foreign-key column with the target's `id`. -/
+def joinPred (α β : Type) [Entity α] [Entity β] [j : JoinCol α β] : Pred [α, β] :=
+  .eq2 j.col .eq (Pred.Col.there (Pred.Col.id (α := β)))
+
 /-- Join along a declared foreign key: rows of `α` paired with the
-    referenced row of `β`. `β` is the target entity (inferred from the
-    expected query type). The residual `get fk = id` is the meaning, compared
-    on the underlying integer so `Target fk` need not unfold. The residual
-    is opaque, so windows over a join run in Lean. -/
-def join {s α β} [IsSchema s] [Entity α] [Entity β] [h : HasForeignKey α]
-    [IsSchema.Has s β]
-    (q : Query s [α] (Stored α)) (fk : h.ForeignKey) :
+    referenced row of `β`. Pushed as `eq2` on the fk column and
+    the target's id, so the plan is exact and windows/counts can go to SQL. -/
+def join {s α β} [IsSchema s] [Entity α] [Entity β] [HasForeignKey α]
+    [IsSchema.Has s β] [JoinCol α β]
+    (q : Query s [α] (Stored α)) (_fk : ForeignKey α) :
     Query s [α, β] (Stored α × Stored β) where
   rowsOf := inferInstance
-  pred :=
-    Pred.andS (Pred.extend (α := α) (β := β) q.pred)
-      (.opaque fun r => (h.get fk r.1.val).toInt64 == r.2.id.toInt64)
-  sortBy := .cmp fun x y => q.sortBy.ord x.1 y.1
-  order := #[]
+  pred := Pred.andS (Pred.extend (α := α) (β := β) q.pred) (joinPred α β)
+  -- `.preserve` when the left side was, so `selectP` will push LIMIT.
+  -- Otherwise keep the left-table order on the pair.
+  sortBy :=
+    match q.sortBy with
+    | .preserve => .preserve
+    | _ => .cmp fun x y => q.sortBy.ord x.1 y.1
+  order := q.order.map fun o => { column := o.column, dir := o.dir }
   window := q.window
   toRow := id
 

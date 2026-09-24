@@ -116,6 +116,58 @@ example (e : SetError User (Fields.singleton User.Field.team)) : Nat :=
 
 example [IsEmpty (Unique.Touching (α := User) (Fields.singleton User.Field.team))] :
     True := trivial
+
+/-- A residual Lean filter: unwindowed `all` is allowed; `first`/`count`/`exists`
+    and `withWindow` are refused. -/
+def residualQ : Query App [User] (Stored User) :=
+  { Query.from (s := App) User with pred := .opaque fun r => r.val.name == "ada" }
+
+example : Read App (List (Stored User)) := Read.all residualQ
+
+/--
+error: could not synthesize default value for parameter '_h' using tactics
+---
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+-/
+#guard_msgs in
+example : Read App (Option (Stored User)) := Read.first residualQ
+
+/--
+error: could not synthesize default value for parameter '_h' using tactics
+---
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+-/
+#guard_msgs in
+example : Read App Nat := Read.count residualQ
+
+/--
+error: could not synthesize default value for parameter '_h' using tactics
+---
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+-/
+#guard_msgs in
+example : Read App Bool := Read.«exists» residualQ
+
+/--
+error: could not synthesize default value for parameter '_h' using tactics
+---
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+-/
+#guard_msgs in
+example : Query App [User] (Stored User) := residualQ.withWindow { limit := some 1 }
+
+private def usersExact : Query App [User] (Stored User) := Query.from User
+private def usersJoin : Query App [User, Team] (Stored User × Stored Team) :=
+  (Query.from User).join User.ForeignKey.team
+
+example : residualQ.exact = false := rfl
+example : usersExact.exact = true := rfl
+example : usersJoin.exact = true := by native_decide
+example : Read App (Option (Stored User)) := Read.first usersExact
+example : Read App Nat := Read.count usersJoin
+example : Query App [User, Team] (Stored User × Stored Team) :=
+  usersJoin.withWindow { limit := some 1 }
+
 def patchEmailOnly {σ} (id : _root_.LeanDb.Id User) (new : Checked User) :
     Txn σ App Empty (Except (SetError User (Fields.singleton User.Field.email)) (Stored User)) := do
   match ← Txn.get User id with
@@ -206,5 +258,7 @@ def run : IO Unit := do
     "team patch does not touch a unique index"
   check (Unique.anyTouch (α := User) (Fields.singleton User.Field.email))
     "email patch touches byEmail"
+  check usersJoin.exact "join along a foreign key is exact"
+  check (!residualQ.exact) "opaque residual is not exact"
 
 end TestsM14c

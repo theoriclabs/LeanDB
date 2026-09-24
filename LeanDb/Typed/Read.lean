@@ -23,11 +23,11 @@ inductive Read (s : Type) : Type → Type 1 where
   | get (α : Type) [Entity α] (id : Id α) : Read s (Option (Stored α))
   | lookup (α : Type) [Entity α] [HasUnique α]
       (ix : Unique α) (key : Unique.Key ix) : Read s (Option (Stored α))
-  | first : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s (Option ρ)
+  | firstQ : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s (Option ρ)
   | all : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s (List ρ)
-  | page : {ts : List Type} → {ρ : Type} → Query s ts ρ → Window → Read s (Page ρ)
-  | count : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s Nat
-  | exists' : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s Bool
+  | pageQ : {ts : List Type} → {ρ : Type} → Query s ts ρ → Window → Read s (Page ρ)
+  | countQ : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s Nat
+  | existsQ : {ts : List Type} → {ρ : Type} → Query s ts ρ → Read s Bool
 
 instance {s : Type} : Monad (Read s) where
   pure := .pure
@@ -35,8 +35,31 @@ instance {s : Type} : Monad (Read s) where
 
 namespace Read
 
-/-- `exists q` — `exists` is a Lean keyword. -/
-abbrev «exists» {s ts ρ} (q : Query s ts ρ) : Read s Bool := .exists' q
+/-- `exists q` — `exists` is a Lean keyword. Requires an exact plan. -/
+def «exists» {s ts ρ} (q : Query s ts ρ)
+    (_h : q.exact = true := by exact_plan) : Read s Bool :=
+  .existsQ q
+
+/-- `first q` requires an exact plan (no opaque leaf). -/
+def first {s ts ρ} (q : Query s ts ρ)
+    (_h : q.exact = true := by exact_plan) : Read s (Option ρ) :=
+  .firstQ q
+
+/-- `count q` requires an exact plan. -/
+def count {s ts ρ} (q : Query s ts ρ)
+    (_h : q.exact = true := by exact_plan) : Read s Nat :=
+  .countQ q
+
+/-- One page; the query must be exact so the window is sound. -/
+def page {s ts ρ} (q : Query s ts ρ) (w : Window)
+    (_h : q.exact = true := by exact_plan) : Read s (Page ρ) :=
+  .pageQ q w
+
+/-- Unwindowed `all` may keep a Lean residual. A windowed query must go
+    through `withWindow`, which already demands exactness. -/
+abbrev exists' {s ts ρ} (q : Query s ts ρ)
+    (h : q.exact = true := by exact_plan) : Read s Bool :=
+  «exists» q h
 
 /-- Row by unique key, from in-memory state. -/
 def lookupDenote {s α} [IsSchema s]
@@ -55,13 +78,13 @@ def denote {s : Type} [IsSchema s] : {α : Type} → Read s α → DbState s →
       (_root_.Id.run (@st.source.load 0 α inst)).toList.find? (·.id == id)
   | _, @Read.lookup _ α instE instU ix key, st =>
       lookupDenote st instE instU ix key
-  | _, .first q, st => (Query.denote (s := s) q st)[0]?
+  | _, .firstQ q, st => (Query.denote (s := s) q st)[0]?
   | _, .all q, st => (Query.denote (s := s) q st).toList
-  | _, .page q w, st =>
+  | _, .pageQ q w, st =>
       let all := Query.denote (s := s) { q with window := {} } st
       { items := (w.apply all).toList, total := all.size }
-  | _, .count q, st => (Query.denote (s := s) { q with window := {} } st).size
-  | _, .exists' q, st =>
+  | _, .countQ q, st => (Query.denote (s := s) { q with window := {} } st).size
+  | _, .existsQ q, st =>
       !(Query.denote (s := s) { q with window := { limit := some 1 } } st).isEmpty
 
 /-- Execute against SQLite. `get`/`lookup` use the engine verbs;
@@ -75,19 +98,19 @@ def exec {s : Type} [IsSchema s] : {α : Type} → Read s α → Db α
   | _, @Read.lookup _ α instE instU ix key => do
       let rows ← selectP (ts := [α]) (@Unique.predOf α instE instU ix key)
       return rows[0]?
-  | _, .first q => do
+  | _, .firstQ q => do
       let rows ← Query.exec (s := s) { q with window := { q.window with limit := some 1 } }
       return rows[0]?
   | _, .all q => do
       let rows ← Query.exec (s := s) q
       return rows.toList
-  | _, .page q w => do
+  | _, .pageQ q w => do
       -- Same snapshot: count and the page share `readSnapshot` in `run`.
       let total ← Query.execCount (s := s) { q with window := {} }
       let items := (← Query.exec (s := s) { q with window := w }).toList
       return { items, total }
-  | _, .count q => Query.execCount (s := s) { q with window := {} }
-  | _, .exists' q => Query.execExists (s := s) { q with window := {} }
+  | _, .countQ q => Query.execCount (s := s) { q with window := {} }
+  | _, .existsQ q => Query.execExists (s := s) { q with window := {} }
 
 /-- One deferred snapshot on this connection. Faults, not domain errors. -/
 def run {s α} [IsSchema s] (r : Read s α) : Db (Except DbFault α) :=

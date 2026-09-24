@@ -2,7 +2,7 @@ import LeanDb
 
 /-! M14 part A: typed schema symbols, `DbState`, `Query`, `Read`.
     For each read, `run` equals `denote (← load)` on hand-built states,
-    including windows over non-exact (join) plans. -/
+    including windows and counts over exact foreign-key joins. -/
 
 namespace TestsM14a
 
@@ -179,7 +179,7 @@ private def testSeeded : IO Unit := do
     discard <| eqRun (Read.«exists» namedNope) (· == ·) "exists nope"
     discard <| eqRun (Read.page namedDesc { offset := 1, limit := some 1 }) pageUser
       "page exact order"
-    check' (withTeam.exact == false) "join is not exact"
+    check' (withTeam.exact == true) "join is exact"
     discard <| eqRun (Read.all withTeam) listPair "join all"
     discard <| eqRun (Read.first withTeam) (fun a b => match a, b with
       | none, none => true
@@ -189,8 +189,8 @@ private def testSeeded : IO Unit := do
     discard <| eqRun (Read.«exists» withTeam) (· == ·) "join exists"
     let win : Window := { offset := 1, limit := some 1 }
     discard <| eqRun (Read.all (withTeam.withWindow win)) listPair
-      "join window (non-exact)"
-    discard <| eqRun (Read.page withTeam win) pagePair "join page (non-exact)"
+      "join window"
+    discard <| eqRun (Read.page withTeam win) pagePair "join page"
     discard <| eqRun (Read.first (withTeam.withWindow win)) (fun a b => match a, b with
       | none, none => true
       | some x, some y => userEq x.1 y.1 && teamEq x.2 y.2

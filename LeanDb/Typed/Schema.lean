@@ -95,6 +95,8 @@ class HasForeignKey (α : Type) [Entity α] where
   targetEntity : (fk : ForeignKey) → Entity (Target fk)
   /-- The `Ref` field. -/
   field : (fk : ForeignKey) → Entity.Field α
+  /-- A `Ref β` field has type `Id β`. -/
+  fieldTy_eq : (fk : ForeignKey) → Entity.fieldTy (field fk) = Id (Target fk)
   get : (fk : ForeignKey) → α → Id (Target fk)
   /-- Every foreign key, in field-declaration order. -/
   all : Array ForeignKey
@@ -104,6 +106,7 @@ class HasForeignKey (α : Type) [Entity α] where
   Target := fun x => nomatch x
   targetEntity := fun x => nomatch x
   field := fun x => nomatch x
+  fieldTy_eq := fun x => nomatch x
   get := fun x _ => nomatch x
   all := #[]
 
@@ -126,6 +129,11 @@ def ForeignKey.targetEntity {α : Type} [Entity α] [HasForeignKey α] (fk : For
 
 def ForeignKey.all (α : Type) [Entity α] [HasForeignKey α] : Array (ForeignKey α) :=
   HasForeignKey.all (α := α)
+
+/-- The foreign-key column as a two-table `Pred.Col`, generated where
+    `fieldTy` is definitionally `Id β`. -/
+class JoinCol (α β : Type) [Entity α] [Entity β] where
+  col : Pred.Col [α, β] (Id β) inferInstance
 
 /-! ## Child lists -/
 
@@ -522,6 +530,7 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
   let typeId := typeIdent typeName
   let mut tgtAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut fieldAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
+  let mut fieldTyAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut getAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut entAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   for (f, tgt) in fks do
@@ -530,6 +539,8 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(typeIdent tgt)))
     fieldAlts := fieldAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(fieldSym typeName f)))
+    fieldTyAlts := fieldTyAlts.push
+      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => rfl))
     getAlts := getAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
     entAlts := entAlts.push
@@ -547,9 +558,15 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
       Target := $(rootIdent (fkName ++ `target))
       targetEntity $entAlts:matchAlt*
       field $fieldAlts:matchAlt*
+      fieldTy_eq $fieldTyAlts:matchAlt*
       get $getAlts:matchAlt*
       all := #[$allLits,*]
   ))
+  for (f, tgt) in fks do
+    elabCommand (← `(
+      instance : LeanDb.JoinCol $typeId $(typeIdent tgt) where
+        col := LeanDb.Pred.Col.here (ts := [$(typeIdent tgt)]) $(fieldSym typeName f)
+    ))
 
 private def genListField (typeName : Name) : CommandElabM Unit := do
   let fields := getStructureFields (← getEnv) typeName
