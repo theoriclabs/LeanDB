@@ -344,7 +344,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
     keyOfAlts := keyOfAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => $keyOfRhs))
     let colTerms : Array Term ← e.fields.mapM fun f =>
-      `(LeanDb.Entity.fieldName ($(fieldSym typeName f)))
+      `(LeanDb.Entity.fieldName (α := $typeId) $(fieldSym typeName f))
     colAlts := colAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => #[$colTerms,*]))
     let encBinders : Array (TSyntax `ident) :=
@@ -378,7 +378,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
     ixLits := ixLits.push
       (← `(term| (⟨true, #[$cols,*], none, some $nameStx⟩ : LeanDb.IndexSpec)))
   elabCommand (← `(command|
-    instance : LeanDb.HasUnique $(typeId) where
+    @[reducible] instance (priority := high) : LeanDb.HasUnique $(typeId) where
       Unique := $(uniqId)
       Key := fun $keyAlts:matchAlt*
       keyOf := fun $keyOfAlts:matchAlt*
@@ -440,9 +440,13 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
     getAlts := getAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
   elabCommand (← `(
-    instance : LeanDb.HasForeignKey $typeId where
+    @[reducible] def $(rootIdent (fkName ++ `target)):ident : $fkId → Type
+      $tgtAlts:matchAlt*
+  ))
+  elabCommand (← `(
+    @[reducible] instance (priority := high) : LeanDb.HasForeignKey $typeId where
       ForeignKey := $fkId
-      Target $tgtAlts:matchAlt*
+      Target := $(rootIdent (fkName ++ `target))
       field $fieldAlts:matchAlt*
       get $getAlts:matchAlt*
   ))
@@ -479,7 +483,7 @@ private def genListField (typeName : Name) : CommandElabM Unit := do
     tableAlts := tableAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(quote childTbl)))
   elabCommand (← `(
-    instance : LeanDb.HasListField $typeId where
+    @[reducible] instance (priority := high) : LeanDb.HasListField $typeId where
       ListField := $lfId
       Elem $elemAlts:matchAlt*
       get $getAlts:matchAlt*
@@ -536,7 +540,7 @@ def elabSchema : CommandElab := fun stx => do
   let schemaId := rootIdent schemaName
   let tableId := rootIdent tableName
   let tableVals : Array Term ← types.mapM fun t =>
-    `(term| $(mkIdent (ctorOfType t)))
+    `(term| .$(mkIdent (ctorOfType t)):ident)
   let mut packAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   for t in types do
     let c := mkIdent (ctorOfType t)
@@ -576,7 +580,7 @@ def elabSchema : CommandElab := fun stx => do
       inductive $(rootIdent rbName):ident where $ctors* deriving DecidableEq, Repr
     ))
     elabCommand (← `(
-      instance : LeanDb.HasReferencedBy $schemaId $(typeIdent tgt) where
+      @[reducible] instance (priority := high) : LeanDb.HasReferencedBy $schemaId $(typeIdent tgt) where
         ReferencedBy := $(rootIdent rbName)
     ))
 

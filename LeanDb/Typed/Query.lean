@@ -17,11 +17,11 @@ inductive OrderKey (α : Type) [Entity α] where
   | asc (f : Entity.Field α)
   | desc (f : Entity.Field α)
 
-def OrderKey.dir [Entity α] : OrderKey α → Dir
+@[reducible] def OrderKey.dir [Entity α] : OrderKey α → Dir
   | .asc _ => .asc
   | .desc _ => .desc
 
-def OrderKey.field [Entity α] : OrderKey α → Entity.Field α
+@[reducible] def OrderKey.field [Entity α] : OrderKey α → Entity.Field α
   | .asc f | .desc f => f
 
 /-- A query over schema `s` answering rows of type `ρ` from tables `ts`.
@@ -116,17 +116,18 @@ def Pred.extend {α β : Type} : Pred [α] → Pred [α, β]
       .opaque fun r => (Pred.«forall» parent fk body).denote .empty r.1
 
 /-- Join along a declared foreign key: rows of `α` paired with the
-    referenced row of `Target fk`. The residual `get fk = id` is the
-    meaning. The residual is opaque, so windows over a join run in Lean. -/
-def join {s α} [IsSchema s] [Entity α] [h : HasForeignKey α]
-    (q : Query s [α] (Stored α)) (fk : h.ForeignKey)
-    [Entity (h.Target fk)] [IsSchema.Has s (h.Target fk)] :
-    Query s [α, h.Target fk] (Stored α × Stored (h.Target fk)) where
+    referenced row of `β`. `β` is the target entity (inferred from the
+    expected query type). The residual `get fk = id` is the meaning, compared
+    on the underlying integer so `Target fk` need not unfold. The residual
+    is opaque, so windows over a join run in Lean. -/
+def join {s α β} [IsSchema s] [Entity α] [Entity β] [h : HasForeignKey α]
+    [IsSchema.Has s β]
+    (q : Query s [α] (Stored α)) (fk : h.ForeignKey) :
+    Query s [α, β] (Stored α × Stored β) where
   rowsOf := inferInstance
   pred :=
-    let β := h.Target fk
     Pred.andS (Pred.extend (α := α) (β := β) q.pred)
-      (.opaque fun r => (h.get fk r.1.val : Id β) == r.2.id)
+      (.opaque fun r => (h.get fk r.1.val).toInt64 == r.2.id.toInt64)
   sortBy := .cmp fun x y => q.sortBy.ord x.1 y.1
   order := #[]
   window := q.window
