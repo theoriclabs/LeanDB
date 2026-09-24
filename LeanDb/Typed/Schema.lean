@@ -93,11 +93,10 @@ class HasForeignKey (α : Type) [Entity α] where
   Target : ForeignKey → Type
   /-- `Entity` instance of the referenced table. -/
   targetEntity : (fk : ForeignKey) → Entity (Target fk)
-  /-- The `Ref` field. -/
+  /-- The `Ref` or `Option (Ref)` field. -/
   field : (fk : ForeignKey) → Entity.Field α
-  /-- A `Ref β` field has type `Id β`. -/
-  fieldTy_eq : (fk : ForeignKey) → Entity.fieldTy (field fk) = Id (Target fk)
-  get : (fk : ForeignKey) → α → Id (Target fk)
+  /-- `none` when the field is `Option (Ref)` and unset. -/
+  get : (fk : ForeignKey) → α → Option (Id (Target fk))
   /-- Every foreign key, in field-declaration order. -/
   all : Array ForeignKey
 
@@ -106,7 +105,6 @@ class HasForeignKey (α : Type) [Entity α] where
   Target := fun x => nomatch x
   targetEntity := fun x => nomatch x
   field := fun x => nomatch x
-  fieldTy_eq := fun x => nomatch x
   get := fun x _ => nomatch x
   all := #[]
 
@@ -120,7 +118,7 @@ def ForeignKey.field {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey
   HasForeignKey.field fk
 
 def ForeignKey.get {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey α) (v : α) :
-    Id (ForeignKey.Target fk) :=
+    Option (Id (ForeignKey.Target fk)) :=
   HasForeignKey.get fk v
 
 def ForeignKey.targetEntity {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey α) :
@@ -224,8 +222,9 @@ class HasReferencedBy (s : Type) (α : Type) [i : IsSchema s] where
   /-- Source entity of this inbound key. -/
   Source : ReferencedBy → Type
   sourceEntity : (r : ReferencedBy) → Entity (Source r)
-  /-- The `Ref` field on the source row. -/
-  getFk : (r : ReferencedBy) → Source r → Id α
+  /-- The `Ref` or `Option (Ref)` field on the source row. `none` when
+      the inbound key is nullable and unset. -/
+  getFk : (r : ReferencedBy) → Source r → Option (Id α)
   /-- SQLite column name of the inbound key. -/
   columnName : ReferencedBy → String
   /-- `ON DELETE CASCADE` when true. -/
@@ -268,7 +267,7 @@ def ReferencedBy.sourceEntity {s α : Type} [IsSchema s] [HasReferencedBy s α] 
   HasReferencedBy.sourceEntity r
 
 def ReferencedBy.getFk {s α : Type} [IsSchema s] [HasReferencedBy s α] (r : ReferencedBy s α)
-    (v : ReferencedBy.Source r) : Id α :=
+    (v : ReferencedBy.Source r) : Option (Id α) :=
   HasReferencedBy.getFk r v
 
 def ReferencedBy.columnName {s α : Type} [IsSchema s] [HasReferencedBy s α] (r : ReferencedBy s α) : String :=
@@ -614,8 +613,8 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
       indexes := #[$ixLits,*]
   ))
 
-private def refTarget? (ty : Expr) : MetaM (Option Name) := do
-  let ty ← whnf ty
+/-- `Id β` or `Ref β` (an abbrev of `Id`). -/
+private def idTarget? (ty : Expr) : MetaM (Option Name) := do
   match ty with
   | .app fn arg =>
       let fn ← whnf fn
@@ -624,6 +623,18 @@ private def refTarget? (ty : Expr) : MetaM (Option Name) := do
           if n == ``LeanDb.Id then return some tgt else return none
       | _, _ => return none
   | _ => return none
+
+/-- Required `Ref β` as `(β, false)`; `Option (Ref β)` as `(β, true)`. -/
+private def refTarget? (ty : Expr) : MetaM (Option (Name × Bool)) := do
+  let ty ← whnf ty
+  if ty.isAppOfArity ``Option 1 then
+    match ← idTarget? (← whnf ty.appArg!) with
+    | some tgt => return some (tgt, true)
+    | none => return none
+  else
+    match ← idTarget? ty with
+    | some tgt => return some (tgt, false)
+    | none => return none
 
 private def childElem? (ty : Expr) : MetaM (Option Expr) := do
   let ty ← whnf ty
@@ -637,39 +648,40 @@ private def childElem? (ty : Expr) : MetaM (Option Expr) := do
 
 private def genForeignKey (typeName : Name) : CommandElabM Unit := do
   let fields := getStructureFields (← getEnv) typeName
-  let mut fks : Array (Name × Name) := #[]
+  let mut fks : Array (Name × Name × Bool) := #[]
   for f in fields do
     let ty ← structureFieldType typeName f
-    if let some tgt ← liftTermElabM (refTarget? ty) then
-      fks := fks.push (f, tgt)
+    if let some (tgt, nullable) ← liftTermElabM (refTarget? ty) then
+      fks := fks.push (f, tgt, nullable)
   if fks.isEmpty then return
   let fkName := typeName ++ `ForeignKey
   if (← getEnv).contains fkName then
     throwError "typed: {fkName} already exists"
-  let ctors : TSyntaxArray `Lean.Parser.Command.ctor ← fks.mapM fun (f, _) =>
+  let ctors : TSyntaxArray `Lean.Parser.Command.ctor ← fks.mapM fun (f, _, _) =>
     `(Lean.Parser.Command.ctor| | $(mkIdent f):ident)
   elabCommand (← `(inductive $(rootIdent fkName):ident where $ctors* deriving DecidableEq, Repr))
   let fkId := rootIdent fkName
   let typeId := typeIdent typeName
   let mut tgtAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut fieldAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
-  let mut fieldTyAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut getAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut entAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
-  for (f, tgt) in fks do
+  for (f, tgt, nullable) in fks do
     let ctorId := mkIdent f
     tgtAlts := tgtAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(typeIdent tgt)))
     fieldAlts := fieldAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(fieldSym typeName f)))
-    fieldTyAlts := fieldTyAlts.push
-      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => rfl))
-    getAlts := getAlts.push
-      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
+    if nullable then
+      getAlts := getAlts.push
+        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
+    else
+      getAlts := getAlts.push
+        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => some v.$(mkIdent f):ident))
     entAlts := entAlts.push
       (← `(Lean.Parser.Term.matchAltExpr|
         | .$ctorId:ident => inferInstanceAs (LeanDb.Entity $(typeIdent tgt))))
-  let allLits : Array Term ← fks.mapM fun (f, _) =>
+  let allLits : Array Term ← fks.mapM fun (f, _, _) =>
     `(term| .$(mkIdent f):ident)
   elabCommand (← `(
     @[reducible] def $(rootIdent (fkName ++ `target)):ident : $fkId → Type
@@ -681,15 +693,15 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
       Target := $(rootIdent (fkName ++ `target))
       targetEntity $entAlts:matchAlt*
       field $fieldAlts:matchAlt*
-      fieldTy_eq $fieldTyAlts:matchAlt*
       get $getAlts:matchAlt*
       all := #[$allLits,*]
   ))
-  for (f, tgt) in fks do
-    elabCommand (← `(
-      @[reducible] instance : LeanDb.JoinCol $typeId $(typeIdent tgt) where
-        col := LeanDb.Pred.Col.here (ts := [$(typeIdent tgt)]) $(fieldSym typeName f)
-    ))
+  for (f, tgt, nullable) in fks do
+    unless nullable do
+      elabCommand (← `(
+        @[reducible] instance : LeanDb.JoinCol $typeId $(typeIdent tgt) where
+          col := LeanDb.Pred.Col.here (ts := [$(typeIdent tgt)]) $(fieldSym typeName f)
+      ))
 
 private def genListField (typeName : Name) : CommandElabM Unit := do
   let fields := getStructureFields (← getEnv) typeName
@@ -749,6 +761,23 @@ private def genEmptyInsertError (typeName : Name) : CommandElabM Unit := do
       false e := nomatch e
   ))
 
+/-- A child-list record that itself contains a `Ref` / `Option (Ref)`.
+    SQLite would enforce that key; the typed layer cannot see it. -/
+private def childListRefField? (typeName : Name) : CommandElabM (Option (Name × Name × Name)) := do
+  let fields := getStructureFields (← getEnv) typeName
+  for f in fields do
+    let ty ← structureFieldType typeName f
+    if let some elem ← liftTermElabM (childElem? ty) then
+      match elem.getAppFn with
+      | .const rname _ =>
+          let subs := getStructureFields (← getEnv) rname
+          for g in subs do
+            let gty ← structureFieldType rname g
+            if let some _ ← liftTermElabM (refTarget? gty) then
+              return some (f, rname, g)
+      | _ => pure ()
+  return none
+
 /-- Generate `Unique` / `ForeignKey` / `ListField` for one entity from
     accumulated `unique` declarations and the structure's fields. -/
 syntax (name := typedCmd) "typed% " ident : command
@@ -756,6 +785,8 @@ syntax (name := typedCmd) "typed% " ident : command
 @[command_elab typedCmd]
 def elabTyped : CommandElab := fun stx => do
   let typeName ← resolveEntity stx[1].getId
+  if let some (listField, rec, refField) ← childListRefField? typeName then
+    throwError "typed: {typeName} field '{listField}' is a child list of {rec}, which has a Ref field '{refField}'; foreign keys inside child-list records are not typed (SQLite would enforce them, the meaning would not). Put the reference on a schema table."
   let entries := (uniqueExt.getState (← getEnv)).filter (·.typeName == typeName)
   genUnique typeName entries
   genForeignKey typeName
@@ -781,6 +812,9 @@ def elabSchema : CommandElab := fun stx => do
       throwError "schema: {n} is listed twice"
     types := types.push n
   -- Finish typed symbols per entity (Unique + Indexes, FKs, lists).
+  for t in types do
+    if let some (listField, rec, refField) ← childListRefField? t then
+      throwError "schema: {t} field '{listField}' is a child list of {rec}, which has a Ref field '{refField}'; foreign keys inside child-list records are not typed (SQLite would enforce them, the meaning would not). Put the reference on a schema table."
   for t in types do
     let entries := (uniqueExt.getState (← getEnv)).filter (·.typeName == t)
     unless (← getEnv).contains (t ++ `Unique) do
@@ -835,16 +869,16 @@ def elabSchema : CommandElab := fun stx => do
     ))
   -- ReferencedBy: inbound FKs, per target in the schema.
   for tgt in types do
-    let mut inbound : Array (Name × Name) := #[]
+    let mut inbound : Array (Name × Name × Bool) := #[]
     for src in types do
       let fields := getStructureFields (← getEnv) src
       for f in fields do
         let ty ← structureFieldType src f
-        if let some t ← liftTermElabM (refTarget? ty) then
-          if t == tgt then inbound := inbound.push (src, f)
+        if let some (t, nullable) ← liftTermElabM (refTarget? ty) then
+          if t == tgt then inbound := inbound.push (src, f, nullable)
     if inbound.isEmpty then continue
     let rbName := schemaName ++ `ReferencedBy ++ Name.mkSimple tgt.getString!
-    let ctors : TSyntaxArray `Lean.Parser.Command.ctor ← inbound.mapM fun (src, f) =>
+    let ctors : TSyntaxArray `Lean.Parser.Command.ctor ← inbound.mapM fun (src, f, _) =>
       let n := Name.mkSimple (src.getString!.toLower ++ "_" ++ f.getString!)
       `(Lean.Parser.Command.ctor| | $(mkIdent n):ident)
     elabCommand (← `(
@@ -861,7 +895,7 @@ def elabSchema : CommandElab := fun stx => do
     let mut sourceEntityEqAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut allLits : Array Term := #[]
     let env ← getEnv
-    for (src, f) in inbound do
+    for (src, f, nullable) in inbound do
       let ctor := Name.mkSimple (src.getString!.toLower ++ "_" ++ f.getString!)
       let ctorId := mkIdent ctor
       srcAlts := srcAlts.push
@@ -869,8 +903,12 @@ def elabSchema : CommandElab := fun stx => do
       entAlts := entAlts.push
         (← `(Lean.Parser.Term.matchAltExpr|
           | .$ctorId:ident => inferInstanceAs (LeanDb.Entity $(typeIdent src))))
-      getAlts := getAlts.push
-        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
+      if nullable then
+        getAlts := getAlts.push
+          (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
+      else
+        getAlts := getAlts.push
+          (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => some v.$(mkIdent f):ident))
       colAlts := colAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(quote f.getString!)))
       let casc := (LeanDb.Derive.cascadeExt.getState env).any fun e =>
@@ -886,7 +924,7 @@ def elabSchema : CommandElab := fun stx => do
       sourceEntityEqAlts := sourceEntityEqAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => rfl))
       allLits := allLits.push (← `(term| .$ctorId:ident))
-    let anyR := inbound.any fun (src, f) =>
+    let anyR := inbound.any fun (src, f, _) =>
       !(LeanDb.Derive.cascadeExt.getState env).any fun e =>
         e.typeName == src && e.field == f
     elabCommand (← `(

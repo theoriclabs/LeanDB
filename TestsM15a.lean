@@ -425,6 +425,21 @@ Hint: Type class instance resolution failures can be inspected with the `set_opt
 #guard_msgs in
 example : Read S (Option (Valid Ghost)) := Read.get Ghost ⟨1⟩
 
+structure ChildWithRef where
+  who : Ref Member
+  deriving Repr, BEq, LeanDb.Inline
+
+structure ParentWithChildRef where
+  name : String
+  kids : List ChildWithRef
+  deriving Repr, BEq, LeanDb.Entity
+
+/--
+error: schema: TestsM15a.ParentWithChildRef field 'kids' is a child list of TestsM15a.ChildWithRef, which has a Ref field 'who'; foreign keys inside child-list records are not typed (SQLite would enforce them, the meaning would not). Put the reference on a schema table.
+-/
+#guard_msgs in
+schema% BadChildRef := ParentWithChildRef
+
 private def staleIdOnly (a b : UpdateError Bag) : Bool :=
   match a, b with
   | .stale x, .stale y => x.id == y.id
@@ -455,7 +470,7 @@ def run : IO Unit := do
   -- finding is fixed.
   check d1 "D1 child-list any/all: run equals denote"
   check d2 "D2 two-level cascade already agrees (M15-pre2 deleteAt)"
-  check (!d3) "D3 still reproduces (Option Ref)"
+  check d3 "D3 Option Ref: missingRef / restricted in both"
   check (!d4) "D4 still reproduces (append)"
   check (!d5) "D5 still reproduces (ClosedEnum orderBy all)"
   check d6 "D6 forged Current: run equals denote (both skip CAS); constructor is still public"

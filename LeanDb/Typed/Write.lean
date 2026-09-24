@@ -170,8 +170,9 @@ def ReferencedBy.count {s α : Type} [IsSchema s] [h : HasReferencedBy s α]
   let inst := h.sourceEntity r
   let tbl := DbState.getSource (s := s) (α := α) st r
   (@Table.rows (h.Source r) inst tbl).foldl (init := 0) fun n row =>
-    if (h.getFk r (@Valid.val (h.Source r) inst row)).toInt64 == id.toInt64 then n + 1
-    else n
+    match h.getFk r (@Valid.val (h.Source r) inst row) with
+    | some tgt => if tgt.toInt64 == id.toInt64 then n + 1 else n
+    | none => n
 
 /-! ## Failure types -/
 

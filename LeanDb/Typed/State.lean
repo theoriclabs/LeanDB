@@ -248,15 +248,18 @@ def DbState.containsId {s : Type} [i : IsSchema s] (st : DbState s)
       (@Table.rows p.ty p.entity (st.tables t)).any fun row =>
         (@Valid.id p.ty p.entity row).toInt64 == id
 
-/-- Every foreign key of `α` resolves to a row in the target table. -/
+/-- Every foreign key of `α` resolves to a row in the target table. A
+    nullable `Option (Ref)` that is `none` is vacuously ok. -/
 def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
     (st : DbState s) (t : Table α) : Bool :=
   t.rows.all fun r =>
     (ForeignKey.all α).all fun fk =>
-      let tgt := hf.get fk r.val
-      let inst := hf.targetEntity fk
-      let name := @Entity.tableName (hf.Target fk) inst
-      DbState.containsId st name tgt.toInt64
+      match hf.get fk r.val with
+      | none => true
+      | some tgt =>
+          let inst := hf.targetEntity fk
+          let name := @Entity.tableName (hf.Target fk) inst
+          DbState.containsId st name tgt.toInt64
 
 /-- One packed entity of the schema: local table check plus foreign keys. -/
 def DbState.checkPacked {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.nTables) : Bool :=

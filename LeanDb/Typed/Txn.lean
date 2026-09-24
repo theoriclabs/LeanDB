@@ -123,10 +123,12 @@ def firstDuplicate {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has 
 
 def fkMissing {s α} [IsSchema s] [Entity α] [hf : HasForeignKey α]
     (fk : hf.ForeignKey) (v : α) (st : DbState s) : Bool :=
-  let tgt := hf.get fk v
-  let inst := hf.targetEntity fk
-  let name := @Entity.tableName (hf.Target fk) inst
-  !DbState.containsId st name tgt.toInt64
+  match hf.get fk v with
+  | none => false
+  | some tgt =>
+      let inst := hf.targetEntity fk
+      let name := @Entity.tableName (hf.Target fk) inst
+      !DbState.containsId st name tgt.toInt64
 
 def firstMissingRef {s α} [IsSchema s] [Entity α] [HasForeignKey α]
     (v : α) (st : DbState s) : Option (ForeignKey α) :=
@@ -241,8 +243,10 @@ def deleteAt {s : Type} [i : IsSchema s]
                 if tgtName == delName then
                   let tbl' := st.tables t'
                   let victims := (@Table.rows p'.ty p'.entity tbl').filter fun row =>
-                    (@ForeignKey.get p'.ty p'.entity hf fk
-                      (@Valid.val p'.ty p'.entity row)).toInt64 == id
+                    match @ForeignKey.get p'.ty p'.entity hf fk
+                        (@Valid.val p'.ty p'.entity row) with
+                    | none => false
+                    | some tgt => tgt.toInt64 == id
                   victims.foldl (init := st) fun st row =>
                     go fuel st t' (@Valid.id p'.ty p'.entity row).toInt64
                 else st
@@ -379,10 +383,12 @@ def firstDuplicateDb {α} [Entity α] [HasUnique α]
         | some r => return some (ix, r.id)
 
 def fkExistsDb {α} [Entity α] [hf : HasForeignKey α] (fk : hf.ForeignKey) (v : α) : Db Bool := do
-  let tgt := hf.get fk v
-  let inst := hf.targetEntity fk
-  let row ← @LeanDb.get (hf.Target fk) inst tgt
-  return row.isSome
+  match hf.get fk v with
+  | none => return true
+  | some tgt =>
+      let inst := hf.targetEntity fk
+      let row ← @LeanDb.get (hf.Target fk) inst tgt
+      return row.isSome
 
 def firstMissingRefDb {α} [Entity α] [HasForeignKey α] (v : α) :
     Db (Option (ForeignKey α)) :=
