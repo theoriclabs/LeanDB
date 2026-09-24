@@ -121,6 +121,7 @@ example (e : InsertError User) : Nat :=
 example (e : SetError Team (Fields.all Team)) : Nat :=
   match e with
   | .gone => 0
+  | .invalid _ => 1
 
 /-- `DeleteError` on `User`: nothing in `App` references `User`. -/
 example (e : DeleteError App User) : Nat :=

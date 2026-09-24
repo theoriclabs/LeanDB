@@ -427,7 +427,11 @@ private def testD10 : IO Bool := do
         | some row =>
             -- `new` is Checked (a=b=yy) but merge of `a` only yields a=yy, b=xx.
             let r ← Txn.patch (α := Pair) row (Fields.singleton Pair.Field.a) (ck ⟨"yy", "yy"⟩)
-            return (match r with | .ok s => s!"ok {s.val.a}/{s.val.b}" | .error .gone => "gone" | .error _ => "err"))
+            return (match r with
+              | .ok s => s!"ok {s.val.a}/{s.val.b}"
+              | .error .gone => "gone"
+              | .error (.invalid _) => "invalid"
+              | .error _ => "err"))
       eqStr "D10 patch mixed invariant"
   ) "D10"
 
@@ -497,7 +501,7 @@ def run : IO Unit := do
   check d7 "D7 Nat above Int64.max is not Checked"
   check d8 "D8 first after limit 0; huge window applied in Lean"
   check d9 "D9 join keeps the left-side quantifier"
-  check (!d10) "D10 still reproduces (mixed-invariant patch is DbFault vs .gone)"
+  check d10 "D10 mixed-invariant patch is SetError.invalid in both"
   IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10}"
 
 end TestsM15a

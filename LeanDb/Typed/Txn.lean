@@ -341,11 +341,12 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
               match @firstMissingWithin s α inferInstance _ent _hf fs merged st with
               | some fk => (.ok (.error (.missingRef fk)), st)
               | none =>
-                  match Valid.ofStored? ⟨row.id, merged⟩ with
-                  | some v =>
+                  match Entity.check α merged with
+                  | .error why => (.ok (.error (.invalid why)), st)
+                  | .ok c =>
+                      let v := Valid.ofChecked row.id c
                       let st' := @replaceValid s α inferInstance _ent _has st v
                       (.ok (.ok (Current.ofValid v)), st')
-                  | none => (.ok (.error .gone), st)
   | _, @Txn.append _ _ _ _ α _ent _hl _hu _hf _has old new, st =>
       match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
@@ -525,16 +526,19 @@ def patchExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
             match ← firstMissingWithinDb fs merged with
             | some fk => return .error (.missingRef fk)
             | none =>
-                match ← LeanDb.patch cur.id (Fields.toEnginePatch fs merged) with
-                | .notFound => return .error .gone
-                | .guardFailed => return .error .gone
-                | .updated =>
-                    match ← LeanDb.get row.id with
-                    | none => return .error .gone
-                    | some written =>
-                        match Valid.ofStored? written with
-                        | some v => return .ok (Current.ofValid v)
+                match Entity.check α merged with
+                | .error why => return .error (.invalid why)
+                | .ok _ =>
+                    match ← LeanDb.patch cur.id (Fields.toEnginePatch fs merged) with
+                    | .notFound => return .error .gone
+                    | .guardFailed => return .error .gone
+                    | .updated =>
+                        match ← LeanDb.get row.id with
                         | none => return .error .gone
+                        | some written =>
+                            match Valid.ofStored? written with
+                            | some v => return .ok (Current.ofValid v)
+                            | none => return .error .gone
 
 def appendExec {α} [Entity α] [HasListField α] [HasUnique α] [HasForeignKey α]
     (old : Valid α) (new : Checked α) : Db (Except (AppendError α) (Stored α)) :=

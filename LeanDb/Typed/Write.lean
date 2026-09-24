@@ -199,6 +199,10 @@ inductive SetError (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
   | gone
   | duplicate (ix : Unique.Touching fs) (holder : Id α)
   | missingRef (fk : ForeignKey.Within fs)
+  /-- The merged row (written fields from `new`, the rest from the stored
+      row) fails `Invariant`. `patch` checks this in both meaning and
+      execution so a mixed invariant is a typed failure, never a `DbFault`. -/
+  | invalid (why : InvalidFields α)
 
 /-- Failures of `append` (child lists must grow). Unique and foreign-key
     constraints on the parent's columns are checked: `append` writes
@@ -290,6 +294,7 @@ instance {α : Type} [Entity α] [HasUnique α] [HasForeignKey α] {fs : Fields 
     | .gone, .gone => true
     | .duplicate i1 h1, .duplicate i2 h2 => i1.ix == i2.ix && h1 == h2
     | .missingRef f1, .missingRef f2 => f1.fk == f2.fk
+    | .invalid ⟨n1⟩, .invalid ⟨n2⟩ => n1 == n2
     | _, _ => false
 
 end LeanDb

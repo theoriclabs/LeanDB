@@ -117,6 +117,7 @@ example (e : SetError User (Fields.singleton User.Field.email)) : Nat :=
   match e with
   | .gone => 0
   | .duplicate _ _ => 1
+  | .invalid _ => 2
 
 example [IsEmpty (ForeignKey.Within (α := User) (Fields.singleton User.Field.email))] :
     True := trivial
@@ -126,6 +127,7 @@ example (e : SetError User (Fields.singleton User.Field.team)) : Nat :=
   match e with
   | .gone => 0
   | .missingRef _ => 1
+  | .invalid _ => 2
 
 example [IsEmpty (Unique.Touching (α := User) (Fields.singleton User.Field.team))] :
     True := trivial
