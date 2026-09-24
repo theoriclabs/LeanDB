@@ -14,6 +14,7 @@ import TestsLdb24
 import TestsM14a
 import TestsM14b
 import TestsM14c
+import CheckAxioms
 
 /-! Engine tests: codecs, deriving, the dependent select against a real
 SQLite file, CAS staleness, FK restriction. Fixture types live here — the

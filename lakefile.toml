@@ -57,6 +57,10 @@ name = "TestsM14b"
 name = "TestsM14c"
 
 [[lean_lib]]
+name = "CheckAxioms"
+srcDir = "scripts"
+
+[[lean_lib]]
 name = "FixturePortable"
 
 [[lean_exe]]
