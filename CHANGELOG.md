@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **M15-pre.** `DbState` is a lawful `(t : Fin nTables) → Table (pack t).ty`
+  with no `unsafe` / `implemented_by` in `LeanDb/Typed`. `get` / `set` /
+  `load` are the executed definitions; `get_set_same`, `get_set_other`,
+  `empty_rows`, and `insert_team_on_empty` are proved. `Read.get` /
+  `lookup` return `Valid α` (invariant proof; coerces to `Stored`);
+  `Txn.update` / `append` take that proof plus `Checked` so callers need
+  not re-check. `deleteAt` is fueled by `rowCount` (no `partial`).
+  `exact_plan` is kernel-reducible (`decide`, not `native_decide`).
+  `scripts/CheckAxioms.lean` allowlists `propext` / `Classical.choice` /
+  `Quot.sound`. Harness compares production `load` to `denote` through
+  lawful `get`.
 - **M14c.** Close remaining QUERIES.md §3 / §5 gaps: `patch` writes only
   the named fields (meaning merge and SQL `UPDATE`); `SetError` lists
   only constraints over written fields (`Unique.Touching` /
