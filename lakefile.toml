@@ -24,6 +24,9 @@ name = "TestsLdb15"
 name = "TestsLdb16"
 
 [[lean_lib]]
+name = "TestsLdb17"
+
+[[lean_lib]]
 name = "FixturePortable"
 
 [[lean_exe]]

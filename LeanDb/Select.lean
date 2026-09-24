@@ -72,6 +72,16 @@ def Window.check (w : Window) : Except DbError Unit := do
     if n >= Int64.maxValue.toNatClampNeg then
       throw (.sqlite "window limit is out of range")
 
+/-- Drop `offset` and keep `limit` rows. Applied in Lean after the residual
+    filter when the plan is not exact, so a pushed `LIMIT` cannot hide a
+    later matching row. -/
+def Window.apply (w : Window) (rows : Array α) : Array α :=
+  let start := min w.offset rows.size
+  let stop := match w.limit with
+    | none => rows.size
+    | some n => min (start + n) rows.size
+  rows.extract start stop
+
 /-- A place rows come from: the real database, or an in-memory fixture in
     tests. Loading is by entity, never by string; the index says which
     position in the `select` table list is being loaded, so a plan's

@@ -756,15 +756,24 @@ def selectJoined (ts : List Type) [RowsOf ts] (pushed : Pred ts)
 /-- Run a pushed plan and a decider: the opaque-free `pushed` ships to
     SQL — the joined executor when it relates tables, per-table fetches
     otherwise — and `where'` is applied to what comes back. The one path
-    under both `select` and `selectP`, so they cannot diverge. -/
+    under both `select` and `selectP`, so they cannot diverge.
+
+    `order`/`window` are pushed into table 0's SQL only when `exact` (no
+    residual) and the plan is not a join. Otherwise the window is applied
+    in Lean after `where'`, so a `LIMIT 1` cannot miss a later row that
+    only the residual accepts (LDB-17). -/
 private def runPlanned (ts : List Type) [RowsOf ts] (pushed : Pred ts)
     (where' : Rows ts → Bool) (sortBy : SortBy (Rows ts))
-    (order : Array (Order ts) := #[]) (window : Window := {}) : DbM (Array (Rows ts)) :=
-  if pushed.hasJoin then
-    selectJoined ts pushed where' sortBy
-  else
-    selectSpec ts (plannedSource pushed order window)
-      where' (if order.isEmpty then sortBy else .preserve)
+    (order : Array (Order ts) := #[]) (window : Window := {})
+    (exact : Bool := false) : DbM (Array (Rows ts)) := do
+  let pushWindow := exact && !pushed.hasJoin
+  let rows ←
+    if pushed.hasJoin then
+      selectJoined ts pushed where' sortBy
+    else
+      selectSpec ts (plannedSource pushed order (if pushWindow then window else {}))
+        where' (if order.isEmpty then sortBy else .preserve)
+  if pushWindow then return rows else return window.apply rows
 
 private def selectDetail (ts : List Type) [RowsOf ts] (p : Pred ts) : String :=
   s!"{String.intercalate "×" ((RowsOf.specs ts).map (·.name))} | {p.describe}"
@@ -873,6 +882,7 @@ def selectP (ts : List Type) [RowsOf ts] (p : Pred ts)
         | _ => throw (.sqlite "limit requires a pushed order")
       let snap ← p.snapshot
       runPlanned ts p.approx (p.denote snap) sortBy order window
+        (exact := !p.hasOpaque)
 
 /-- `select` with pushdown disabled — the executable reference, for
     differential testing against the planned path. -/

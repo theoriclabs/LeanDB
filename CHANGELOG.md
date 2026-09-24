@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **LDB-17.** `selectP` / `existsP` apply `LIMIT`/`OFFSET` after the
+  residual Lean filter unless the plan is exact (and not a join). A
+  pushed window on the `approx` superset can no longer hide a later
+  matching row (`existsP` false negatives, short pages).
 - **LDB-15 (#129).** `append old new`: grow an entity's child lists against
   the value that was read. Only the added child rows are written, at the
   positions after the stored ones; the parent's columns are written under
