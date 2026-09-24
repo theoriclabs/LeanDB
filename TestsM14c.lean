@@ -98,8 +98,24 @@ private def eqTxn {ε α} (p : {σ : Type} → Txn σ App ε α)
       unless stateEqApp st1 stD do
         throw (.sqlite s!"FAIL: {msg}: final state ≠ denote")
 
-/-- Patch of `email` keeps the stored name (and tags) even when `new`
-    carries a different name and tags — only columns in `fs` are written. -/
+/-- `SetError` on a non-ref field: `missingRef` is omitted — `Within` is
+    `Empty`, and `IsEmpty` is found. -/
+example (e : SetError User (Fields.singleton User.Field.email)) : Nat :=
+  match e with
+  | .gone => 0
+  | .duplicate _ _ => 1
+
+example [IsEmpty (ForeignKey.Within (α := User) (Fields.singleton User.Field.email))] :
+    True := trivial
+
+/-- Writing only `team` (a `Ref`, not a unique column): `duplicate` is omitted. -/
+example (e : SetError User (Fields.singleton User.Field.team)) : Nat :=
+  match e with
+  | .gone => 0
+  | .missingRef _ => 1
+
+example [IsEmpty (Unique.Touching (α := User) (Fields.singleton User.Field.team))] :
+    True := trivial
 def patchEmailOnly {σ} (id : _root_.LeanDb.Id User) (new : Checked User) :
     Txn σ App Empty (Except (SetError User (Fields.singleton User.Field.email)) (Stored User)) := do
   match ← Txn.get User id with
@@ -182,5 +198,13 @@ private def testPatchSurvivesHarness : IO Unit := do
 def run : IO Unit := do
   testPatchMergeDenote
   testPatchSurvivesHarness
+  check (!ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.email))
+    "email patch does not touch a Ref"
+  check (ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.team))
+    "team patch touches a Ref"
+  check (!Unique.anyTouch (α := User) (Fields.singleton User.Field.team))
+    "team patch does not touch a unique index"
+  check (Unique.anyTouch (α := User) (Fields.singleton User.Field.email))
+    "email patch touches byEmail"
 
 end TestsM14c

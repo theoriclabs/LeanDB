@@ -39,6 +39,9 @@ class HasUnique (α : Type) [Entity α] where
   keyOf : (ix : Unique) → α → Key ix
   /-- Column names of the index, in declaration order. -/
   columns : Unique → Array String
+  /-- Field symbols of the index, in declaration order. Used to decide
+      whether a `patch` writes a column the index covers. -/
+  fieldSyms : Unique → Array (Entity.Field α)
   encodeKey : (ix : Unique) → Key ix → Array Col
   /-- Equality plan for `lookup`: one `Pred.eq` per column. -/
   predOf : (ix : Unique) → Key ix → Pred [α]
@@ -51,6 +54,7 @@ class HasUnique (α : Type) [Entity α] where
   Key := fun x => nomatch x
   keyOf := fun x _ => nomatch x
   columns := fun x => nomatch x
+  fieldSyms := fun x => nomatch x
   encodeKey := fun x _ => nomatch x
   predOf := fun x _ => nomatch x
   all := #[]
@@ -66,6 +70,10 @@ def Unique.keyOf {α : Type} [Entity α] [HasUnique α] (ix : Unique α) (v : α
 
 def Unique.columns {α : Type} [Entity α] [HasUnique α] (ix : Unique α) : Array String :=
   HasUnique.columns ix
+
+def Unique.fieldSyms {α : Type} [Entity α] [HasUnique α] (ix : Unique α) :
+    Array (Entity.Field α) :=
+  HasUnique.fieldSyms ix
 
 def Unique.encodeKey {α : Type} [Entity α] [HasUnique α] (ix : Unique α) (k : Unique.Key ix) :
     Array Col :=
@@ -407,6 +415,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
   let mut keyAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut keyOfAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut colAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
+  let mut fieldAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut encAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut predAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut ixLits : Array Term := #[]
@@ -423,6 +432,9 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
       `(LeanDb.Entity.fieldName (α := $typeId) $(fieldSym typeName f))
     colAlts := colAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => #[$colTerms,*]))
+    let fieldTerms : Array Term := e.fields.map fun f => fieldSym typeName f
+    fieldAlts := fieldAlts.push
+      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => #[$fieldTerms,*]))
     let encBinders : Array (TSyntax `ident) :=
       e.fields.mapIdx fun i _ => mkIdent (Name.mkSimple s!"k{i}")
     let encRhs : Array Term ← encBinders.mapM fun b => `(LeanDb.toCol $b)
@@ -461,6 +473,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
       Key := fun $keyAlts:matchAlt*
       keyOf := fun $keyOfAlts:matchAlt*
       columns := fun $colAlts:matchAlt*
+      fieldSyms := fun $fieldAlts:matchAlt*
       encodeKey := fun $encAlts:matchAlt*
       predOf := fun $predAlts:matchAlt*
       all := #[$allLits,*]

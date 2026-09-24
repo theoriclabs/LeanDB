@@ -116,22 +116,26 @@ def firstMissingRef {s α} [IsSchema s] [Entity α] [HasForeignKey α]
 def firstDuplicateTouching {s α} [IsSchema s] [Entity α] [HasUnique α]
     (fs : Fields α) (v : α) (st : DbState s) (except : Option (Id α)) :
     Option (Unique.Touching fs × Id α) :=
-  Unique.all α |>.findSome? fun ix =>
-    if h : Unique.touches ix fs then
-      let enc := Unique.encodeKey ix (Unique.keyOf ix v)
-      (DbState.get (α := α) st).rows.findSome? fun r =>
-        if except == some r.id then none
-        else if Unique.encodeKey ix (Unique.keyOf ix r.val) == enc then
-          some (Unique.toTouching ix h, r.id)
-        else none
-    else none
+  if hAny : Unique.anyTouch (α := α) fs then
+    Unique.all α |>.findSome? fun ix =>
+      if h : Unique.touches ix fs then
+        let enc := Unique.encodeKey ix (Unique.keyOf ix v)
+        (DbState.get (α := α) st).rows.findSome? fun r =>
+          if except == some r.id then none
+          else if Unique.encodeKey ix (Unique.keyOf ix r.val) == enc then
+            some (Unique.toTouching ix h hAny, r.id)
+          else none
+      else none
+  else none
 
 def firstMissingWithin {s α} [IsSchema s] [Entity α] [HasForeignKey α]
     (fs : Fields α) (v : α) (st : DbState s) : Option (ForeignKey.Within fs) :=
-  ForeignKey.all α |>.findSome? fun fk =>
-    if h : ForeignKey.within fk fs then
-      if fkMissing fk v st then some (ForeignKey.toWithin fk h) else none
-    else none
+  if hAny : ForeignKey.anyWithin (α := α) fs then
+    ForeignKey.all α |>.findSome? fun fk =>
+      if h : ForeignKey.within fk fs then
+        if fkMissing fk v st then some (ForeignKey.toWithin fk h hAny) else none
+      else none
+  else none
 
 def listsMoved {α} [Entity α] (stored old : α) : Bool :=
   (Entity.children (α := α)).any fun link =>
@@ -296,29 +300,35 @@ def firstMissingRefDb {α} [Entity α] [HasForeignKey α] (v : α) :
 def firstDuplicateTouchingDb {α} [Entity α] [HasUnique α]
     (fs : Fields α) (v : α) (except : Option (Id α)) :
     Db (Option (Unique.Touching fs × Id α)) :=
-  Unique.all α |>.foldlM (m := Db) (init := none) fun acc ix => do
-    match acc with
-    | some _ => return acc
-    | none =>
-        if h : Unique.touches ix fs then
-          let rows ← selectP (ts := [α]) (Unique.predOf ix (Unique.keyOf ix v))
-          match rows.find? (fun r => !(except == some r.id)) with
-          | none => return none
-          | some r => return some (Unique.toTouching ix h, r.id)
-        else
-          return none
+  if hAny : Unique.anyTouch (α := α) fs then
+    Unique.all α |>.foldlM (m := Db) (init := none) fun acc ix => do
+      match acc with
+      | some _ => return acc
+      | none =>
+          if h : Unique.touches ix fs then
+            let rows ← selectP (ts := [α]) (Unique.predOf ix (Unique.keyOf ix v))
+            match rows.find? (fun r => !(except == some r.id)) with
+            | none => return none
+            | some r => return some (Unique.toTouching ix h hAny, r.id)
+          else
+            return none
+  else
+    (Pure.pure (f := Db) none)
 
 def firstMissingWithinDb {α} [Entity α] [HasForeignKey α]
     (fs : Fields α) (v : α) : Db (Option (ForeignKey.Within fs)) :=
-  ForeignKey.all α |>.foldlM (m := Db) (init := none) fun acc fk => do
-    match acc with
-    | some _ => return acc
-    | none =>
-        if h : ForeignKey.within fk fs then
-          if ← fkExistsDb fk v then return none
-          else return some (ForeignKey.toWithin fk h)
-        else
-          return none
+  if hAny : ForeignKey.anyWithin (α := α) fs then
+    ForeignKey.all α |>.foldlM (m := Db) (init := none) fun acc fk => do
+      match acc with
+      | some _ => return acc
+      | none =>
+          if h : ForeignKey.within fk fs then
+            if ← fkExistsDb fk v then return none
+            else return some (ForeignKey.toWithin fk h hAny)
+          else
+            return none
+  else
+    (Pure.pure (f := Db) none)
 
 def countRefsDb {s α} [HasReferencedBy s α] (r : ReferencedBy s α) (id : Id α) : Db Nat :=
   untrackedSqlite fun db => do

@@ -76,52 +76,92 @@ def Fields.toEnginePatch {α} [Entity α] (fs : Fields α) (v : α) : Patch α :
 /-! ## Constraints restricted to written fields -/
 
 /-- Whether unique index `ix` names a column in `fs`. -/
-def Unique.touches {α : Type} [Entity α] [HasUnique α]
+@[reducible] def Unique.touches {α : Type} [Entity α] [HasUnique α]
     (ix : Unique α) (fs : Fields α) : Bool :=
-  (Unique.columns ix).any fun col =>
-    match Entity.fieldOfName? α col with
-    | some f => fs.mem f
-    | none => false
+  (Unique.fieldSyms ix).toList.any fs.mem
 
-/-- Unique indexes that overlap the written fields `fs`. Uninhabited when
-    `Unique α` is empty, or when no declared index names a field of `fs`,
-    so `duplicate` cannot be built. -/
-def Unique.Touching {α : Type} [Entity α] [HasUnique α] (fs : Fields α) : Type :=
-  { ix : Unique α // Unique.touches ix fs = true }
+/-- Whether any unique index overlaps `fs`. Reduces on concrete `fs`, so
+    `Unique.Touching fs` becomes `Empty` when none do. -/
+@[reducible] def Unique.anyTouch {α : Type} [Entity α] [HasUnique α]
+    (fs : Fields α) : Bool :=
+  (Unique.all α).toList.any (Unique.touches · fs)
+
+/-- Unique indexes that overlap the written fields `fs`. `Empty` (not a
+    subtype of `Unique α`) when no declared index names a field of `fs`,
+    so `SetError.duplicate` is omitted from an exhaustive match. -/
+@[reducible] def Unique.Touching {α : Type} [Entity α] [HasUnique α]
+    (fs : Fields α) : Type :=
+  if Unique.anyTouch (α := α) fs then
+    { ix : Unique α // Unique.touches ix fs = true }
+  else
+    Empty
 
 def Unique.Touching.ix {α : Type} [Entity α] [HasUnique α] {fs : Fields α}
     (t : Unique.Touching fs) : Unique α :=
-  t.1
+  if hAny : Unique.anyTouch (α := α) fs then
+    (cast (by simp [Unique.Touching, hAny]) t : { ix : Unique α // Unique.touches ix fs = true }).1
+  else
+    nomatch (cast (by simp [Unique.Touching, hAny]) t : Empty)
 
 def Unique.toTouching {α : Type} [Entity α] [HasUnique α] {fs : Fields α}
-    (ix : Unique α) (h : Unique.touches ix fs = true) : Unique.Touching fs :=
-  ⟨ix, h⟩
+    (ix : Unique α) (h : Unique.touches ix fs = true)
+    (hAny : Unique.anyTouch (α := α) fs = true) : Unique.Touching fs :=
+  cast (by simp [Unique.Touching, hAny])
+    (⟨ix, h⟩ : { ix : Unique α // Unique.touches ix fs = true })
 
 instance {α : Type} [Entity α] [hu : HasUnique α] [IsEmpty hu.Unique] (fs : Fields α) :
     IsEmpty (@Unique.Touching α _ hu fs) where
-  false t := IsEmpty.false t.1
+  false t :=
+    if hAny : Unique.anyTouch (α := α) fs then
+      IsEmpty.false
+        (cast (by simp [Unique.Touching, hAny]) t :
+          { ix : Unique α // Unique.touches ix fs = true }).1
+    else
+      nomatch (cast (by simp [Unique.Touching, hAny]) t : Empty)
 
 /-- Whether foreign key `fk` is among the written fields. -/
-def ForeignKey.within {α : Type} [Entity α] [HasForeignKey α]
+@[reducible] def ForeignKey.within {α : Type} [Entity α] [HasForeignKey α]
     (fk : ForeignKey α) (fs : Fields α) : Bool :=
   fs.mem (ForeignKey.field fk)
 
-/-- Foreign keys among the written fields `fs`. Uninhabited when there is
-    no `Ref`, or none of the written fields is a `Ref`. -/
-def ForeignKey.Within {α : Type} [Entity α] [HasForeignKey α] (fs : Fields α) : Type :=
-  { fk : ForeignKey α // ForeignKey.within fk fs = true }
+/-- Whether any foreign key is among `fs`. -/
+@[reducible] def ForeignKey.anyWithin {α : Type} [Entity α] [HasForeignKey α]
+    (fs : Fields α) : Bool :=
+  (ForeignKey.all α).toList.any (ForeignKey.within · fs)
+
+/-- Foreign keys among the written fields `fs`. `Empty` when there is no
+    `Ref`, or none of the written fields is a `Ref`, so `missingRef` is
+    omitted from an exhaustive match (`IsEmpty` is found). -/
+@[reducible] def ForeignKey.Within {α : Type} [Entity α] [HasForeignKey α]
+    (fs : Fields α) : Type :=
+  if ForeignKey.anyWithin (α := α) fs then
+    { fk : ForeignKey α // ForeignKey.within fk fs = true }
+  else
+    Empty
 
 def ForeignKey.Within.fk {α : Type} [Entity α] [HasForeignKey α] {fs : Fields α}
     (w : ForeignKey.Within fs) : ForeignKey α :=
-  w.1
+  if hAny : ForeignKey.anyWithin (α := α) fs then
+    (cast (by simp [ForeignKey.Within, hAny]) w :
+      { fk : ForeignKey α // ForeignKey.within fk fs = true }).1
+  else
+    nomatch (cast (by simp [ForeignKey.Within, hAny]) w : Empty)
 
 def ForeignKey.toWithin {α : Type} [Entity α] [HasForeignKey α] {fs : Fields α}
-    (fk : ForeignKey α) (h : ForeignKey.within fk fs = true) : ForeignKey.Within fs :=
-  ⟨fk, h⟩
+    (fk : ForeignKey α) (h : ForeignKey.within fk fs = true)
+    (hAny : ForeignKey.anyWithin (α := α) fs = true) : ForeignKey.Within fs :=
+  cast (by simp [ForeignKey.Within, hAny])
+    (⟨fk, h⟩ : { fk : ForeignKey α // ForeignKey.within fk fs = true })
 
 instance {α : Type} [Entity α] [hf : HasForeignKey α] [IsEmpty hf.ForeignKey]
     (fs : Fields α) : IsEmpty (@ForeignKey.Within α _ hf fs) where
-  false w := IsEmpty.false w.1
+  false w :=
+    if hAny : ForeignKey.anyWithin (α := α) fs then
+      IsEmpty.false
+        (cast (by simp [ForeignKey.Within, hAny]) w :
+          { fk : ForeignKey α // ForeignKey.within fk fs = true }).1
+    else
+      nomatch (cast (by simp [ForeignKey.Within, hAny]) w : Empty)
 
 /-! ## Inbound reference counts (for `DeleteError.restricted`) -/
 
