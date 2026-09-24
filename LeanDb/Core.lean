@@ -187,6 +187,13 @@ instance : BEq (Id α) := ⟨fun a b => a.toInt64 == b.toInt64⟩
 -- manual: the derived instance would demand `Ord α` for a phantom parameter
 instance : Ord (Id α) := ⟨fun a b => compare a.toInt64 b.toInt64⟩
 
+/-- Issued AUTOINCREMENT ids are ≥ 1. The type still admits any `Int64`;
+    `Table.idsOk` / `Table.refsOk` are the well-formedness clauses. -/
+def Id.positive (id : Id α) : Bool := (0 : Int64) < id.toInt64
+
+/-- The `Nat` of an id. For issued (positive) ids this does not clamp. -/
+def Id.toNat (id : Id α) : Nat := id.toInt64.toNatClampNeg
+
 /-- A foreign reference to a row of `α`. Definitionally an `Id α`, so a
     `Ref` field compares directly against a fetched row's id. -/
 abbrev Ref (α : Type) := Id α
@@ -259,6 +266,13 @@ instance : SqlOrd Int64 where
 
 /-- Largest `Nat` a SQLite INTEGER column can hold. -/
 def natSqlMax : Nat := Int64.maxValue.toNatClampNeg
+
+/-- Issued id 1 round-trips through `toNat` (AUTOINCREMENT starts at 1). -/
+theorem Id.toNat_one {α} : Id.toNat (⟨1⟩ : Id α) = 1 := rfl
+
+/-- `Int64.ofNat` then `toNat` for a value SQLite can store as INTEGER. Closed
+    cases (`1`, `2`, …) reduce by `rfl`; the general inequality is `n ≤ natSqlMax`. -/
+theorem Id.toNat_ofNat_1 {α} : Id.toNat (⟨Int64.ofNat 1⟩ : Id α) = 1 := rfl
 
 /-- `some` iff `n` fits in a SQLite INTEGER (`0 … Int64.maxValue`). -/
 def natToSql (n : Nat) : Option Int64 :=

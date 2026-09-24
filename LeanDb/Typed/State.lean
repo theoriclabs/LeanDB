@@ -54,6 +54,16 @@ def Table.idsOk [Entity α] (t : Table α) : Bool :=
         ordered && inRange && go (some id) rs
   go none t.rows
 
+/-- Every `Ref` / `Option (Ref)` on a stored row is unset or at least 1.
+    Combined with `idsOk`, apps can map issued ids to `Nat` without a
+    non-negativity hypothesis (`Id.toNat`). -/
+def Table.refsOk [Entity α] [HasForeignKey α] (t : Table α) : Bool :=
+  t.rows.all fun r =>
+    (ForeignKey.all α).all fun fk =>
+      match ForeignKey.get fk r.val with
+      | none => true
+      | some tgt => Id.positive tgt
+
 /-- The entity invariant holds on every row (true when there is none). -/
 def Table.invariantsOk [Entity α] (t : Table α) : Bool :=
   t.rows.all fun r =>
@@ -97,10 +107,12 @@ def Table.uniquesOk [Entity α] [HasUnique α] (t : Table α) : Bool :=
 
 /-- Local well-formedness of one table (ids, decode, Checked, children,
     unique keys). Foreign keys need the whole `DbState`. -/
-def Table.check [Entity α] [HasUnique α] (t : Table α) : Bool :=
-  t.idsOk && t.invariantsOk && t.decodesOk && t.checkedOk && t.childrenOk && t.uniquesOk
+def Table.check [Entity α] [HasUnique α] [HasForeignKey α] (t : Table α) : Bool :=
+  t.idsOk && t.refsOk && t.invariantsOk && t.decodesOk && t.checkedOk &&
+    t.childrenOk && t.uniquesOk
 
-def Table.WF [Entity α] [HasUnique α] (t : Table α) : Prop := t.check = true
+def Table.WF [Entity α] [HasUnique α] [HasForeignKey α] (t : Table α) : Prop :=
+  t.check = true
 
 /-- Empty table for a packed entity (the instance is `p.entity`, not synthesized). -/
 def Table.ofPacked (p : PackedEntity) (next : Nat := 1)
@@ -265,13 +277,13 @@ def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
 def DbState.checkPacked {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.nTables) : Bool :=
   let p := i.pack t
   let tbl := st.tables t
-  @Table.check p.ty p.entity p.unique tbl &&
+  @Table.check p.ty p.entity p.unique p.foreignKey tbl &&
     @Table.fksOk s p.ty inferInstance p.entity p.foreignKey st tbl
 
 /-- Decidable well-formedness: every schema table is present (by the Pi),
-    every row decodes and is `Checked`, ids strictly increase and stay
-    `< next`, unique keys are unique, foreign keys resolve, child lists
-    attach. -/
+    every row decodes and is `Checked`, ids and `Ref`s are ≥ 1 and ids
+    stay `< next`, unique keys are unique, foreign keys resolve, child
+    lists attach. -/
 def DbState.checkWF {s : Type} [i : IsSchema s] (st : DbState s) : Bool :=
   i.tables.all fun t => DbState.checkPacked st t
 

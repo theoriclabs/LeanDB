@@ -472,7 +472,10 @@ private def testStaleBEq : IO Bool := do
   let sameIdDiffVal := e1 == e2
   let same := (e1 == e1)
   IO.println s!"  stale BEq same-id different-val = {sameIdDiffVal} (want false); reflexive = {same}"
-  return !sameIdDiffVal && same
+  let id1 : LeanDb.Id Bag := ⟨1⟩
+  let natOk := Id.toNat id1 == 1 && Id.positive id1
+  IO.println s!"  Id.toNat 1 = {Id.toNat id1} positive={Id.positive id1}"
+  return !sameIdDiffVal && same && natOk
 
 def run : IO Unit := do
   let d1 ← testD1
@@ -486,7 +489,7 @@ def run : IO Unit := do
   let d9 ← testD9
   let d10 ← testD10
   let beq ← testStaleBEq
-  check beq "UpdateError.stale BEq compares payloads, not just ids"
+  check beq "UpdateError.stale BEq compares payloads; issued ids are positive"
   -- Pinned against `79cfbcc` (M15-pre2). `true` = run equals denote
   -- on answer, failure payload, and tables. Flipped to `true` as each
   -- finding is fixed.
