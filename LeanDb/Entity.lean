@@ -93,13 +93,18 @@ class Entity (α : Type) where
       schema records it, and the check. The executor checks it after the
       child lists are attached on every read, and before every write. -/
   invariant : Option (String × (α → Bool)) := none
+  /-- Whether every column of `v` fits in its SQLite encoding (`toSql?`).
+      Derived instances generate a conjunction of `toSql?.isSome` so a
+      `Nat` above `Int64.maxValue` is not `Checked`. The default is `true`
+      (no columns). -/
+  rangeOk : α → Bool := fun _ => true
 
 /- Instance lookup reduces types only at reducible transparency, so a type
    stated through a class projection (`SqlOrd (Entity.fieldTy f)`,
    `OfNat (Entity.fieldTy f) 40`) is found only if the projection and the
    instance both unfold there. The derived instances are `@[reducible]`;
    these are the projections that appear in types. -/
-attribute [reducible] Entity.Field Entity.fieldTy Entity.codec
+attribute [reducible] Entity.Field Entity.fieldTy Entity.codec Entity.rangeOk
 
 /-! ## Inline structures (LEP-0003 C)
 

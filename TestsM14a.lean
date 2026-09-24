@@ -48,7 +48,7 @@ schema% App := Team, User
 /-- Non-vacuity: `denote (insert v) empty` has exactly one Team row, `v`. -/
 theorem insert_team_on_empty :
     let v : Team := ⟨"eng"⟩
-    let c := Checked.of v (by unfold Invariant; trivial)
+    let c := Checked.of v (by decide)
     let (res, st) := Txn.denote (σ := Unit) (s := App) (ε := Empty)
       (Txn.insert (α := Team) c) DbState.empty
     match res with
@@ -75,7 +75,10 @@ private def fresh (p : System.FilePath) : IO Unit := do
     if ← side.pathExists then IO.FS.removeFile side
 
 private def vTeam (r : Stored Team) : Valid Team :=
-  Valid.ofStored r (by unfold Invariant; trivial)
+  Valid.ofStored r (by
+    unfold Invariant
+    simp only [sqlRangeOk]
+    trivial)
 
 private def vUser (r : Stored User) : Valid User :=
   if h : Invariant User r.val then Valid.ofStored r h
@@ -83,6 +86,8 @@ private def vUser (r : Stored User) : Valid User :=
     let dummy : User := ⟨"_", r.val.email, r.val.team, r.val.tags⟩
     Valid.ofStored ⟨r.id, dummy⟩ <| by
       unfold Invariant
+      simp only [sqlRangeOk]
+      refine ⟨trivial, ?_⟩
       change (dummy.name != "") = true
       rfl
 

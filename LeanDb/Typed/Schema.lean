@@ -327,12 +327,18 @@ instance {s α : Type} [IsSchema s] [h : HasReferencedBy s α] [IsEmpty h.Refere
 
 /-! ## Checked values -/
 
-/-- Every stored value of `α` satisfies this: the declared invariant, or
-    `True` when the entity has none. -/
+/-- Every stored value of `α` satisfies this: each field fits in its
+    SQLite column (`toSql?`), and the declared invariant (or `True`
+    when the entity has none). `Nat` above `Int64.maxValue` is excluded,
+    so `insert` / `update` / `set` / `patch` cannot silently clamp. -/
+def sqlRangeOk (α : Type) [Entity α] (v : α) : Bool :=
+  Entity.rangeOk v
+
 def Invariant (α : Type) [Entity α] (v : α) : Prop :=
-  match Entity.invariant (α := α) with
-  | none => True
-  | some (_, p) => p v = true
+  sqlRangeOk α v = true ∧
+    match Entity.invariant (α := α) with
+    | none => True
+    | some (_, p) => p v = true
 
 /-- Names of the checks that failed. Today's invariant is one Bool, so a
     failure names that invariant; per-field breakdown is M14b/M9. -/
@@ -350,14 +356,17 @@ def Checked.of {α : Type} [Entity α] (v : α) (h : Invariant α v) : Checked �
 
 /-- Runtime check. The sketch's `α.check`. -/
 def Entity.check (α : Type) [Entity α] (v : α) : Except (InvalidFields α) (Checked α) :=
-  match h : Entity.invariant (α := α) with
-  | none =>
-      .ok ⟨v, by unfold Invariant; rw [h]; trivial⟩
-  | some (name, p) =>
-      if hp : p v = true then
-        .ok ⟨v, by unfold Invariant; rw [h]; exact hp⟩
-      else
-        .error ⟨[name]⟩
+  if hr : sqlRangeOk α v = true then
+    match h : Entity.invariant (α := α) with
+    | none =>
+        .ok ⟨v, by unfold Invariant; rw [h]; exact ⟨hr, trivial⟩⟩
+    | some (name, p) =>
+        if hp : p v = true then
+          .ok ⟨v, by unfold Invariant; rw [h]; exact ⟨hr, hp⟩⟩
+        else
+          .error ⟨[name]⟩
+  else
+    .error ⟨["sqlRange"]⟩
 
 /-- `α.check v` as a projection on `Checked`. -/
 def Checked.check {α : Type} [Entity α] (v : α) : Except (InvalidFields α) (Checked α) :=
@@ -379,15 +388,18 @@ instance {α : Type} [Entity α] : CoeOut (Valid α) (Stored α) where
   coe := Valid.toStored
 
 /-- `Invariant` is a Boolean equality (or `True`), so it is decidable. -/
-instance {α : Type} [Entity α] (v : α) : Decidable (Invariant α v) :=
-  match h : Entity.invariant (α := α) with
-  | none =>
-      isTrue (by unfold Invariant; rw [h]; trivial)
-  | some (_, p) =>
-      if hp : p v = true then
-        isTrue (by unfold Invariant; rw [h]; exact hp)
-      else
-        isFalse (by unfold Invariant; rw [h]; exact hp)
+instance (priority := high) {α : Type} [Entity α] (v : α) : Decidable (Invariant α v) :=
+  match hr : sqlRangeOk α v with
+  | true =>
+      match h : Entity.invariant (α := α) with
+      | none => isTrue (by unfold Invariant; rw [hr, h]; exact ⟨rfl, trivial⟩)
+      | some (_, p) =>
+          if hp : p v = true then
+            isTrue (by unfold Invariant; rw [hr, h]; exact ⟨rfl, hp⟩)
+          else
+            isFalse (by unfold Invariant; rw [hr, h]; exact fun ⟨_, hi⟩ => hp hi)
+  | false =>
+      isFalse (by unfold Invariant; rw [hr]; exact fun ⟨hr', _⟩ => Bool.noConfusion hr')
 
 /-- From a stored row, when the invariant holds. Runtime-free when `h`
     is a proof; `decide` closes closed goals. -/

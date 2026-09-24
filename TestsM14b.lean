@@ -69,7 +69,7 @@ private theorem insertNewOk {α : Type} [Entity α] [HasUnique α] [HasForeignKe
     [IsEmpty (InsertError α)] (_v : Checked α) : True := trivial
 
 example : True :=
-  insertNewOk (α := Team) (Checked.of ⟨"eng"⟩ (by unfold Invariant; trivial))
+  insertNewOk (α := Team) (Checked.of ⟨"eng"⟩ (by decide))
 
 /-- One unique, no references: the match need not mention `missingRef`. -/
 example (e : InsertError Account) : Nat :=
@@ -103,7 +103,8 @@ def deleteTeam {σ} (id : _root_.LeanDb.Id Team) : Txn σ App NoteError Unit := 
 
 /-- `insertNew` is available for `Team` (no unique, no `Ref`). -/
 def addTeam {σ} (t : Team) : Txn σ App Empty (_root_.LeanDb.Id Team) := do
-  let row ← Txn.insertNew (Checked.of t (by unfold Invariant; trivial))
+  let row ← Txn.insertNew (Checked.of t (by
+    unfold Invariant; simp only [sqlRangeOk]; trivial))
   return row.id
 
 /-- `User` has unique indexes, so `IsEmpty (InsertError User)` is not found.
@@ -270,7 +271,8 @@ private def insertUser {σ} (c : Checked User) :
   return r.map Current.toStored
 
 private def insertTeam {σ} (t : Team) : Txn σ App Empty (Stored Team) := do
-  let row ← Txn.insertNew (Checked.of t (by unfold Invariant; trivial))
+  let row ← Txn.insertNew (Checked.of t (by
+    unfold Invariant; simp only [sqlRangeOk]; trivial))
   return row.toStored
 
 private def mustValid {α} [Entity α] (r : Stored α) : DbM (Valid α) :=
@@ -419,7 +421,7 @@ private def harnessCases : DbM Nat := do
   eqTxn (getStored (α := Team) ⟨1⟩) (eqEmpty optStoredEq) "H get team after delete"
   n := n + 1
   eqTxn (do
-      let _ ← Txn.insertNew (Checked.of (⟨"tmp"⟩ : Team) (by unfold Invariant; trivial))
+      let _ ← Txn.insertNew (Checked.of (⟨"tmp"⟩ : Team) (by decide))
       Txn.throw (α := Unit) "rollback"
     ) (abortStr fun _ _ => true) "H insert then abort"
   n := n + 1

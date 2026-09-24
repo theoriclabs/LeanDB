@@ -106,7 +106,11 @@ private def fresh (p : System.FilePath) : IO Unit := do
     if ← side.pathExists then IO.FS.removeFile side
 
 private def ck {α} [Entity α] (v : α)
-    (h : Invariant α v := by unfold Invariant; first | trivial | decide) : Checked α :=
+    (h : Invariant α v := by
+      unfold Invariant
+      simp only [sqlRangeOk]
+      first | trivial | (refine ⟨trivial, ?_⟩; decide) | decide) :
+    Checked α :=
   Checked.of v h
 
 private def stateEqS (a b : DbState S) : Bool :=
@@ -320,36 +324,43 @@ error: Invalid `⟨...⟩` notation: Constructor for `LeanDb.Current` is marked 
 -/
 #guard_msgs in
 example {σ} (s : Stored Org) : Current σ Org :=
-  ⟨s, by unfold Invariant; trivial⟩
+  ⟨s, by decide⟩
 
 private def testD6 : IO Bool := pure true
 
-/-! ## D7: Nat above Int64.max -/
+/-! ## D7: Nat above Int64.max is not `Checked` -/
+
+/--
+error: Tactic `decide` proved that the proposition
+  Invariant Counter { n := 2 ^ 63 }
+is false
+-/
+#guard_msgs in
+example : Checked Counter := Checked.of ⟨2^63⟩ (by decide)
 
 private def testD7 : IO Bool := do
+  match Entity.check Counter ⟨2^63⟩ with
+  | .ok _ =>
+      IO.println "  D7: DISAGREE Entity.check accepted Nat 2^63"
+      return false
+  | .error names =>
+      IO.println s!"  D7 Entity.check 2^63: AGREE refused {names.names}"
+  match Entity.check Counter ⟨1⟩ with
+  | .error _ =>
+      IO.println "  D7: DISAGREE Entity.check refused Nat 1"
+      return false
+  | .ok _ => pure ()
   fresh dbPath
-  let a ← expectOk (← withDb dbPath specs do
+  expectOk (← withDb dbPath specs do
     let c ← LeanDb.insert Counter ⟨1⟩
     cmpTxn (fun {_} => do
         match ← Txn.get Counter c.id with
         | none => return "none"
         | some row =>
-            let r ← Txn.patch (α := Counter) row (Fields.all Counter) (ck ⟨2^63⟩)
+            let r ← Txn.set (α := Counter) row (ck ⟨2⟩)
             return (match r with | .ok s => s!"ok {s.val.n}" | .error _ => "setError"))
-      eqStr "D7 patch Nat 2^63"
-  ) "D7 patch"
-  fresh dbPath
-  let b ← expectOk (← withDb dbPath specs do
-    let c ← LeanDb.insert Counter ⟨1⟩
-    cmpTxn (fun {_} => do
-        match ← Txn.get Counter c.id with
-        | none => return "none"
-        | some row =>
-            let r ← Txn.set (α := Counter) row (ck ⟨2^63⟩)
-            return (match r with | .ok s => s!"ok {s.val.n}" | .error _ => "setError"))
-      eqStr "D7 set Nat 2^63"
+      eqStr "D7 set Nat 2 (in range)"
   ) "D7 set"
-  return a && b
 
 /-! ## D8: first after limit 0 -/
 
@@ -474,7 +485,7 @@ def run : IO Unit := do
   check d4 "D4 append: list CAS and parent unique/FK"
   check d5 "D5 ClosedEnum orderBy: Lean sort in both"
   check d6 "D6 Current constructor is private; Has is required"
-  check (!d7) "D7 still reproduces (set of Nat 2^63 is a DbFault; patch clamps in both)"
+  check d7 "D7 Nat above Int64.max is not Checked"
   check (!d8) "D8 still reproduces (first after limit 0)"
   check (!d9) "D9 still reproduces (quantifier on the left of join is dropped)"
   check (!d10) "D10 still reproduces (mixed-invariant patch is DbFault vs .gone)"

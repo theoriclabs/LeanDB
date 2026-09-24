@@ -215,9 +215,12 @@ def patchEmailOnly {σ} (id : _root_.LeanDb.Id User) (new : Checked User) :
 private theorem User.email_preserves (u : User) (email : String)
     (h : Invariant User u) : Invariant User { u with email } := by
   unfold Invariant at h ⊢
-  have heq : Entity.invariant (α := User) = some ("TestsM14c.User.invariant", User.invariant) := rfl
-  rw [heq] at h ⊢
-  simpa [User.invariant] using h
+  refine ⟨?_, ?_⟩
+  · exact h.1
+  · have heq : Entity.invariant (α := User) =
+        some ("TestsM14c.User.invariant", User.invariant) := rfl
+    rw [heq] at h ⊢
+    simpa [User.invariant] using h.2
 
 /-- LeanAPI `writeStep`: `Read.first` on a filtered query, then
     `Txn.update` with `Checked.of` from `row.property`. No
@@ -236,7 +239,7 @@ private def testPatchMergeDenote : IO Unit := do
   let st0 := DbState.empty (s := App)
   let (rTeam, st1) :=
     Txn.denote (σ := Unit) (s := App) (ε := Empty)
-      (Txn.insertNew (Checked.of (⟨"eng"⟩ : Team) (by unfold Invariant; trivial))) st0
+      (Txn.insertNew (Checked.of (⟨"eng"⟩ : Team) (by decide))) st0
   let team ← match rTeam with
     | .error e => nomatch e
     | .ok row => pure row
@@ -275,7 +278,8 @@ private def testPatchMergeDenote : IO Unit := do
 /-- Decidable `checkWF`: empty is WF; duplicate unique, dangling FK,
     and id ≥ next are not. A broken invariant cannot inhabit `Valid`. -/
 private def vTeam (r : Stored Team) : Valid Team :=
-  Valid.ofStored r (by unfold Invariant; trivial)
+  Valid.ofStored r (by
+    unfold Invariant; simp only [sqlRangeOk]; trivial)
 
 private def vUser (r : Stored User) : Valid User :=
   if h : Invariant User r.val then Valid.ofStored r h
@@ -283,6 +287,8 @@ private def vUser (r : Stored User) : Valid User :=
     let dummy : User := ⟨"_", r.val.email, r.val.team, r.val.tags⟩
     Valid.ofStored ⟨r.id, dummy⟩ <| by
       unfold Invariant
+      simp only [sqlRangeOk]
+      refine ⟨trivial, ?_⟩
       change (dummy.name != "") = true
       rfl
 
@@ -353,7 +359,7 @@ private def testRunRead : IO Unit := do
   let svc ← Runtime.Service.new appBase (Instance.ofPath dbPathSvc) .serve true
     { readers := 0 }
   let p : {σ : Type} → Txn σ App Empty (Stored Team) := fun {_} => do
-    let row ← Txn.insertNew (Checked.of (⟨"eng"⟩ : Team) (by unfold Invariant; trivial))
+    let row ← Txn.insertNew (Checked.of (⟨"eng"⟩ : Team) (by decide))
     return row.toStored
   let ins ← svc.runTxn (s := App) p
   let team ← match ins with
@@ -422,7 +428,8 @@ private def testDeleteCascade : IO Unit := do
     check' (((Entity.spec User).ddl.splitOn "ON DELETE RESTRICT").length == 2)
       "User.team DDL is RESTRICT"
     let (eng, ada) ← seedAda
-    let note := Checked.of (⟨"hi", ada.id⟩ : Note) (by unfold Invariant; trivial)
+    let note := Checked.of (⟨"hi", ada.id⟩ : Note) (by
+      unfold Invariant; simp only [sqlRangeOk]; trivial)
     eqTxn (fun {_} => do
         let r ← Txn.insert (α := Note) note
         return r.map Current.toStored)
@@ -500,7 +507,8 @@ private def harnessRandom (seed : Nat) : DbM Nat := do
   let mut n := 0
   eqTxn (fun {_} => do
       let row ← Txn.insertNew
-        (Checked.of (⟨s!"eng{seed}"⟩ : Team) (by unfold Invariant; trivial))
+        (Checked.of (⟨s!"eng{seed}"⟩ : Team) (by
+          unfold Invariant; simp only [sqlRangeOk]; trivial))
       return row.toStored)
     (eqEmpty storedEq) s!"H{seed} team"
   n := n + 1
@@ -523,7 +531,7 @@ private def harnessRandom (seed : Nat) : DbM Nat := do
   let users := (DbState.get (α := User) st).rows
   for u in users do
     let note := Checked.of (⟨s!"n{u.val.name}", u.id⟩ : Note)
-      (by unfold Invariant; trivial)
+      (by unfold Invariant; simp only [sqlRangeOk]; trivial)
     eqTxn (fun {_} => do
         let r ← Txn.insert (α := Note) note
         return r.map Current.toStored)
