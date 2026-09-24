@@ -9,6 +9,7 @@ import TestsLdb19
 import TestsLdb20
 import TestsLdb21
 import TestsLdb22
+import TestsLdb23
 
 /-! Engine tests: codecs, deriving, the dependent select against a real
 SQLite file, CAS staleness, FK restriction. Fixture types live here — the
@@ -3510,5 +3511,6 @@ def main : IO UInt32 := do
   TestsLdb20.run
   TestsLdb21.run
   TestsLdb22.run
+  TestsLdb23.run
   IO.println "all engine tests passed"
   return 0

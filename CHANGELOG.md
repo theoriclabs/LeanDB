@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **LDB-23.** `Pred.Snapshot.rows` fails on an undecodable row instead of
+  dropping it (which made `forall` vacuously true over corrupt data).
 - **LDB-22.** `count` / `exists?` apply the lambda, not only the plan, so
   a residual (or a hand-written `.tt` plan) cannot overcount. `countP` /
   `existsP` still push `COUNT(*)` / `EXISTS` for exact plans.

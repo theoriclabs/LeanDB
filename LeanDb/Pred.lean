@@ -193,12 +193,30 @@ structure Snapshot where
     under it, and `forall` is vacuous. -/
 def Snapshot.empty : Snapshot := ⟨[]⟩
 
-/-- `β`'s rows, decoded. -/
-def Snapshot.rows (s : Snapshot) (β : Type) [Entity β] : Array (Stored β) :=
+/-- `β`'s rows, decoded. An undecodable row is a failure, not a silent
+    drop: dropping would make `forall` vacuously true over a corrupt
+    snapshot (LDB-23). -/
+def Snapshot.rows? (s : Snapshot) (β : Type) [Entity β] : Except DbError (Array (Stored β)) :=
   match s.tables.lookup (Entity.tableName β) with
-  | none => #[]
-  | some raw => raw.filterMap fun (id, cols) =>
-      (Entity.decode cols : Except DbError β).toOption.map fun v => ⟨⟨id⟩, v⟩
+  | none => .ok #[]
+  | some raw => raw.mapM fun (id, cols) =>
+      match (Entity.decode cols : Except DbError β) with
+      | .ok v => .ok ⟨⟨id⟩, v⟩
+      | .error e => .error e
+
+/-- `β`'s rows, decoded. Panics on an undecodable row: the executor
+    refuses those the same way, and a hand-built snapshot that smuggles
+    one in must not make a `forall` vacuously true. -/
+def Snapshot.rows (s : Snapshot) (β : Type) [Entity β] : Array (Stored β) :=
+  match rows? s β with
+  | .ok rs => rs
+  | .error e => panic! s!"LeanDb.Pred.Snapshot.rows: undecodable row: {e}"
+
+/-- Add already-encoded rows, including ones that may not decode as `β`.
+    `rows?` fails instead of dropping them. -/
+def Snapshot.addRaw (s : Snapshot) (table : String) (rows : Array (Int64 × Array LeanDb.Col)) :
+    Snapshot :=
+  ⟨(table, rows) :: s.tables⟩
 
 /-- Add (or replace) one table's rows. -/
 def Snapshot.add (s : Snapshot) (β : Type) [Entity β] (rows : Array (Stored β)) : Snapshot :=
