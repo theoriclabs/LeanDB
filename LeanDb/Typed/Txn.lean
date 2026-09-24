@@ -44,6 +44,12 @@ inductive Txn (σ : Type) (s : Type) (ε : Type) : Type → Type 1 where
   | set (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
       (row : Current σ α) (new : Checked α) :
       Txn σ s ε (Except (SetError α (Fields.all α)) (Current σ α))
+  /-- Write only the columns in `fs`. `new` supplies those columns (it is
+      a full `Checked` row); the stored row is `Fields.apply fs old new.val`,
+      so a different value of a non-written field in `new` is discarded.
+      The merged row stays `Checked` for invariants that do not mix
+      written and unwritten fields — callers typically build `new` as
+      `{old with f := v}`, which makes merge equal `new`. -/
   | patch (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
       (row : Current σ α) (fs : Fields α) (new : Checked α) :
       Txn σ s ε (Except (SetError α fs) (Current σ α))
@@ -225,15 +231,16 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
   | _, @Txn.patch _ _ _ α _ _ _ row fs new, st =>
       match (DbState.get (α := α) st).rows.find? (·.id == row.id) with
       | none => (.ok (.error .gone), st)
-      | some _ =>
-          match firstDuplicateTouching fs new.val st (some row.id) with
+      | some cur =>
+          let merged := Fields.apply fs cur.val new.val
+          match firstDuplicateTouching fs merged st (some row.id) with
           | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
           | none =>
-              match firstMissingWithin fs new.val st with
+              match firstMissingWithin fs merged st with
               | some fk => (.ok (.error (.missingRef fk)), st)
               | none =>
-                  let st' := replaceRow st row.id new.val
-                  (.ok (.ok ⟨⟨row.id, new.val⟩⟩), st')
+                  let st' := replaceRow st row.id merged
+                  (.ok (.ok ⟨⟨row.id, merged⟩⟩), st')
   | _, @Txn.append _ _ _ α _ _ old new, st =>
       match (DbState.get (α := α) st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
@@ -377,6 +384,29 @@ def setExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
                 let written ← LeanDb.update cur new.val
                 return .ok ⟨written⟩
 
+/-- `patch`: merge `fs` into the stored row and `UPDATE` only those columns. -/
+def patchExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
+    (row : Current σ α) (fs : Fields α) (new : Checked α) :
+    Db (Except (SetError α fs) (Current σ α)) :=
+  withTransaction do
+    match ← LeanDb.get row.id with
+    | none => return .error .gone
+    | some cur =>
+        let merged := Fields.apply fs cur.val new.val
+        match ← firstDuplicateTouchingDb fs merged (some row.id) with
+        | some (ix, holder) => return .error (.duplicate ix holder)
+        | none =>
+            match ← firstMissingWithinDb fs merged with
+            | some fk => return .error (.missingRef fk)
+            | none =>
+                match ← LeanDb.patch cur.id (Fields.toEnginePatch fs merged) with
+                | .notFound => return .error .gone
+                | .guardFailed => return .error .gone
+                | .updated =>
+                    match ← LeanDb.get row.id with
+                    | none => return .error .gone
+                    | some written => return .ok ⟨written⟩
+
 def appendExec {α} [Entity α] [HasListField α]
     (old : Stored α) (new : Checked α) : Db (Except (AppendError α) (Stored α)) :=
   withTransaction do
@@ -433,7 +463,7 @@ def exec.go {σ s ε : Type} [IsSchema s] :
   | _, @Txn.set _ _ _ α _ _ _ row new =>
       Except.ok <$> setExec (σ := σ) row (Fields.all α) new
   | _, @Txn.patch _ _ _ α _ _ _ row fs new =>
-      Except.ok <$> setExec (σ := σ) row fs new
+      Except.ok <$> patchExec (σ := σ) row fs new
   | _, @Txn.append _ _ _ α _ _ old new => Except.ok <$> appendExec old new
   | _, @Txn.delete _ _ _ α _ _ id => Except.ok <$> deleteExec (s := s) id
 

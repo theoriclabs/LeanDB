@@ -31,6 +31,48 @@ structure Fields (α : Type) [Entity α] where
     (f : Entity.Field α) : Fields α :=
   Fields.of [f]
 
+/-- Re-attach `old`'s child lists onto a parent decoded from columns. -/
+def Fields.withOldChildren {α} [Entity α] (old v : α) : α :=
+  (Entity.children (α := α)).foldl (init := v) fun acc link =>
+    let pairs := (link.rows old).zipIdx.map fun (cols, i) => (i, cols)
+    match link.attach pairs acc with
+    | .ok a => a
+    | .error _ => acc
+
+/-- The stored row after a `patch`: `old` with only columns in `fs` taken
+    from `new`. Child lists stay `old`'s — they are not `Entity.Field`s,
+    so `patch` cannot name them (`append` / `set`).
+
+    The merged row is `Checked` when `old` is well-formed and `new` is
+    `Checked`, for any invariant that does not mix a written field with
+    an unwritten one (the usual case: `User.invariant` is `name ≠ ""`,
+    and a patch of `email` keeps `name`). Callers pass a `Checked α` of
+    the intended full row; only `fs` is written, so a different value in
+    a non-written field of `new` does not land in the database. -/
+def Fields.apply {α} [Entity α] (fs : Fields α) (old new : α) : α :=
+  let oldC := Entity.encode old
+  let newC := Entity.encode new
+  let fields := Entity.fields (α := α)
+  if oldC.size != newC.size || oldC.size != fields.size then
+    old
+  else
+    let merged := Id.run do
+      let mut out : Array Col := Array.mkEmpty oldC.size
+      for i in [0:fields.size] do
+        match fields[i]?, oldC[i]?, newC[i]? with
+        | some f, some o, some n =>
+            out := out.push (if fs.mem f then n else o)
+        | _, _, _ => pure ()
+      return out
+    match Entity.decode merged with
+    | .error _ => old
+    | .ok v => Fields.withOldChildren old v
+
+/-- Engine `Patch` that `UPDATE`s only the columns in `fs`. -/
+def Fields.toEnginePatch {α} [Entity α] (fs : Fields α) (v : α) : Patch α :=
+  ⟨(Entity.fields (α := α)).filterMap fun f =>
+      if fs.mem f then some (Assignment.of f (Entity.get f v)) else Option.none⟩
+
 /-! ## Constraints restricted to written fields -/
 
 /-- Whether unique index `ix` names a column in `fs`. -/
