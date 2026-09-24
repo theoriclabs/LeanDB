@@ -1,10 +1,11 @@
 # Typed interface (M14)
 
 LeanDB programs as values: a read has a pure meaning over `DbState`, and
-execution is one deferred snapshot. Writes and transaction programs are
-M14 part B.
+execution is one deferred snapshot. Writes and transaction programs have
+the same shape: a failure type derived from the schema, a pure meaning,
+and `run` that equals that meaning on well-formed states.
 
-## Part A (this milestone)
+## Part A
 
 **Schema symbols**, declared next to the entity:
 
@@ -42,16 +43,55 @@ well-formed state. `Read.run` executes in one deferred snapshot and
 returns `Except DbFault α`.
 
 **Faults.** `DbFault` is locking, I/O, corruption/undecodable row, or
-schema mismatch. These are not part of a `Read` type.
+schema mismatch. These are not part of a `Read` or `Txn` type.
 
-## Part B (next)
+## Part B
 
-Writes as values, each with a failure type derived from the schema
-(`InsertError`, `UpdateError`, `SetError`, `AppendError`, `DeleteError`):
-unique clashes, missing refs, stale CAS, restrict-on-delete. Writes take
-`Checked α`. `Txn s ε α` declares its failure type, is all-or-nothing
-(`throw`, `orAbort`, `orElse`), and runs under `BEGIN IMMEDIATE` with a
-SAVEPOINT per write. `Current α` is a row this transaction has seen
-(`set`/`patch` have no `stale`). `Read` embeds into `Txn`. The
-execution-equals-meaning harness (random well-formed states against
-SQLite and `denote`) ships with part B.
+**Failure types**, derived from the schema:
+
+- `InsertError α` — `duplicate ix holder`, `missingRef fk`
+- `UpdateError α` — `stale current`, `gone`, then the insert failures
+- `SetError α fs` — `gone`, `duplicate` on `Unique.Touching fs`,
+  `missingRef` on `ForeignKey.Within fs` (only constraints over written
+  fields)
+- `AppendError α` — `stale current`, `gone`, `notAppend list`
+- `DeleteError s α` — `gone`, `restricted who rows`
+
+Absent failures are uninhabited (`Unique α := Empty` with no index, and
+the same for `ForeignKey` / `ListField` / `ReferencedBy`). `IsEmpty` is
+found automatically; `insertNew` requires `[IsEmpty (InsertError α)]`.
+
+**Programs.** `Txn σ s ε α` reads and writes over schema `s` and may abort
+with `ε`. `σ` is an ST-style transaction index: `Current σ α` is a row
+this transaction has seen, coerces to `Stored α`, and cannot leave
+`Txn.run` (`{σ : Type} → Txn σ s ε α`). `Read` embeds. Combinators:
+`throw`, `orAbort`, `orElse`. Writes take `Checked α`:
+
+| Operation | Failure | Success |
+|---|---|---|
+| `insert` | `InsertError α` | `Current σ α` |
+| `insertNew` | (none; needs `IsEmpty`) | `Current σ α` |
+| `update` | `UpdateError α` | `Stored α` (CAS, `IS` on parent columns) |
+| `set` | `SetError α Fields.all` | `Current σ α` |
+| `patch` | `SetError α fs` | `Current σ α` |
+| `append` | `AppendError α` | `Stored α` |
+| `delete` | `DeleteError s α` | `Stored α` |
+
+**Meaning.** `Txn.denote : Txn σ s ε α → DbState s → Except ε α × DbState s`.
+Id assignment uses the per-table AUTOINCREMENT counter. Unique indexes
+are checked in declaration order, then foreign keys in field order;
+`delete` counts inbound references in schema then field order. An abort
+(`throw` / `orAbort`) returns the original state.
+
+**Execution.** `Txn.run` is `BEGIN IMMEDIATE`, a SAVEPOINT around each
+write (`withTransaction`), and the same constraint checks in the same
+order before the statement. It returns `Except DbFault (Except ε α)`.
+A domain abort rolls back the outer transaction.
+
+**Harness.** `LeanDb/Typed/Harness.lean` compares `run` to `denote` on
+answer, failure constructor with payload, and final tables.
+`TestsM14b.lean` uses the part A schema (join, child list, unique
+indexes, foreign key, invariant), ports the QUERIES.md §3.6 `register`
+and `deleteTeam` examples, and includes a `#guard_msgs` test that adding
+`unique Account2.byEmail` makes a non-exhaustive `InsertError` match
+fail.

@@ -1,7 +1,7 @@
 import LeanDb
 
-/-! M14 part B: schema-derived write failure types, `Txn`, meaning, and
-    `Txn.run`. The execution-equals-meaning harness lands next. -/
+/-! M14 part B: schema-derived write failure types, `Txn`, meaning,
+    `Txn.run`, and the execution-equals-meaning harness. -/
 
 namespace TestsM14b
 
@@ -231,9 +231,296 @@ private def testRun : IO Unit := do
               throw (.sqlite "FAIL: run next ≠ denote next")
   discard <| expectOk r "run addTeam"
 
+open LeanDb.Harness
+
+private def stateEqApp (a b : DbState App) : Bool :=
+  tableEq (DbState.get (α := Team) a) (DbState.get (α := Team) b) &&
+    tableEq (DbState.get (α := User) a) (DbState.get (α := User) b)
+
+private def eqTxn {ε α} (p : {σ : Type} → Txn σ App ε α)
+    (eq : Except ε α → Except ε α → Bool) (msg : String) : DbM Unit := do
+  let st0 ← DbState.load (s := App)
+  match ← Txn.run (s := App) p with
+  | .error e => throw (.sqlite s!"FAIL: {msg}: fault {e}")
+  | .ok got =>
+      let (want, stD) := Txn.denote (σ := Unit) (s := App) (p (σ := Unit)) st0
+      unless eq got want do
+        throw (.sqlite s!"FAIL: {msg}: run ≠ denote")
+      let st1 ← DbState.load (s := App)
+      unless stateEqApp st1 stD do
+        throw (.sqlite s!"FAIL: {msg}: final state ≠ denote")
+
+private def eqEmpty {α} (eq : α → α → Bool) :
+    Except Empty α → Except Empty α → Bool
+  | .ok a, .ok b => eq a b
+  | .error e, _ => nomatch e
+  | _, .error e => nomatch e
+
+private def insertUser {σ} (c : Checked User) :
+    Txn σ App Empty (Except (InsertError User) (Stored User)) := do
+  let r ← Txn.insert (α := User) c
+  return r.map Current.toStored
+
+private def insertTeam {σ} (t : Team) : Txn σ App Empty (Stored Team) := do
+  let row ← Txn.insertNew (Checked.of t (by unfold Invariant; trivial))
+  return row.toStored
+
+private def getStored {σ α} [Entity α] (id : _root_.LeanDb.Id α) :
+    Txn σ App Empty (Option (Stored α)) := do
+  let r ← Txn.get α id
+  return r.map Current.toStored
+
+private def lookupStored {σ α} [Entity α] [HasUnique α]
+    (ix : Unique α) (key : Unique.Key ix) :
+    Txn σ App Empty (Option (Stored α)) := do
+  let r ← Txn.lookup α ix key
+  return r.map Current.toStored
+
+private def mustCheck (u : User) : DbM (Checked User) :=
+  match Entity.check User u with
+  | .ok c => return c
+  | .error _ => throw (.sqlite s!"FAIL: check {u.name}")
+
+private def seedWF : DbM (Stored Team × Stored User × Stored User) := do
+  let eng ← LeanDb.insert Team ⟨"eng"⟩
+  let ada ← LeanDb.insert User ⟨"ada", "ada@x", eng.id, [⟨"lead"⟩]⟩
+  let alonzo ← LeanDb.insert User ⟨"alonzo", "alonzo@x", eng.id, []⟩
+  return (eng, ada, alonzo)
+
+private def abortStr {α} (eqA : α → α → Bool) :
+    Except String α → Except String α → Bool :=
+  exceptEq (fun x y => x == y) eqA
+
+private def noteEq : Except NoteError Unit → Except NoteError Unit → Bool :=
+  exceptEq (fun x y => decide (x = y)) (fun (_ _ : Unit) => true)
+
+private def uniqueUserEq (a b : Unique User) : Bool :=
+  match a, b with
+  | .byName, .byName => true
+  | .byEmail, .byEmail => true
+  | _, _ => false
+
+private def fkUserEq (a b : ForeignKey User) : Bool :=
+  match a, b with
+  | .team, .team => true
+
+private def lfUserEq (a b : ListField User) : Bool :=
+  match a, b with
+  | .tags, .tags => true
+
+private def rbTeamEq (a b : ReferencedBy App Team) : Bool :=
+  match a, b with
+  | .user_team, .user_team => true
+
+private def eqIns :
+    Except Empty (Except (InsertError User) (Stored User)) →
+    Except Empty (Except (InsertError User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x y && h1 == h2
+    | .error (.missingRef x), .error (.missingRef y) => fkUserEq x y
+    | _, _ => false
+
+private def eqUpd :
+    Except Empty (Except (UpdateError User) (Stored User)) →
+    Except Empty (Except (UpdateError User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.stale a), .error (.stale b) => storedEq a b
+    | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x y && h1 == h2
+    | .error (.missingRef x), .error (.missingRef y) => fkUserEq x y
+    | _, _ => false
+
+private def eqApp :
+    Except Empty (Except (AppendError User) (Stored User)) →
+    Except Empty (Except (AppendError User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.stale a), .error (.stale b) => storedEq a b
+    | .error (.notAppend x), .error (.notAppend y) => lfUserEq x y
+    | _, _ => false
+
+private def eqDelTeam :
+    Except Empty (Except (DeleteError App Team) (Stored Team)) →
+    Except Empty (Except (DeleteError App Team) (Stored Team)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.restricted x n1), .error (.restricted y n2) => rbTeamEq x y && n1 == n2
+    | _, _ => false
+
+private def eqDelUser :
+    Except Empty (Except (DeleteError App User) (Stored User)) →
+    Except Empty (Except (DeleteError App User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.restricted x _), .error (.restricted _ _) => nomatch x
+    | _, _ => false
+
+private def eqSet (fs : Fields User) :
+    Except Empty (Except (SetError User fs) (Stored User)) →
+    Except Empty (Except (SetError User fs) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x.ix y.ix && h1 == h2
+    | .error (.missingRef x), .error (.missingRef y) => fkUserEq x.fk y.fk
+    | _, _ => false
+
+/-- Hand cases. Returns how many comparisons ran. -/
+private def harnessCases : DbM Nat := do
+  let mut n := 0
+  eqTxn (insertTeam ⟨"eng"⟩) (eqEmpty storedEq) "H insert team"
+  n := n + 1
+  let c ← mustCheck ⟨"ada", "ada@x", ⟨1⟩, []⟩
+  eqTxn (insertUser c) eqIns "H insert ada"
+  n := n + 1
+  let c ← mustCheck ⟨"ada", "dup@x", ⟨1⟩, []⟩
+  eqTxn (insertUser c) eqIns "H duplicate byName"
+  n := n + 1
+  let c ← mustCheck ⟨"grace", "ada@x", ⟨1⟩, []⟩
+  eqTxn (insertUser c) eqIns "H duplicate byEmail"
+  n := n + 1
+  let c ← mustCheck ⟨"miss", "miss@x", ⟨99⟩, []⟩
+  eqTxn (insertUser c) eqIns "H missingRef"
+  n := n + 1
+  eqTxn (deleteTeam ⟨1⟩) noteEq "H deleteTeam restricted"
+  n := n + 1
+  eqTxn (Txn.delete (α := Team) ⟨1⟩) eqDelTeam "H delete team restricted"
+  n := n + 1
+  eqTxn (Txn.delete (α := User) ⟨1⟩) eqDelUser "H delete user"
+  n := n + 1
+  eqTxn (Txn.delete (α := User) ⟨1⟩) eqDelUser "H delete user gone"
+  n := n + 1
+  eqTxn (Txn.delete (α := Team) ⟨1⟩) eqDelTeam "H delete team"
+  n := n + 1
+  eqTxn (insertTeam ⟨"ops"⟩) (eqEmpty storedEq) "H insert ops"
+  n := n + 1
+  eqTxn (getStored (α := Team) ⟨1⟩) (eqEmpty optStoredEq) "H get team after delete"
+  n := n + 1
+  eqTxn (do
+      let _ ← Txn.insertNew (Checked.of (⟨"tmp"⟩ : Team) (by unfold Invariant; trivial))
+      Txn.throw (α := Unit) "rollback"
+    ) (abortStr fun _ _ => true) "H insert then abort"
+  n := n + 1
+  return n
+
+private def harnessSeeded : DbM Nat := do
+  let mut n := 0
+  let (eng, ada, alonzo) ← seedWF
+  eqTxn (Txn.ofRead (Read.get User ada.id)) (eqEmpty optStoredEq) "H liftRead get"
+  n := n + 1
+  let c ← mustCheck ⟨ada.val.name, ada.val.email, ada.val.team, ada.val.tags ++ [⟨"x"⟩]⟩
+  eqTxn (Txn.append (α := User) ada c) eqApp "H append tags"
+  n := n + 1
+  let c ← mustCheck ⟨ada.val.name, ada.val.email, ada.val.team, []⟩
+  eqTxn (Txn.append (α := User) ada c) eqApp "H notAppend"
+  n := n + 1
+  let c ← mustCheck { ada.val with email := "other@x" }
+  eqTxn (Txn.update (α := User) ada c) eqUpd "H update email"
+  n := n + 1
+  eqTxn (Txn.update (α := User) ⟨⟨99⟩, ada.val⟩ c) eqUpd "H update gone"
+  n := n + 1
+  eqTxn (Txn.throw (α := Nat) "stop") (abortStr fun a b => a == b) "H throw abort"
+  n := n + 1
+  let c ← mustCheck ⟨"barb", "barb@x", eng.id, []⟩
+  eqTxn (fun {_} => do
+      let r ← Txn.insert (α := User) c
+      match r with
+      | .error _ => return none
+      | .ok row => return some row.toStored
+    ) (eqEmpty optStoredEq) "H insert then Stored"
+  n := n + 1
+  eqTxn (Txn.delete (α := User) alonzo.id) eqDelUser "H delete alonzo"
+  n := n + 1
+  let c ← mustCheck { ada.val with email := "ada2@x" }
+  eqTxn (fun {_} => do
+      match ← Txn.get User ada.id with
+      | none =>
+          return (Except.error
+            (SetError.gone (α := User) (fs := Fields.singleton User.Field.email)))
+      | some row =>
+          match ← Txn.patch (α := User) row (Fields.singleton User.Field.email) c with
+          | Except.error e => return Except.error e
+          | Except.ok row => return Except.ok row.toStored
+    ) (eqSet (Fields.singleton User.Field.email)) "H patch email"
+  n := n + 1
+  eqTxn (fun {_} => do
+      match ← Txn.get User ada.id with
+      | none =>
+          return (Except.error (SetError.gone (α := User) (fs := Fields.all User)))
+      | some row =>
+          match ← Txn.set (α := User) row c with
+          | Except.error e => return Except.error e
+          | Except.ok row => return Except.ok row.toStored
+    ) (eqSet (Fields.all User)) "H set"
+  n := n + 1
+  let c ← mustCheck ⟨"barb", "barb2@x", eng.id, []⟩
+  eqTxn (Txn.orElse (do
+        let r ← Txn.insert (α := User) c
+        return r.map fun row => row.id
+      ) fun
+        | .duplicate _ holder => Txn.pure holder
+        | .missingRef _ => Txn.pure ⟨0⟩
+    ) (eqEmpty fun a b => a == b) "H orElse duplicate"
+  n := n + 1
+  return n
+
+private def harnessRandom (seed : Nat) : DbM Nat := do
+  let mut rng := Rng.ofNat seed
+  let mut n := 0
+  for i in [0:8] do
+    let (r1, k) := rng.nat 0 2
+    rng := r1
+    let name := s!"t{seed}_{i}_{k}"
+    eqTxn (insertTeam ⟨name⟩) (eqEmpty storedEq) s!"H rand team {i}"
+    n := n + 1
+  let st ← DbState.load (s := App)
+  let teams := (DbState.get (α := Team) st).rows
+  if !teams.isEmpty then
+    for i in [0:8] do
+      let (r1, ti) := rng.nat 0 (teams.length - 1)
+      rng := r1
+      match teams[ti]? with
+      | none => pure ()
+      | some team =>
+          let (r2, dup) := rng.bool
+          rng := r2
+          let u : User :=
+            if dup && i > 0 then ⟨s!"u{seed}_0", s!"e{seed}_{i}@x", team.id, []⟩
+            else ⟨s!"u{seed}_{i}", s!"e{seed}_{i}@x", team.id, []⟩
+          let c ← mustCheck u
+          eqTxn (insertUser c) eqIns s!"H rand user {i}"
+          n := n + 1
+    let st ← DbState.load (s := App)
+    let users := (DbState.get (α := User) st).rows
+    for u in users do
+      eqTxn (getStored u.id) (eqEmpty optStoredEq) s!"H rand get {u.val.name}"
+      n := n + 1
+      eqTxn (lookupStored (α := User) User.Unique.byName u.val.name)
+        (eqEmpty optStoredEq) s!"H rand lookup {u.val.name}"
+      n := n + 1
+  return n
+
+private def testHarness : IO Unit := do
+  let mut n := 0
+  fresh dbPath
+  n := n + (← expectOk (← withDb dbPath specs harnessCases) "harness cases")
+  fresh dbPath
+  n := n + (← expectOk (← withDb dbPath specs harnessSeeded) "harness seeded")
+  for seed in [0:5] do
+    fresh dbPath
+    n := n + (← expectOk (← withDb dbPath specs (harnessRandom seed))
+      s!"harness random {seed}")
+  IO.println s!"M14b harness cases: {n}"
+
 def run : IO Unit := do
   testSymbols
   testDenote
   testRun
+  testHarness
 
 end TestsM14b

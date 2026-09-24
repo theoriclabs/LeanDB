@@ -28,3 +28,4 @@ import LeanDb.Typed.Fault
 import LeanDb.Typed.Read
 import LeanDb.Typed.Write
 import LeanDb.Typed.Txn
+import LeanDb.Typed.Harness

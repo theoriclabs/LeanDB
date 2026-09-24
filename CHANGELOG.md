@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **M14b.** Typed writes and transaction programs: schema-derived
+  `InsertError` / `UpdateError` / `SetError` / `AppendError` /
+  `DeleteError`, `Txn σ s ε α` with ST-style `Current σ α`, `Txn.denote`
+  and `Txn.run` (`BEGIN IMMEDIATE`, SAVEPOINT per write, constraints
+  checked in declaration order), and an execution-equals-meaning harness
+  (`LeanDb/Typed/Harness.lean`, `TestsM14b.lean`).
 - **LDB-24.** `readSnapshot` is public: a deferred `BEGIN DEFERRED`
   snapshot for multi-statement reads, so adapters need not rebuild one.
 - **LDB-23.** `Pred.Snapshot.rows` fails on an undecodable row instead of
