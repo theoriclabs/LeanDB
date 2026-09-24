@@ -86,6 +86,14 @@ def Unique.predOf {α : Type} [Entity α] [HasUnique α] (ix : Unique α) (k : U
 def Unique.all (α : Type) [Entity α] [HasUnique α] : Array (Unique α) :=
   HasUnique.all (α := α)
 
+/-- Equality of `HasUnique` after transporting along `ty_eq` / `entity_eq`.
+    Reduces to `u = u'` on `rfl`. Not an instance. -/
+def HasUnique.eqAfter {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb)
+    (u : @HasUnique α ea) (u' : @HasUnique β eb) : Prop :=
+  match e, he with
+  | rfl, rfl => u = u'
+
 /-! ## Foreign keys (from `Ref` fields) -/
 
 class HasForeignKey (α : Type) [Entity α] where
@@ -127,6 +135,14 @@ def ForeignKey.targetEntity {α : Type} [Entity α] [HasForeignKey α] (fk : For
 
 def ForeignKey.all (α : Type) [Entity α] [HasForeignKey α] : Array (ForeignKey α) :=
   HasForeignKey.all (α := α)
+
+/-- Equality of `HasForeignKey` after transporting along `ty_eq` / `entity_eq`.
+    Reduces to `u = u'` on `rfl`. Not an instance. -/
+def HasForeignKey.eqAfter {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb)
+    (u : @HasForeignKey α ea) (u' : @HasForeignKey β eb) : Prop :=
+  match e, he with
+  | rfl, rfl => u = u'
 
 /-- `ON DELETE CASCADE` when true; RESTRICT (the default) otherwise. -/
 def ForeignKey.cascade {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey α) : Bool :=
@@ -214,6 +230,14 @@ class IsSchema.Has (s : Type) (α : Type) [i : IsSchema s] [ent : Entity α] whe
       (which mention `Entity`) transport along `ty_eq` the same way `Table`
       of `Stored` did. Generated as `rfl`. -/
   entity_eq : ty_eq ▸ (i.pack id).entity = ent
+
+/-- Packed `HasUnique` / `HasForeignKey` of `α` are the instances in scope.
+    Generated as `rfl` beside `Has`, so `Table.check` of `get` matches
+    `checkPacked` of `id`. Needed to preserve `WF` across writes. -/
+class IsSchema.HasPack (s : Type) (α : Type) [i : IsSchema s] [ent : Entity α]
+    [hu : HasUnique α] [hf : HasForeignKey α] [h : IsSchema.Has s α] : Prop where
+  unique_eq : HasUnique.eqAfter h.ty_eq h.entity_eq (i.pack h.id).unique hu
+  foreignKey_eq : HasForeignKey.eqAfter h.ty_eq h.entity_eq (i.pack h.id).foreignKey hf
 
 /-! ## Inbound references, over a schema -/
 
@@ -893,6 +917,9 @@ def elabSchema : CommandElab := fun stx => do
         id := ⟨$iLit, by decide⟩
         ty_eq := rfl
         entity_eq := rfl
+      instance : LeanDb.IsSchema.HasPack $schemaId $(typeIdent t) where
+        unique_eq := rfl
+        foreignKey_eq := rfl
     ))
   -- ReferencedBy: inbound FKs, per target in the schema.
   for tgt in types do

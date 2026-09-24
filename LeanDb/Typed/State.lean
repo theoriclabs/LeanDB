@@ -99,9 +99,7 @@ def Table.childrenOk [Entity α] (t : Table α) : Bool :=
   t.rows.all fun r =>
     (Entity.children (α := α)).all fun link =>
       let pairs := (link.rows r.val).zipIdx.map fun (cols, i) => (i, cols)
-      match link.attach pairs r.val with
-      | .ok _ => true
-      | .error _ => false
+      (link.attach pairs r.val).isOk
 
 /-- Keys of `ix` are pairwise distinct on this list. -/
 def Table.uniquesOk.distinct [Entity α] [HasUnique α] (ix : Unique α) :
@@ -109,7 +107,7 @@ def Table.uniquesOk.distinct [Entity α] [HasUnique α] (ix : Unique α) :
   | [] => true
   | r :: rs =>
       let enc := Unique.encodeKey ix (Unique.keyOf ix r.val)
-      rs.all (fun o => Unique.encodeKey ix (Unique.keyOf ix o.val) != enc) &&
+      rs.all (fun o => enc != Unique.encodeKey ix (Unique.keyOf ix o.val)) &&
         Table.uniquesOk.distinct ix rs
 
 /-- Unique-index keys are unique among rows. -/
@@ -166,9 +164,16 @@ def DbState.getSource {s α : Type} [i : IsSchema s] [h : HasReferencedBy s α]
   Table.cast (h.sourceTy_eq r) (h.sourceEntity_eq r) (st.tables (h.sourceId r))
 
 /-- `Table.cast` along `e` then `e.symm` is the identity. -/
-private theorem Table.cast_cancel {α β : Type} {ea : Entity α} {eb : Entity β}
+theorem Table.cast_cancel {α β : Type} {ea : Entity α} {eb : Entity β}
     (e : α = β) (he : e ▸ ea = eb) (t : @Table β eb) :
     Table.cast e he (Table.cast e.symm (Entity.eq_symm e he) t) = t := by
+  cases e
+  cases he
+  rfl
+
+theorem Table.cast_next {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb) (t : @Table α ea) :
+    (Table.cast e he t).next = t.next := by
   cases e
   cases he
   rfl
@@ -208,6 +213,13 @@ theorem DbState.set_tables_other {s α : Type} [i : IsSchema s] [Entity α]
     (st.set (α := α) tbl).tables t = st.tables t := by
   unfold DbState.set
   simp [dif_neg hne]
+
+theorem DbState.set_tables_same {s α : Type} [i : IsSchema s] [Entity α]
+    [h : IsSchema.Has s α] (st : DbState s) (tbl : Table α) :
+    (st.set (α := α) tbl).tables h.id =
+      Table.cast h.ty_eq.symm (Entity.eq_symm h.ty_eq h.entity_eq) tbl := by
+  unfold DbState.set
+  simp only [dif_pos]
 
 theorem DbState.empty_rows {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] :
@@ -309,6 +321,22 @@ def DbState.checkWF {s : Type} [i : IsSchema s] (st : DbState s) : Bool :=
 /-- Every row decodes and is `Checked`, and every constraint holds. -/
 def DbState.WF {s : Type} [i : IsSchema s] (st : DbState s) : Prop :=
   DbState.checkWF st = true
+
+theorem IsSchema.mem_tables {s : Type} [i : IsSchema s] (t : Fin i.nTables) :
+    t ∈ i.tables := by
+  simp [IsSchema.tables, Array.mem_ofFn]
+
+theorem DbState.checkPacked_of_wf {s : Type} [i : IsSchema s] {st : DbState s}
+    (hwf : st.WF) (t : Fin i.nTables) : DbState.checkPacked st t = true := by
+  have hall : i.tables.all (DbState.checkPacked st) = true := hwf
+  exact (Array.all_eq_true_iff_forall_mem.mp hall) t (IsSchema.mem_tables t)
+
+theorem DbState.wf_of_checkPacked {s : Type} [i : IsSchema s] {st : DbState s}
+    (h : ∀ t : Fin i.nTables, DbState.checkPacked st t = true) : st.WF := by
+  unfold DbState.WF DbState.checkWF
+  rw [Array.all_eq_true_iff_forall_mem]
+  intro t ht
+  exact h t
 
 /-- `load` plus a `checkWF` gate. `load` itself checks the entity
     invariant on every decoded row (`Valid.ofStoredM`) but not unique

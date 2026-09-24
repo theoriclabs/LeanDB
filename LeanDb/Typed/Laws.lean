@@ -718,7 +718,7 @@ theorem Table.childrenOk_nil {α} [Entity α] (n : Nat) :
   rfl
 
 theorem Array.all_true {α} (as : Array α) : as.all (fun _ => true) = true := by
-  rw [Array.all_eq_true]
+  rw [Array.all_eq_true']
   intro _ _
   rfl
 
@@ -819,5 +819,653 @@ theorem Txn.insert_wf_of_fail {σ s ε α} [IsSchema s] [Entity α] [HasUnique �
       | some _ => exact hwf
       | none => exact (hfail ⟨hdup, hfk⟩).elim
 
+/-! ## WF preservation of `insert` -/
+
+theorem Table.nextOk_iff {α} [Entity α] {t : Table α} :
+    t.nextOk = true ↔ 1 ≤ t.next ∧ t.next ≤ natSqlMax + 1 := by
+  unfold Table.nextOk
+  simp [Bool.and_eq_true, decide_eq_true_eq]
+
+theorem Table.check_parts {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) :
+    t.nextOk = true ∧ t.idsOk = true ∧ t.refsOk = true ∧ t.invariantsOk = true ∧
+      t.decodesOk = true ∧ t.checkedOk = true ∧ t.childrenOk = true ∧
+      t.uniquesOk = true := by
+  unfold Table.check at h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨h, hunq⟩ := h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨h, hch⟩ := h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨h, hchk⟩ := h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨h, hdec⟩ := h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨h, hinv⟩ := h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨h, href⟩ := h
+  rw [Bool.and_eq_true] at h
+  obtain ⟨hn, hids⟩ := h
+  exact ⟨hn, hids, href, hinv, hdec, hchk, hch, hunq⟩
+
+theorem Table.check_nextOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.nextOk = true := (Table.check_parts h).1
+
+theorem Table.check_idsOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.idsOk = true := (Table.check_parts h).2.1
+
+theorem Table.check_refsOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.refsOk = true := (Table.check_parts h).2.2.1
+
+theorem Table.check_decodesOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.decodesOk = true := (Table.check_parts h).2.2.2.2.1
+
+theorem Table.check_checkedOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.checkedOk = true := (Table.check_parts h).2.2.2.2.2.1
+
+theorem Table.check_childrenOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.childrenOk = true := (Table.check_parts h).2.2.2.2.2.2.1
+
+theorem Table.check_uniquesOk {α} [Entity α] [HasUnique α] [HasForeignKey α] {t : Table α}
+    (h : t.check = true) : t.uniquesOk = true := (Table.check_parts h).2.2.2.2.2.2.2
+
+theorem Table.check_cast {α β : Type}
+    {ea : Entity α} {eb : Entity β}
+    {ua : @HasUnique α ea} {ub : @HasUnique β eb}
+    {fa : @HasForeignKey α ea} {fb : @HasForeignKey β eb}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb)
+    (hu : HasUnique.eqAfter e he ua ub)
+    (hf : HasForeignKey.eqAfter e he fa fb)
+    (t : @Table α ea) :
+    @Table.check β eb ub fb (Table.cast e he t) = @Table.check α ea ua fa t := by
+  cases e
+  cases he
+  cases hu
+  cases hf
+  rfl
+
+theorem Table.fksOk_cast {s α β : Type} [IsSchema s]
+    {ea : Entity α} {eb : Entity β}
+    {fa : @HasForeignKey α ea} {fb : @HasForeignKey β eb}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb)
+    (hf : HasForeignKey.eqAfter e he fa fb)
+    (st : DbState s) (t : @Table α ea) :
+    @Table.fksOk s β inferInstance eb fb st (Table.cast e he t) =
+      @Table.fksOk s α inferInstance ea fa st t := by
+  cases e
+  cases he
+  cases hf
+  rfl
+
+theorem Table.cast_any_id {α β : Type} {ea : Entity α} {eb : Entity β}
+    (e : α = β) (he : (e ▸ ea : Entity β) = eb)
+    (t : @Table α ea) (id : Int64) :
+    (@Table.rows β eb (Table.cast e he t)).any
+      (fun r => (@Valid.id β eb r).toInt64 == id) =
+    t.rows.any (fun r => r.id.toInt64 == id) := by
+  cases e
+  cases he
+  rfl
+
+theorem DbState.checkPacked_eq_get {s α} [i : IsSchema s] [ent : Entity α]
+    [hu : HasUnique α] [hf : HasForeignKey α] [h : IsSchema.Has s α]
+    [hp : IsSchema.HasPack s α]
+    (st : DbState s) :
+    DbState.checkPacked st h.id =
+      (Table.check (DbState.get (α := α) st) &&
+        Table.fksOk (α := α) st (DbState.get (α := α) st)) := by
+  unfold DbState.checkPacked DbState.get
+  rw [Table.check_cast h.ty_eq h.entity_eq hp.unique_eq hp.foreignKey_eq]
+  rw [Table.fksOk_cast h.ty_eq h.entity_eq hp.foreignKey_eq]
+
+theorem DbState.get_check_of_wf {s α} [i : IsSchema s] [ent : Entity α]
+    [hu : HasUnique α] [hf : HasForeignKey α] [h : IsSchema.Has s α]
+    [IsSchema.HasPack s α]
+    {st : DbState s} (hwf : st.WF) :
+    Table.check (DbState.get (α := α) st) = true := by
+  have := DbState.checkPacked_of_wf hwf h.id
+  rw [DbState.checkPacked_eq_get, Bool.and_eq_true] at this
+  exact this.1
+
+theorem DbState.get_fksOk_of_wf {s α} [i : IsSchema s] [ent : Entity α]
+    [hu : HasUnique α] [hf : HasForeignKey α] [h : IsSchema.Has s α]
+    [IsSchema.HasPack s α]
+    {st : DbState s} (hwf : st.WF) :
+    Table.fksOk (α := α) st (DbState.get (α := α) st) = true := by
+  have := DbState.checkPacked_of_wf hwf h.id
+  rw [DbState.checkPacked_eq_get, Bool.and_eq_true] at this
+  exact this.2
+
+theorem Table.idsOk.go_mono {α} [Entity α] {next next' : Nat} {prev : Option Int64}
+    {rows : List (Valid α)} (hle : next ≤ next')
+    (h : Table.idsOk.go next prev rows = true) :
+    Table.idsOk.go next' prev rows = true := by
+  induction rows generalizing prev with
+  | nil => rfl
+  | cons r rs ih =>
+      unfold Table.idsOk.go at h ⊢
+      rw [Bool.and_eq_true] at h ⊢
+      obtain ⟨h1, hrest⟩ := h
+      rw [Bool.and_eq_true] at h1 ⊢
+      obtain ⟨hord, hrng⟩ := h1
+      rw [Bool.and_eq_true] at hrng ⊢
+      obtain ⟨hpos, hlt⟩ := hrng
+      exact ⟨⟨hord, hpos, decide_eq_true
+        (Nat.lt_of_lt_of_le (of_decide_eq_true hlt) hle)⟩, ih hrest⟩
+
+theorem Table.idsOk.go_mem {α} [Entity α] {next : Nat} {prev : Option Int64}
+    {rows : List (Valid α)} {r : Valid α}
+    (h : Table.idsOk.go next prev rows = true) (hm : r ∈ rows) :
+    (0 : Int64) < r.id.toInt64 ∧ r.id.toInt64.toNatClampNeg < next := by
+  induction rows generalizing prev with
+  | nil => cases hm
+  | cons r0 rs ih =>
+      unfold Table.idsOk.go at h
+      rw [Bool.and_eq_true] at h
+      obtain ⟨h1, hrest⟩ := h
+      rw [Bool.and_eq_true] at h1
+      obtain ⟨_, hrng⟩ := h1
+      rw [Bool.and_eq_true] at hrng
+      obtain ⟨hpos, hlt⟩ := hrng
+      cases hm with
+      | head =>
+          exact ⟨of_decide_eq_true hpos, of_decide_eq_true hlt⟩
+      | tail _ hm =>
+          exact ih hrest hm
+
+theorem Int64.pos_ofNat {n : Nat} (h1 : 1 ≤ n) (hmax : n ≤ natSqlMax) :
+    (0 : Int64) < Int64.ofNat n := by
+  have hn : n < 2 ^ 63 := nat_lt_two_pow_63_of_le_max hmax
+  have h0 : (0 : Nat) < 2 ^ 63 := Nat.two_pow_pos 63
+  have hz : Int64.ofNat 0 = (0 : Int64) := rfl
+  rw [← hz]
+  exact (Int64.ofNat_lt_iff_lt h0 hn).mpr h1
+
+theorem Int64.lt_ofNat_of_pos_toNat {x : Int64} {n : Nat}
+    (hpos : (0 : Int64) < x) (hlt : x.toNatClampNeg < n) (hn : n < 2 ^ 63) :
+    x < Int64.ofNat n := by
+  have hx : x.toNatClampNeg < 2 ^ 63 := Int64.toNatClampNeg_lt x
+  have hle : (0 : Int64) ≤ x := Int64.le_of_lt hpos
+  have hre : Int64.ofNat x.toNatClampNeg = x := Int64.ofNat_toNatClampNeg x hle
+  rw [← hre]
+  exact (Int64.ofNat_lt_iff_lt hx hn).mpr hlt
+
+theorem Table.idsOk.go_snoc {α} [Entity α] (next next' : Nat)
+    (rows : List (Valid α)) (r : Valid α)
+    (hle : next ≤ next')
+    (hrows : Table.idsOk.go next none rows = true)
+    (hpos : (0 : Int64) < r.id.toInt64)
+    (hlt : r.id.toInt64.toNatClampNeg < next')
+    (hfresh : ∀ x ∈ rows, x.id.toInt64 < r.id.toInt64) :
+    Table.idsOk.go next' none (rows ++ [r]) = true := by
+  revert hrows hfresh
+  suffices ∀ rows prev,
+      Table.idsOk.go next prev rows = true →
+      (∀ x ∈ rows, x.id.toInt64 < r.id.toInt64) →
+      (∀ p, prev = some p → p < r.id.toInt64) →
+      Table.idsOk.go next' prev (rows ++ [r]) = true by
+    intro hrows hfresh
+    exact this rows none hrows hfresh (by intro p hp; cases hp)
+  intro rows prev hp hfresh hprev
+  induction rows generalizing prev with
+  | nil =>
+      simp only [List.nil_append, Table.idsOk.go]
+      rw [Bool.and_eq_true]
+      refine ⟨?_, rfl⟩
+      rw [Bool.and_eq_true]
+      constructor
+      · cases prev with
+        | none => rfl
+        | some p => exact decide_eq_true (hprev p rfl)
+      · rw [Bool.and_eq_true]
+        exact ⟨decide_eq_true hpos, decide_eq_true hlt⟩
+  | cons r0 rs ih =>
+      simp only [List.cons_append, Table.idsOk.go] at hp ⊢
+      rw [Bool.and_eq_true] at hp ⊢
+      obtain ⟨h1, hrest⟩ := hp
+      rw [Bool.and_eq_true] at h1 ⊢
+      obtain ⟨hord, hrng⟩ := h1
+      rw [Bool.and_eq_true] at hrng ⊢
+      obtain ⟨hp0, hlt0⟩ := hrng
+      refine ⟨⟨hord, hp0, decide_eq_true
+        (Nat.lt_of_lt_of_le (of_decide_eq_true hlt0) hle)⟩, ?_⟩
+      refine ih (some r0.id.toInt64) hrest
+        (fun x hx => hfresh x (List.mem_cons.mpr (Or.inr hx))) ?_
+      intro p hp
+      injection hp with hp
+      subst hp
+      exact hfresh r0 (List.mem_cons.mpr (Or.inl rfl))
+
+theorem Table.idsOk_snoc {α} [Entity α] {t : Table α} (r : Valid α)
+    (hids : t.idsOk = true) (hnext : t.nextOk = true)
+    (hbound : t.next ≤ natSqlMax)
+    (hid : r.id.toInt64 = Int64.ofNat t.next) :
+    Table.idsOk { next := t.next + 1, rows := t.rows ++ [r] } = true := by
+  unfold Table.idsOk at *
+  have ⟨hge, _⟩ := Table.nextOk_iff.mp hnext
+  have hn : t.next < 2 ^ 63 := nat_lt_two_pow_63_of_le_max hbound
+  have hpos : (0 : Int64) < r.id.toInt64 := by
+    rw [hid]
+    exact Int64.pos_ofNat hge hbound
+  have hlt : r.id.toInt64.toNatClampNeg < t.next + 1 := by
+    rw [hid, Int64.toNatClampNeg_ofNat_of_lt hn]
+    exact Nat.lt_succ_self t.next
+  have hfresh : ∀ x ∈ t.rows, x.id.toInt64 < r.id.toInt64 := by
+    intro x hx
+    have ⟨hp, hlt'⟩ := Table.idsOk.go_mem hids hx
+    rw [hid]
+    exact Int64.lt_ofNat_of_pos_toNat hp hlt' hn
+  exact Table.idsOk.go_snoc t.next (t.next + 1) t.rows r
+    (Nat.le_succ _) hids hpos hlt hfresh
+
+theorem Table.nextOk_succ {α} [Entity α] {t : Table α}
+    (h : t.nextOk = true) (hbound : t.next ≤ natSqlMax) :
+    Table.nextOk { next := t.next + 1, rows := t.rows } = true := by
+  have ⟨hge, _⟩ := Table.nextOk_iff.mp h
+  exact Table.nextOk_iff.mpr ⟨Nat.le_succ_of_le hge, Nat.succ_le_succ hbound⟩
+
+theorem Table.decodesOk_snoc {α} [Entity α] [LawfulEntity α] {t : Table α} {r : Valid α}
+    (h : t.decodesOk = true) :
+    Table.decodesOk { t with rows := t.rows ++ [r] } = true := by
+  unfold Table.decodesOk at *
+  rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
+  rw [Bool.and_eq_true]
+  refine ⟨h, ?_⟩
+  have hl := LawfulEntity.decode_encode (α := α) r.val
+  cases hde : Entity.decode (α := α) (Entity.encode r.val) with
+  | error _ =>
+      simp [hde] at hl
+  | ok w =>
+      simpa [hde] using hl
+
+theorem Table.childrenOk_snoc {α} [Entity α] [LawfulEntity α] {t : Table α} {r : Valid α}
+    (h : t.childrenOk = true) :
+    Table.childrenOk { t with rows := t.rows ++ [r] } = true := by
+  unfold Table.childrenOk at *
+  rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
+  rw [Bool.and_eq_true]
+  exact ⟨h, LawfulEntity.children_attach (α := α) r.val⟩
+
+theorem Entity.check_of_invariant {α} [Entity α] {v : α} (h : Invariant α v) :
+    (match Entity.check α v with
+      | .ok _ => true
+      | .error _ => false) = true := by
+  unfold Entity.check
+  rw [dif_pos h.1]
+  split
+  · rfl
+  · rename_i e heq
+    split at heq
+    · cases heq
+    · split at heq
+      · cases heq
+      · rename_i p heqInv hp
+        unfold Invariant at h
+        simp [heqInv] at h
+        exact (hp h.2).elim
+
+theorem Table.checkedOk_snoc {α} [Entity α] {t : Table α} {r : Valid α}
+    (h : t.checkedOk = true) :
+    Table.checkedOk { t with rows := t.rows ++ [r] } = true := by
+  unfold Table.checkedOk at *
+  rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
+  rw [Bool.and_eq_true]
+  exact ⟨h, Entity.check_of_invariant r.property⟩
+
+theorem Table.invariantsOk_snoc {α} [Entity α] {t : Table α} {r : Valid α} :
+    Table.invariantsOk { t with rows := t.rows ++ [r] } = true :=
+  Table.invariantsOk_valid _
+
+theorem Table.refsOk_snoc {α} [Entity α] [HasForeignKey α] {t : Table α} {r : Valid α}
+    (h : t.refsOk = true)
+    (hr : (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk r.val with
+      | none => true
+      | some tgt => Id.positive tgt) = true) :
+    Table.refsOk { t with rows := t.rows ++ [r] } = true := by
+  unfold Table.refsOk at *
+  rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
+  rw [Bool.and_eq_true]
+  exact ⟨h, hr⟩
+
+theorem Table.uniquesOk.distinct_snoc {α} [Entity α] [HasUnique α] (ix : Unique α)
+    (rows : List (Valid α)) (r : Valid α)
+    (h : Table.uniquesOk.distinct ix rows = true)
+    (hnone : ∀ o ∈ rows,
+      Unique.encodeKey ix (Unique.keyOf ix o.val) !=
+        Unique.encodeKey ix (Unique.keyOf ix r.val)) :
+    Table.uniquesOk.distinct ix (rows ++ [r]) = true := by
+  induction rows with
+  | nil =>
+      simp [Table.uniquesOk.distinct]
+  | cons r0 rs ih =>
+      simp only [Table.uniquesOk.distinct, List.cons_append, Bool.and_eq_true] at h ⊢
+      have htail := h.2
+      have hhead := h.1
+      refine ⟨?_, ih htail (fun o ho => hnone o (List.mem_cons_of_mem r0 ho))⟩
+      rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
+      rw [Bool.and_eq_true]
+      refine ⟨hhead, ?_⟩
+      have hne := hnone r0 (List.mem_cons.mpr (Or.inl rfl))
+      exact hne
+
+theorem Txn.firstDuplicate_none_key {s α} [IsSchema s] [Entity α] [HasUnique α]
+    [IsSchema.Has s α]
+    {v : α} {st : DbState s}
+    (h : Txn.firstDuplicate v st none = none) (ix : Unique α)
+    (hix : ix ∈ Unique.all α) (r : Valid α)
+    (hr : r ∈ (DbState.get (α := α) st).rows) :
+    Unique.encodeKey ix (Unique.keyOf ix r.val) !=
+      Unique.encodeKey ix (Unique.keyOf ix v) := by
+  unfold Txn.firstDuplicate at h
+  rw [Array.findSome?_eq_none_iff] at h
+  have hixn := h ix hix
+  simp at hixn
+  have hf := hixn r hr
+  simp only [bne]
+  cases hbeq : (Unique.encodeKey ix (Unique.keyOf ix r.val) ==
+      Unique.encodeKey ix (Unique.keyOf ix v))
+  · rfl
+  · simp [hbeq] at hf
+
+theorem Table.uniquesOk_snoc {s α} [IsSchema s] [Entity α] [HasUnique α]
+    [IsSchema.Has s α]
+    {t : Table α} {r : Valid α} {st : DbState s}
+    (ht : t = DbState.get (α := α) st)
+    (h : t.uniquesOk = true)
+    (hdup : Txn.firstDuplicate r.val st none = none) :
+    Table.uniquesOk { t with rows := t.rows ++ [r] } = true := by
+  unfold Table.uniquesOk at *
+  rw [Array.all_eq_true'] at h ⊢
+  intro ix hix
+  have hd := h ix hix
+  refine Table.uniquesOk.distinct_snoc ix t.rows r hd ?_
+  intro o ho
+  have ho' : o ∈ (DbState.get (α := α) st).rows := by simpa [ht] using ho
+  simpa [ht] using Txn.firstDuplicate_none_key hdup ix hix o ho'
+
+theorem Txn.firstMissingRef_none {s α} [IsSchema s] [Entity α] [HasForeignKey α]
+    {v : α} {st : DbState s}
+    (h : Txn.firstMissingRef v st = none) {fk : ForeignKey α}
+    (hmem : fk ∈ ForeignKey.all α) :
+    fkMissing fk v st = false := by
+  unfold Txn.firstMissingRef at h
+  have := (Array.find?_eq_none).mp h
+  simpa using Bool.eq_false_iff.mpr (this fk hmem)
+
+theorem DbState.containsId_pos {s} [i : IsSchema s] {st : DbState s}
+    (hwf : st.WF) {name : String} {id : Int64}
+    (h : DbState.containsId st name id = true) : (0 : Int64) < id := by
+  unfold DbState.containsId at h
+  rw [Array.any_eq_true'] at h
+  obtain ⟨t, ht, hany⟩ := h
+  rw [Bool.and_eq_true] at hany
+  obtain ⟨_hname, hrow⟩ := hany
+  rw [List.any_eq_true] at hrow
+  obtain ⟨r, hr, hid⟩ := hrow
+  have hpack := DbState.checkPacked_of_wf hwf t
+  unfold DbState.checkPacked at hpack
+  have hcheck : @Table.check (i.pack t).ty (i.pack t).entity
+      (i.pack t).unique (i.pack t).foreignKey (st.tables t) = true :=
+    (Eq.mp (Bool.and_eq_true _ _) hpack).1
+  have hids :=
+    @Table.check_idsOk (i.pack t).ty (i.pack t).entity
+      (i.pack t).unique (i.pack t).foreignKey (st.tables t) hcheck
+  have ⟨hpos, _⟩ :=
+    @Table.idsOk.go_mem (i.pack t).ty (i.pack t).entity
+      ((@Table.next (i.pack t).ty (i.pack t).entity (st.tables t))) none
+      (@Table.rows (i.pack t).ty (i.pack t).entity (st.tables t)) r hids hr
+  have heq : (@Valid.id (i.pack t).ty (i.pack t).entity r).toInt64 = id :=
+    LawfulBEq.eq_of_beq hid
+  simpa [heq] using hpos
+
+theorem Table.refsOk_of_missingRef_none {s α} [IsSchema s] [Entity α]
+    [HasForeignKey α] [HasUnique α] [h : IsSchema.Has s α]
+    {st : DbState s} {c : Checked α} (hwf : st.WF)
+    (hfk : Txn.firstMissingRef c.val st = none) :
+    (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk c.val with
+      | none => true
+      | some tgt => Id.positive tgt) = true := by
+  rw [Array.all_eq_true']
+  intro fk hmem
+  have hmiss := Txn.firstMissingRef_none hfk hmem
+  unfold Txn.fkMissing at hmiss
+  cases hg : HasForeignKey.get fk c.val with
+  | none =>
+      simp [ForeignKey.get, hg]
+  | some tgt =>
+      simp [ForeignKey.get, hg] at hmiss ⊢
+      have hpos := DbState.containsId_pos hwf (name :=
+          @Entity.tableName (HasForeignKey.Target fk) (HasForeignKey.targetEntity fk))
+        (id := tgt.toInt64) hmiss
+      simpa [Id.positive] using hpos
+
+theorem Table.fksOk_of_containsId_mono {s α} [IsSchema s] [Entity α] [HasForeignKey α]
+    {st st' : DbState s} {t : Table α}
+    (hmono : ∀ name id, DbState.containsId st name id = true →
+      DbState.containsId st' name id = true)
+    (h : Table.fksOk (α := α) st t = true) :
+    Table.fksOk (α := α) st' t = true := by
+  unfold Table.fksOk at *
+  rw [List.all_eq_true] at h ⊢
+  intro r hr
+  have hr' := h r hr
+  rw [Array.all_eq_true'] at hr' ⊢
+  intro fk hfk
+  have hfk' := hr' fk hfk
+  cases hg : HasForeignKey.get fk r.val with
+  | none =>
+      simpa [hg] using hfk'
+  | some tgt =>
+      simp [hg] at hfk' ⊢
+      exact hmono _ _ hfk'
+
+theorem Table.fksOk_snoc {s α} [IsSchema s] [Entity α] [HasForeignKey α]
+    {st : DbState s} {t : Table α} {r : Valid α}
+    (h : Table.fksOk (α := α) st t = true)
+    (hr : (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk r.val with
+      | none => true
+      | some tgt =>
+          let inst := ForeignKey.targetEntity fk
+          let name := @Entity.tableName (ForeignKey.Target fk) inst
+          DbState.containsId st name tgt.toInt64) = true) :
+    Table.fksOk (α := α) st { t with rows := t.rows ++ [r] } = true := by
+  unfold Table.fksOk at *
+  rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
+  rw [Bool.and_eq_true]
+  exact ⟨h, hr⟩
+
+theorem Txn.firstMissingRef_none_contains {s α} [IsSchema s] [Entity α]
+    [HasForeignKey α] {v : α} {st : DbState s}
+    (h : Txn.firstMissingRef v st = none) :
+    (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk v with
+      | none => true
+      | some tgt =>
+          let inst := ForeignKey.targetEntity fk
+          let name := @Entity.tableName (ForeignKey.Target fk) inst
+          DbState.containsId st name tgt.toInt64) = true := by
+  rw [Array.all_eq_true']
+  intro fk hmem
+  have hmiss := Txn.firstMissingRef_none h hmem
+  unfold Txn.fkMissing at hmiss
+  cases hg : HasForeignKey.get fk v with
+  | none => simp [ForeignKey.get, hg]
+  | some tgt =>
+      simp [ForeignKey.get, hg] at hmiss ⊢
+      exact hmiss
+
+theorem DbState.containsId_set_append {s α} [i : IsSchema s] [ent : Entity α]
+    [h : IsSchema.Has s α]
+    (st : DbState s) (tbl : Table α) (r : Valid α)
+    (hrows : tbl.rows = (DbState.get (α := α) st).rows ++ [r])
+    (name : String) (id : Int64)
+    (hold : DbState.containsId st name id = true) :
+    DbState.containsId (st.set tbl) name id = true := by
+  unfold DbState.containsId at hold ⊢
+  rw [Array.any_eq_true'] at hold ⊢
+  obtain ⟨t, ht, hany⟩ := hold
+  refine ⟨t, ht, ?_⟩
+  by_cases hne : t = h.id
+  · subst hne
+    rw [Bool.and_eq_true] at hany ⊢
+    obtain ⟨hname, hrow⟩ := hany
+    refine ⟨hname, ?_⟩
+    rw [DbState.set_tables_same, Table.cast_any_id]
+    have hget : (DbState.get (α := α) st).rows.any
+        (fun row => row.id.toInt64 == id) = true := by
+      unfold DbState.get
+      rw [Table.cast_any_id]
+      exact hrow
+    rw [hrows]
+    rw [List.any_eq_true] at hget ⊢
+    obtain ⟨x, hx, hp⟩ := hget
+    exact ⟨x, List.mem_append.mpr (Or.inl hx), hp⟩
+  · rw [DbState.set_tables_other (hne := hne)]
+    exact hany
+
+theorem Table.check_snoc {s α} [IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [IsSchema.Has s α] [LawfulEntity α]
+    {st : DbState s} {t : Table α} {r : Valid α}
+    (ht : t = DbState.get (α := α) st)
+    (h : t.check = true) (hbound : t.next ≤ natSqlMax)
+    (hid : r.id.toInt64 = Int64.ofNat t.next)
+    (hdup : Txn.firstDuplicate r.val st none = none)
+    (hrefs : (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk r.val with
+      | none => true
+      | some tgt => Id.positive tgt) = true) :
+    Table.check { next := t.next + 1, rows := t.rows ++ [r] } = true := by
+  have hnext := Table.check_nextOk h
+  have hids := Table.check_idsOk h
+  have hrefs0 := Table.check_refsOk h
+  have hdec := Table.check_decodesOk h
+  have hchk := Table.check_checkedOk h
+  have hch := Table.check_childrenOk h
+  have hunq := Table.check_uniquesOk h
+  unfold Table.check
+  have hn : Table.nextOk { next := t.next + 1, rows := t.rows ++ [r] } = true := by
+    simpa [Table.nextOk] using Table.nextOk_succ hnext hbound
+  -- `&&` is left-assoc: peel `uniquesOk` first, then `childrenOk`, …, then `nextOk`.
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.uniquesOk_snoc (t := t) (r := r) (st := st) ht hunq hdup⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.childrenOk_snoc (t := t) (r := r) hch⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.checkedOk_snoc (t := t) (r := r) hchk⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.decodesOk_snoc (t := t) (r := r) hdec⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.invariantsOk_snoc (t := t) (r := r)⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.refsOk_snoc (t := t) (r := r) hrefs0 hrefs⟩
+  rw [Bool.and_eq_true]
+  exact ⟨hn, Table.idsOk_snoc r hids hnext hbound hid⟩
+
+theorem DbState.checkPacked_set_other {s α} [i : IsSchema s] [Entity α]
+    [h : IsSchema.Has s α]
+    (st : DbState s) (tbl : Table α) (t : Fin i.nTables) (hne : t ≠ h.id)
+    (hmono : ∀ name id, DbState.containsId st name id = true →
+      DbState.containsId (st.set tbl) name id = true)
+    (hp : DbState.checkPacked st t = true) :
+    DbState.checkPacked (st.set tbl) t = true := by
+  unfold DbState.checkPacked at hp ⊢
+  rw [DbState.set_tables_other (hne := hne)]
+  rw [Bool.and_eq_true] at hp ⊢
+  exact ⟨hp.1,
+    @Table.fksOk_of_containsId_mono s (i.pack t).ty inferInstance
+      (i.pack t).entity (i.pack t).foreignKey st (st.set tbl) (st.tables t)
+      hmono hp.2⟩
+
+theorem Txn.assign_snd {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
+    (st : DbState s) (c : Checked α)
+    (hnw : ¬ ((DbState.get (α := α) st).next = 0 ∨
+      natSqlMax < (DbState.get (α := α) st).next)) :
+    (assign st c).2 =
+      let tbl := DbState.get (α := α) st
+      let row := Valid.ofChecked (⟨Int64.ofNat tbl.next⟩ : Id α) c
+      st.set { next := tbl.next + 1, rows := tbl.rows ++ [row] } := by
+  simp only [assign]
+  rw [dif_neg hnw]
+
+theorem Txn.assign_snd_id {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
+    (st : DbState s) (c : Checked α) :
+    (assign st c).1 = Valid.ofChecked (⟨Int64.ofNat (DbState.get (α := α) st).next⟩ : Id α) c := by
+  simp only [assign]
+  by_cases h : (DbState.get (α := α) st).next = 0 ∨
+      natSqlMax < (DbState.get (α := α) st).next
+  · rw [dif_pos h]
+  · rw [dif_neg h]
+
+set_option maxHeartbeats 400000 in
+theorem Txn.assign_wf {s α} [i : IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [h : IsSchema.Has s α] [IsSchema.HasPack s α] [LawfulEntity α]
+    (st : DbState s) (c : Checked α) (hwf : st.WF)
+    (hdup : Txn.firstDuplicate c.val st none = none)
+    (hfk : Txn.firstMissingRef c.val st = none) :
+    (assign st c).2.WF := by
+  let tbl := DbState.get (α := α) st
+  have hcheck := DbState.get_check_of_wf (α := α) hwf
+  have hfks0 := DbState.get_fksOk_of_wf (α := α) hwf
+  have hnextOk := Table.check_nextOk hcheck
+  have ⟨hge, _hle⟩ := Table.nextOk_iff.mp hnextOk
+  by_cases hwrap : tbl.next = 0 ∨ natSqlMax < tbl.next
+  · have heq : (assign st c).2 = st := by
+      simp only [assign]
+      rw [dif_pos (by simpa [tbl] using hwrap)]
+    rw [heq]
+    exact hwf
+  · have hbound : tbl.next ≤ natSqlMax := Nat.not_lt.mp (not_or.mp hwrap).2
+    have hnw : ¬ ((DbState.get (α := α) st).next = 0 ∨
+        natSqlMax < (DbState.get (α := α) st).next) := hwrap
+    rw [Txn.assign_snd st c hnw]
+    let row := Valid.ofChecked (⟨Int64.ofNat tbl.next⟩ : Id α) c
+    have hid : row.id.toInt64 = Int64.ofNat tbl.next := rfl
+    have hrefs := Table.refsOk_of_missingRef_none (c := c) hwf hfk
+    have hnew := Table.check_snoc (st := st) (t := tbl) (r := row) rfl hcheck
+      hbound hid (by simpa [row, Valid.ofChecked, Valid.val, Checked.val] using hdup)
+      (by simpa [row, Valid.ofChecked, Valid.val, Checked.val] using hrefs)
+    have hrows : ({ next := tbl.next + 1, rows := tbl.rows ++ [row] } : Table α).rows =
+        (DbState.get (α := α) st).rows ++ [row] := rfl
+    refine DbState.wf_of_checkPacked ?_
+    intro t
+    by_cases hne : t = h.id
+    · subst hne
+      rw [DbState.checkPacked_eq_get, DbState.get_set_same]
+      rw [Bool.and_eq_true]
+      refine ⟨hnew, ?_⟩
+      have hmono : ∀ name id, DbState.containsId st name id = true →
+          DbState.containsId (st.set
+            { next := tbl.next + 1, rows := tbl.rows ++ [row] }) name id = true :=
+        fun name id hold => DbState.containsId_set_append st _ row hrows name id hold
+      have hfksSnoc := Table.fksOk_snoc (r := row) hfks0
+        (by simpa [row, Valid.ofChecked, Valid.val, Checked.val] using
+          Txn.firstMissingRef_none_contains (v := c.val) (st := st) hfk)
+      exact Table.fksOk_of_containsId_mono hmono hfksSnoc
+    · exact DbState.checkPacked_set_other st
+        { next := tbl.next + 1, rows := tbl.rows ++ [row] } t hne
+        (fun name id hold => DbState.containsId_set_append st _ row hrows name id hold)
+        (DbState.checkPacked_of_wf hwf t)
+
+/-- On a `WF` state, `insert` yields a `WF` state whether it succeeds or fails.
+    Success uses `nextOk` so `Int64.ofNat next` does not wrap (`1 ≤ next ≤ natSqlMax`),
+    `uniquesOk` / `fksOk` from the clash walks being `none`, and
+    `decodesOk` / `childrenOk` from `LawfulEntity`. When `next = natSqlMax + 1`,
+    `assign` leaves the table unchanged (still `WF`). -/
+theorem Txn.insert_wf {σ s ε α} [IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [IsSchema.Has s α] [IsSchema.HasPack s α] [LawfulEntity α]
+    (v : Checked α) (st : DbState s) (hwf : st.WF) :
+    (Txn.denote (σ := σ) (s := s) (ε := ε) (.insert α v) st).2.WF := by
+  rw [Txn.denote_insert]
+  cases hdup : Txn.firstDuplicate v.val st none with
+  | some _ => exact hwf
+  | none =>
+      cases hfk : Txn.firstMissingRef v.val st with
+      | some _ => exact hwf
+      | none => exact Txn.assign_wf st v hwf hdup hfk
+
 end LeanDb
+
 

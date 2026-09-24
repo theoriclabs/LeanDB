@@ -102,6 +102,9 @@ elab "#check_m15_axioms" : command => do
   assertAxioms ``LeanDb.Table.check_ofPacked_nil
   assertAxioms ``LeanDb.DbState.checkPacked_empty
   assertAxioms ``LeanDb.DbState.empty_wf
+  -- M15b2: insert preserves WF
+  assertAxioms ``LeanDb.Txn.assign_wf
+  assertAxioms ``LeanDb.Txn.insert_wf
   -- remaining M15b theorems
   assertAxioms ``LeanDb.Array.size_qsort
   assertAxioms ``LeanDb.finishRows_size
