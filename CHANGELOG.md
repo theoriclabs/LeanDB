@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **M14c.** Close remaining QUERIES.md §3 / §5 gaps: `patch` writes only
+  the named fields (meaning merge and SQL `UPDATE`); `SetError` lists
+  only constraints over written fields (`Unique.Touching` /
+  `ForeignKey.Within` reduce to `Empty`); window/`first`/`count`/`exists`
+  refuse a non-exact plan at elaboration; FK `join` is a SQL `JOIN`;
+  decidable `DbState.checkWF` (harness after every successful write);
+  `Runtime.Service.runRead` on a reader snapshot and `runTxn` on the
+  writer; per-FK `ON DELETE` RESTRICT or CASCADE (`cascade%`), mirrored
+  in SQLite, meaning, and `DeleteError.Restricting`. Tests in
+  `TestsM14c.lean`. Remaining deviations are listed in
+  `docs/typed-interface.md`.
 - **M14b.** Typed writes and transaction programs: schema-derived
   `InsertError` / `UpdateError` / `SetError` / `AppendError` /
   `DeleteError`, `Txn σ s ε α` with ST-style `Current σ α`, `Txn.denote`
