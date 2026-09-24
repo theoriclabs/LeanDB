@@ -1,4 +1,4 @@
-# Typed interface (M14 / M15-pre / M15a)
+# Typed interface (M14 / M15-pre / M15a / M15b)
 
 LeanDB programs as values: a read has a pure meaning over `DbState`, and
 execution is one deferred snapshot. Writes and transaction programs have
@@ -242,6 +242,123 @@ random `insert` / `update` / `set` / `patch` / `append` / `delete` /
 `orElse` / `throw` and reads inside a `Txn` after writes; states of up
 to about 30 rows per table; `checkWF` before and after.
 
+## Laws (M15b)
+
+Proved in `LeanDb/Typed/Laws.lean`, `LeanDb/Core.lean`, `LeanDb/Pred.lean`.
+LeanAPI cites these; none is an axiom. `scripts/CheckAxioms.lean` checks
+each against `propext` / `Classical.choice` / `Quot.sound`.
+
+### Exact plans and aggregates
+
+```lean
+Query.exact_hasOpaque q : q.exact = true ↔ q.pred.hasOpaque = false
+Query.exact_approx_denote q h snap r :
+  q.pred.approx.denote snap r = q.pred.denote snap r
+-- denotational, not structural: `approx` uses `andS`/`orS`, which
+-- collapse `tt`/`ff`, so `approx = pred` is false.
+Read.denote_count / denote_exists / denote_first / denote_all
+Read.count_eq_rows : count = size ∘ (unwindowed rows)
+Read.count_eq_admitted : count = size ∘ (filter pred gather)
+Read.first_eq_head : first = [0]? ∘ rows, then QueryRow.wrap
+```
+
+### Codecs
+
+```lean
+class LawfulColCodec α [ColCodec α] : Prop where
+  roundTrip : ∀ v, fromCol (toCol v) = .ok v
+class LawfulSqlOrd α [ColCodec α] [SqlOrd α] [Ord α] : Prop where
+  order_toCol : ∀ a b, Col.order (toCol a) (toCol b) = some (compare a b)
+fromCol_toCol_nat n (h : n ≤ natSqlMax)
+nat_order_toCol n m (hn : n ≤ natSqlMax) (hm : m ≤ natSqlMax)
+fromCol_toCol_float v (h : ¬NaN ∧ ¬Inf)
+```
+
+Instances: `Int64`, `Bool`, `String`, `Id`, `UInt16`, `UInt32`,
+`Option α` (needs `NonNullCodec α`), closed enums with `LawfulClosedEnum`.
+No `LawfulColCodec Nat` / `Float`: `Nat` clamps above `Int64.max`;
+`Float` inhabits NaN/Inf. A custom codec without the instance still
+typechecks.
+
+### Reads do not write
+
+```lean
+Read.denote_no_write r st :
+  (Txn.denote (.liftRead r) st).2 = st
+Txn.ReadOnly p  -- liftRead / get / lookup / pure / bind
+Txn.denote_readOnly h st : (Txn.denote p st).2 = st
+```
+
+### Failure exactness
+
+`firstDuplicate` / `firstMissingRef` walk `Unique.all` / `ForeignKey.all`
+in declaration order. The iff lemmas are those functions:
+
+```lean
+Txn.insert_duplicate_iff : result = .ok (.error (.duplicate ix holder))
+  ↔ firstDuplicate v.val st none = some (ix, holder)
+Txn.insert_missingRef_iff : .missingRef fk
+  ↔ firstDuplicate = none ∧ firstMissingRef = some fk
+Txn.insert_ok_iff : success ↔ both none
+Txn.update_cas : found, parentEq, no dup, no missingRef → replaceRow
+Txn.denote_set / denote_patch / denote_append  -- unfolding
+Txn.set_never_stale : SetError has no stale constructor
+Txn.delete_gone_state : find? = none → state unchanged
+```
+
+### Frames and write algebra
+
+```lean
+Txn.insert_get_other / update_get_other / set_get_other
+  / patch_get_other / append_get_other :
+  a write to α leaves get β unchanged when Has.id differs
+Txn.assign_next : insert bumps next by 1
+Txn.assign_id_eq_next : assigned id = ofNat next
+Txn.replaceRow_next / removeRow_next / Table.eraseIdP_next :
+  updates and deletes do not lower next (ids are never reused)
+Txn.eraseAt_tables : eraseAt changes only table t
+Query.denote_eq_of_admitted : same filtered gathered rows
+  (same values, same order) ⇒ same query answer; joins use ts
+Read.first/all/count/exists/page_eq_of_admitted
+Read.Scoped adm p : queries of α whose pred implies adm
+```
+
+Delete-success frame: cascade may rewrite children of α;
+`eraseAt_tables` is the one-table step. `page_eq_of_admitted` uses the
+unwindowed admitted-row equality plus `wrap` agreement.
+
+### Well-formedness
+
+```lean
+Table.check_nil : empty table is locally WF
+Table.invariantsOk_valid : every Table of Valid rows has invariantsOk
+Txn.denote_wf : st.WF → (denote p st).2 = st → (denote p st).2.WF
+Txn.denote_readOnly_wf / denote_throw_wf / insert_wf_of_fail
+class LawfulEntity α : decode_encode and children_attach
+Txn.assign_invariantsOk : insert preserves invariantsOk
+```
+
+`DbState.load` checks the entity invariant on every decoded row
+(`Valid.ofStoredM`) but not unique indexes or foreign keys.
+`DbState.loadWF` throws `.invariant "schema" "checkWF"` unless
+`checkWF` holds — that is the runtime precondition that a database
+created and changed only by LeanDB is `WF`.
+
+**Not proved (strongest sound remainder):**
+
+- Generic `DbState.empty_wf` (`checkPacked` at an abstract `pack t`).
+  `Table.check_nil` and `Table.fksOk_nil` are the local facts.
+- Successful `insert`/`update`/`set`/`patch`/`append` preserve full
+  `checkWF` (`idsOk` of `ofNat next` needs `1 ≤ next ≤ natSqlMax`;
+  `uniquesOk`/`fksOk` from `firstDuplicate`/`firstMissingRef`;
+  `decodesOk`/`childrenOk` from `LawfulEntity`).
+- Successful `delete` / cascade `WF` (restrict + cascade graph).
+- `get` after insert/delete as a `find?` lemma (append-right of a
+  fresh id; `removeRow` filter).
+- Structural `approx = pred` (denotational equality is proved).
+- `LawfulColCodec Nat` / `Float` (bounded / finite theorems instead).
+- `run p = denote p` — that is `ExecutesAsMeaning`, M15a, not this task.
+
 ## Remaining deviations
 
 Relative to QUERIES.md §3 / §5. Not silently weakened.
@@ -276,10 +393,12 @@ Relative to QUERIES.md §3 / §5. Not silently weakened.
 - **`Touching` / `Within` / `Restricting` are `if`/`Empty`, not
   generated inductives.** They reduce to `Empty` when nothing applies,
   which is what exhaustive match and `IsEmpty` need in Lean 4.33.
-- **WF preservation is unproved.** `checkWF` holds in the harness after
-  every successful write and program; the proofs are later (QUERIES.md
-  §3.10). `ExecutesAsMeaning` is the named hypothesis for the SQLite
-  half; it is not an axiom.
+- **WF preservation is proved for unchanged states.** `Txn.denote_wf`
+  when `(denote p st).2 = st` (reads, `throw`, failed writes). Empty
+  tables satisfy `Table.check_nil`. Successful-write `idsOk` /
+  `uniquesOk` / `fksOk` and cascade `WF` are the remainder below.
+  `ExecutesAsMeaning` is the named hypothesis for the SQLite half; it
+  is not an axiom. `DbState.loadWF` is the runtime `checkWF` gate.
 - **`Ref` inside a child-list record is refused at `schema%` / `typed%`.**
   SQLite would enforce those FKs; the typed `ForeignKey` layer would
   not. Put the reference on a schema table.
