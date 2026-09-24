@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **LDB-22.** `count` / `exists?` apply the lambda, not only the plan, so
+  a residual (or a hand-written `.tt` plan) cannot overcount. `countP` /
+  `existsP` still push `COUNT(*)` / `EXISTS` for exact plans.
 - **LDB-21.** `patch` refuses a guard that contains an opaque leaf.
   Opaque used to render as true, so a residual false guard still wrote.
 - **LDB-20.** Multi-statement verbs that join an outer transaction run

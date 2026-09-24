@@ -1279,7 +1279,13 @@ def countP [RowsOf ts] (p : Pred ts) : DbM Nat :=
       if ← stmt.step then return (← stmt.columnInt64 0).toNatClampNeg else return 0
 
 def count [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_plan) : DbM Nat :=
-  countP plan.plan
+  withLog "count" (selectDetail ts plan.plan) (fun _ => 1) (plan := some (planJson ts plan.plan)) do
+    return (← runPlanned ts plan.plan.approx p .preserve).size
+
+def exists? [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_plan) : DbM Bool :=
+  withLog "exists" (selectDetail ts plan.plan) (fun _ => 1) (plan := some (planJson ts plan.plan)) do
+    let rows ← runPlanned ts plan.plan.approx p .preserve #[] { limit := some 1 } (exact := false)
+    return !rows.isEmpty
 
 def existsP [RowsOf ts] (p : Pred ts) : DbM Bool :=
   withLog "exists" (selectDetail ts p) (fun _ => 1) (plan := some (planJson ts p)) do
@@ -1295,9 +1301,6 @@ def existsP [RowsOf ts] (p : Pred ts) : DbM Bool :=
         s!"SELECT EXISTS(SELECT 1 FROM {quoteId spec.name} AS t0 WHERE {whereSql})"
       bindCols stmt 1 binds
       if ← stmt.step then return (← stmt.columnInt64 0) != 0 else return false
-
-def exists? [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_plan) : DbM Bool :=
-  existsP plan.plan
 
 /-! ## LDB-07: field-level `patch` -/
 
