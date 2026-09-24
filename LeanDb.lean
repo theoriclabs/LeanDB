@@ -21,3 +21,4 @@ import LeanDb.Mcp
 import LeanDb.Host
 import LeanDb.Import
 import LeanDb.Scaffold
+import LeanDb.Typed.Schema
