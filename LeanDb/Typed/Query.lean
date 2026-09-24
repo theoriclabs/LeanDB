@@ -190,7 +190,7 @@ def leanSorted {s ts ρ} (q : Query s ts ρ) : Bool :=
     | _ => true
 
 def exec {s ts ρ} (q : Query s ts ρ) : Db (Array ρ) := do
-  if q.exact && !leanSorted q then
+  if q.exact && !leanSorted q && Window.sqlOk q.window then
     let rows ← @selectP ts q.rowsOf q.pred q.sortBy q.order q.window
     return rows.map q.toRow
   else

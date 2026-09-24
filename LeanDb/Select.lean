@@ -65,6 +65,15 @@ structure Window where
 def Window.isTrivial (w : Window) : Bool :=
   w.limit.isNone && w.offset == 0
 
+/-- `true` when LIMIT/OFFSET fit in a SQLite INTEGER bind. Out-of-range
+    windows are applied in Lean (`Window.apply`) so meaning and execution
+    agree rather than wrapping or faulting. -/
+def Window.sqlOk (w : Window) : Bool :=
+  w.offset < Int64.maxValue.toNatClampNeg &&
+    match w.limit with
+    | none => true
+    | some n => n < Int64.maxValue.toNatClampNeg
+
 def Window.check (w : Window) : Except DbError Unit := do
   if w.offset >= Int64.maxValue.toNatClampNeg then
     throw (.sqlite "window offset is out of range")

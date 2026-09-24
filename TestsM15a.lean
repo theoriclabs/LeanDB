@@ -368,9 +368,18 @@ private def testD8 : IO Bool := do
   fresh dbPath
   expectOk (← withDb dbPath specs do
     let _ ← LeanDb.insert Job ⟨"a", .done⟩
-    let q := (Query.from Job).withWindow { limit := some 0 }
-    cmpRead (Read.first q)
+    let q0 := (Query.from Job).withWindow { limit := some 0 }
+    let z ← cmpRead (Read.first q0)
       (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D8 first limit 0"
+    let qHuge := (Query.from Job).withWindow
+      { offset := Int64.maxValue.toNatClampNeg }
+    let h ← cmpRead (Read.all qHuge)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D8 offset Int64.max"
+    let qLim := (Query.from Job).withWindow
+      { limit := some Int64.maxValue.toNatClampNeg }
+    let l ← cmpRead (Read.all qLim)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D8 limit Int64.max"
+    return z && h && l
   ) "D8"
 
 /-! ## D9: quantifier then join -/
@@ -486,7 +495,7 @@ def run : IO Unit := do
   check d5 "D5 ClosedEnum orderBy: Lean sort in both"
   check d6 "D6 Current constructor is private; Has is required"
   check d7 "D7 Nat above Int64.max is not Checked"
-  check (!d8) "D8 still reproduces (first after limit 0)"
+  check d8 "D8 first after limit 0; huge window applied in Lean"
   check (!d9) "D9 still reproduces (quantifier on the left of join is dropped)"
   check (!d10) "D10 still reproduces (mixed-invariant patch is DbFault vs .gone)"
   IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10}"

@@ -155,7 +155,14 @@ def exec {s : Type} [IsSchema s] : {α : Type} → Read s α → Db α
           | some v => (Pure.pure (f := Db) (some v))
           | none => DbM.ofExcept (.error (.invariant (Entity.tableName α) "Valid.ofStored?"))
   | _, @Read.firstQ _ _ ts ρ _gs _out q => do
-      let rows ← Query.exec (s := s) (ts := ts) { q with window := { q.window with limit := some 1 } }
+      -- Honour an existing `limit := some 0` (empty); otherwise cap at 1.
+      -- Overwriting 0 with 1 made `first` after a zero window disagree
+      -- with denote.
+      let lim : Option Nat :=
+        match q.window.limit with
+        | some 0 => some 0
+        | _ => some 1
+      let rows ← Query.exec (s := s) (ts := ts) { q with window := { q.window with limit := lim } }
       match rows[0]? with
       | none => (Pure.pure (f := Db) none)
       | some r => some <$> _out.wrapExec r
