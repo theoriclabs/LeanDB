@@ -167,8 +167,7 @@ instance {α : Type} [Entity α] [hf : HasForeignKey α] [IsEmpty hf.ForeignKey]
 
 def ReferencedBy.count {s α : Type} [IsSchema s] [h : HasReferencedBy s α]
     (r : ReferencedBy s α) (st : DbState s) (id : Id α) : Nat :=
-  let inst := h.sourceEntity r
-  let tbl := @DbState.get s (h.Source r) inferInstance inst st
+  let tbl := DbState.getSource (s := s) (α := α) st r
   tbl.rows.foldl (init := 0) fun n row =>
     if (h.getFk r row.val).toInt64 == id.toInt64 then n + 1 else n
 
@@ -206,7 +205,8 @@ inductive AppendError (α : Type) [Entity α] [HasListField α] where
 
 /-- Failures of `delete`. `restricted` names who still references the
     row, and how many such rows. -/
-inductive DeleteError (s : Type) (α : Type) [Entity α] [HasReferencedBy s α] where
+inductive DeleteError (s : Type) (α : Type) [IsSchema s]
+    [Entity α] [HasReferencedBy s α] where
   | gone
   | restricted (who : ReferencedBy.Restricting s α) (rows : Nat)
 
@@ -240,7 +240,7 @@ instance {α : Type} [Entity α] [HasUnique α] [HasForeignKey α]
     | .missingRef fk, _ =>
         Std.Format.bracket "InsertError.missingRef (" (repr fk) ")"
 
-instance {s α : Type} [Entity α] [HasReferencedBy s α]
+instance {s α : Type} [IsSchema s] [Entity α] [HasReferencedBy s α]
     [BEq (ReferencedBy s α)] : BEq (DeleteError s α) where
   beq
     | .gone, .gone => true
@@ -248,7 +248,7 @@ instance {s α : Type} [Entity α] [HasReferencedBy s α]
         ReferencedBy.Restricting.val b1 == ReferencedBy.Restricting.val b2 && n1 == n2
     | _, _ => false
 
-instance {s α : Type} [Entity α] [HasReferencedBy s α]
+instance {s α : Type} [IsSchema s] [Entity α] [HasReferencedBy s α]
     [Repr (ReferencedBy s α)] : Repr (DeleteError s α) where
   reprPrec
     | .gone, _ => "DeleteError.gone"

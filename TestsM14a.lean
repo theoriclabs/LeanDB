@@ -45,6 +45,25 @@ unique% User.byEmail := email
 
 schema% App := Team, User
 
+/-- Non-vacuity: `denote (insert v) empty` has exactly one Team row, `v`. -/
+theorem insert_team_on_empty :
+    let v : Team := ⟨"eng"⟩
+    let c := Checked.of v (by unfold Invariant; trivial)
+    let (res, st) := Txn.denote (σ := Unit) (s := App) (ε := Empty)
+      (Txn.insert (α := Team) c) DbState.empty
+    match res with
+    | .error e => nomatch e
+    | .ok (.error e) => nomatch (e : InsertError Team)
+    | .ok (.ok row) =>
+        let tbl := DbState.get (α := Team) st
+        tbl.rows = [⟨row.id, v⟩] ∧ tbl.next = 2 := by
+  have hU : Unique.all (α := Team) = #[] := rfl
+  have hF : ForeignKey.all (α := Team) = #[] := rfl
+  simp [Txn.denote, Txn.denote.go, Txn.firstDuplicate, Txn.firstMissingRef,
+    Txn.assign, hU, hF, Array.findSome?, Array.find?]
+  simp [DbState.get_set_same, DbState.empty_rows, DbState.empty_next]
+  constructor <;> rfl
+
 private def specs : List TableSpec := IsSchema.specs App
 
 private def dbPath : System.FilePath := ".lake" / "leandb_test_m14a.sqlite"
@@ -65,6 +84,9 @@ private def optUser : Option (Stored User) → Option (Stored User) → Bool
   | none, none => true
   | some a, some b => userEq a b
   | _, _ => false
+
+private def optValidUser (a b : Option (Valid User)) : Bool :=
+  optUser (a.map Valid.toStored) (b.map Valid.toStored)
 
 private def optTeam : Option (Stored Team) → Option (Stored Team) → Bool
   | none, none => true
@@ -128,22 +150,30 @@ private def namedNope : Query App [User] (Stored User) :=
 private def namedDesc : Query App [User] (Stored User) :=
   usersQ.orderBy (.desc (User.Field.name : Entity.Field User))
 
+private theorem namedDesc_exact : namedDesc.exact = true := by
+  unfold namedDesc usersQ Query.orderBy Query.exact Query.from
+  rfl
+
 private def withTeam : Query App [User, Team] (Stored User × Stored Team) :=
   (Query.from User).join User.ForeignKey.team
+
+private theorem withTeam_exact : withTeam.exact = true := by
+  unfold withTeam Query.exact Query.join Query.from
+  simp [Pred.andS, Query.Pred.extend, Query.joinPred, Pred.hasOpaque]
+  rfl
 
 private def testEmpty : IO Unit := do
   fresh dbPath
   let r ← withDb dbPath specs do
-    discard <| eqRun (Read.get User ⟨1⟩) optUser "empty get"
+    discard <| eqRun (Read.get User ⟨1⟩) optValidUser "empty get"
     discard <| eqRun (Read.all usersQ) listUser "empty all"
     discard <| eqRun (Read.count usersQ) (· == ·) "empty count"
     discard <| eqRun (Read.«exists» usersQ) (· == ·) "empty exists"
     discard <| eqRun (Read.first usersQ) optUser "empty first"
     discard <| eqRun (Read.page usersQ { limit := some 10 }) pageUser "empty page"
-    discard <| eqRun (Read.lookup User User.Unique.byName "ada") optUser "empty lookup"
+    discard <| eqRun (Read.lookup User User.Unique.byName "ada") optValidUser "empty lookup"
     discard <| eqRun (Read.all withTeam) listPair "empty join"
     let st ← DbState.load (s := App)
-    check' (st.slots.size == 2) "empty has two table slots"
     check' ((DbState.get (α := User) st).rows.isEmpty) "empty user rows"
     check' ((DbState.get (α := Team) st).next == 1) "empty next is 1"
   discard <| expectOk r "empty"
@@ -167,12 +197,12 @@ private def testSeeded : IO Unit := do
         (Read.denote (s := App) (Read.all usersQ) stHand)
         (Read.denote (s := App) (Read.all usersQ) st))
       "hand-built denote = load denote"
-    discard <| eqRun (Read.get User ada.id) optUser "get ada"
-    discard <| eqRun (Read.get User ⟨99⟩) optUser "get missing"
-    let got ← eqRun (Read.lookup User User.Unique.byName "ada") optUser "lookup byName"
+    discard <| eqRun (Read.get User ada.id) optValidUser "get ada"
+    discard <| eqRun (Read.get User ⟨99⟩) optValidUser "get missing"
+    let got ← eqRun (Read.lookup User User.Unique.byName "ada") optValidUser "lookup byName"
     check' (match got with | some r => r.id == ada.id | none => false) "lookup ada id"
-    discard <| eqRun (Read.lookup User User.Unique.byEmail "grace@x") optUser "lookup byEmail"
-    discard <| eqRun (Read.lookup User User.Unique.byName "missing") optUser "lookup miss"
+    discard <| eqRun (Read.lookup User User.Unique.byEmail "grace@x") optValidUser "lookup byEmail"
+    discard <| eqRun (Read.lookup User User.Unique.byName "missing") optValidUser "lookup miss"
     discard <| eqRun (Read.first usersQ) optUser "first id-order"
     discard <| eqRun (Read.all usersQ) listUser "all users"
     discard <| eqRun (Read.all namedAda) listUser "where name"
@@ -185,17 +215,17 @@ private def testSeeded : IO Unit := do
       "page exact order"
     check' (withTeam.exact == true) "join is exact"
     discard <| eqRun (Read.all withTeam) listPair "join all"
-    discard <| eqRun (Read.first withTeam) (fun a b => match a, b with
+    discard <| eqRun (Read.first withTeam withTeam_exact) (fun a b => match a, b with
       | none, none => true
       | some x, some y => userEq x.1 y.1 && teamEq x.2 y.2
       | _, _ => false) "join first"
-    discard <| eqRun (Read.count withTeam) (· == ·) "join count"
-    discard <| eqRun (Read.«exists» withTeam) (· == ·) "join exists"
+    discard <| eqRun (Read.count withTeam withTeam_exact) (· == ·) "join count"
+    discard <| eqRun (Read.«exists» withTeam withTeam_exact) (· == ·) "join exists"
     let win : Window := { offset := 1, limit := some 1 }
-    discard <| eqRun (Read.all (withTeam.withWindow win)) listPair
+    discard <| eqRun (Read.all (withTeam.withWindow win withTeam_exact)) listPair
       "join window"
-    discard <| eqRun (Read.page withTeam win) pagePair "join page"
-    discard <| eqRun (Read.first (withTeam.withWindow win)) (fun a b => match a, b with
+    discard <| eqRun (Read.page withTeam win withTeam_exact) pagePair "join page"
+    discard <| eqRun (Read.first (withTeam.withWindow win withTeam_exact) withTeam_exact) (fun a b => match a, b with
       | none, none => true
       | some x, some y => userEq x.1 y.1 && teamEq x.2 y.2
       | _, _ => false) "join first window"
@@ -219,12 +249,12 @@ private def testSecondState : IO Unit := do
     let (eng, _, ada, _, _) ← seed
     discard <| insert User ⟨"barbara", "barb@x", eng.id, []⟩
     let win : Window := { offset := 2, limit := some 2 }
-    discard <| eqRun (Read.all (namedDesc.withWindow win)) listUser
+    discard <| eqRun (Read.all (namedDesc.withWindow win namedDesc_exact)) listUser
       "second state exact window"
-    discard <| eqRun (Read.page withTeam { offset := 1, limit := some 2 }) pagePair
+    discard <| eqRun (Read.page withTeam { offset := 1, limit := some 2 } withTeam_exact) pagePair
       "second state join page"
     discard <| eqRun (Read.count usersQ) (· == ·) "second state count 4"
-    discard <| eqRun (Read.get User ada.id) optUser "second state get"
+    discard <| eqRun (Read.get User ada.id) optValidUser "second state get"
     let st ← DbState.load (s := App)
     check' ((DbState.get (α := User) st).rows.length == 4) "four users"
   discard <| expectOk r "second state"

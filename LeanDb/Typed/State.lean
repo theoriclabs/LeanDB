@@ -4,36 +4,29 @@ import LeanDb.Transaction
 
 namespace LeanDb
 
-/-! # Pure database state (M14)
+/-! # Pure database state (M15-pre)
 
 `Table` is one entity's AUTOINCREMENT counter and its rows in id order,
-child lists attached. `DbState s` is one table per entity of schema `s`.
-Production state is abstracted by reading every table in id order
-(`fetchAll`).
-
-`DbState` lives in `Type` (so it can be a `DbM` result). Tables of
-different entities are stored by name and recovered with a typed `get`.
+child lists attached. `DbState s` is a function from the schema's table
+enum to that table's contents — the same value the kernel sees and the
+compiled code runs. `get` transports along `IsSchema.Has.ty_eq`; `set`
+is function update; `load` reads every table under one `readSnapshot`.
 -/
 
 /-- The production monad. `DbState.load : Db (DbState s)`. -/
 abbrev Db := DbM
 
-/-- A table's contents: the AUTOINCREMENT counter, and rows by id. -/
-structure Table (α : Type) [Entity α] where
+/-- A table's contents: the AUTOINCREMENT counter, and rows by id.
+    No `[Entity α]` on the structure so `ty_eq ▸` transports it. -/
+structure Table (α : Type) where
   next : Nat := 1
   rows : List (Stored α) := []
   deriving Repr
 
-/-- Untyped payload of one table, so `DbState` can sit in `Type`. -/
-structure DbState.Slot : Type where
-  name : String
-  next : Nat
-  /-- `Array (Stored α)` for the entity named `name`. -/
-  rows : Array (Stored Unit)
-
-/-- The whole database, one slot per entity of the schema. -/
-structure DbState (s : Type) [IsSchema s] : Type where
-  slots : Array DbState.Slot
+/-- The whole database: one table per entity of `s`. The Pi lives in
+    `Type` because each `Table _` does, so `DbState s` is a `DbM` result. -/
+structure DbState (s : Type) [i : IsSchema s] : Type where
+  tables : (t : Fin i.nTables) → Table (i.pack t).ty
 
 /-- Ids strictly increase, are positive, and stay below `next`. -/
 def Table.idsOk [Entity α] (t : Table α) : Bool :=
@@ -96,15 +89,75 @@ def Table.check [Entity α] [HasUnique α] (t : Table α) : Bool :=
 
 def Table.WF [Entity α] [HasUnique α] (t : Table α) : Prop := t.check = true
 
-unsafe def DbState.castRows {α β : Type} (rows : Array (Stored α)) : Array (Stored β) :=
-  unsafeCast rows
-
 /-- No rows, every AUTOINCREMENT counter at 1. -/
 def DbState.empty {s : Type} [i : IsSchema s] : DbState s where
-  slots := i.tables.map fun t =>
-    let p := i.pack t
-    { name := @Entity.tableName p.ty p.entity, next := 1
-      rows := (#[] : Array (Stored Unit)) }
+  tables := fun _ => { next := 1, rows := [] }
+
+/-- Rows of `α` in this state. `α` must be a table of `s`. -/
+def DbState.get {s α : Type} [i : IsSchema s] [Entity α] [h : IsSchema.Has s α]
+    (st : DbState s) : Table α :=
+  h.ty_eq ▸ st.tables h.id
+
+/-- Replace the table for `α` by function update. -/
+def DbState.set {s α : Type} [i : IsSchema s] [Entity α] [h : IsSchema.Has s α]
+    (st : DbState s) (tbl : Table α) : DbState s where
+  tables := fun t =>
+    if hEq : t = h.id then
+      hEq.symm ▸ (h.ty_eq.symm ▸ tbl)
+    else
+      st.tables t
+
+/-- Direct access by schema-table index. -/
+def DbState.getAt {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.nTables) :
+    Table (i.pack t).ty :=
+  st.tables t
+
+/-- The inbound-key source table, transported along `sourceTy_eq`. -/
+def DbState.getSource {s α : Type} [i : IsSchema s] [h : HasReferencedBy s α]
+    (st : DbState s) (r : h.ReferencedBy) : Table (h.Source r) :=
+  h.sourceTy_eq r ▸ st.tables (h.sourceId r)
+
+/-- `eq.rec` along `e` then `e.symm` is the identity, for `Table`. -/
+private theorem Table.eq_rec_cancel {α β : Type} (e : α = β) (t : Table β) :
+    e ▸ (e.symm ▸ t : Table α) = t := by
+  cases e
+  rfl
+
+private theorem Table.transport_nil_rows {α β : Type} (e : α = β) :
+    (e ▸ ({ next := 1, rows := [] } : Table α)).rows = [] := by
+  cases e
+  rfl
+
+private theorem Table.transport_nil_next {α β : Type} (e : α = β) :
+    (e ▸ ({ next := 1, rows := [] } : Table α)).next = 1 := by
+  cases e
+  rfl
+
+theorem DbState.get_set_same {s α : Type} [i : IsSchema s] [Entity α]
+    [h : IsSchema.Has s α] (st : DbState s) (tbl : Table α) :
+    DbState.get (α := α) (st.set tbl) = tbl := by
+  unfold DbState.get DbState.set
+  simp only [dif_pos]
+  exact Table.eq_rec_cancel h.ty_eq tbl
+
+theorem DbState.get_set_other {s α β : Type} [i : IsSchema s]
+    [Entity α] [Entity β] [ha : IsSchema.Has s α] [hb : IsSchema.Has s β]
+    (st : DbState s) (tbl : Table α) (hneq : ha.id ≠ hb.id) :
+    DbState.get (α := β) (st.set (α := α) tbl) = DbState.get (α := β) st := by
+  unfold DbState.get DbState.set
+  simp [dif_neg (Ne.symm hneq)]
+
+theorem DbState.empty_rows {s α : Type} [i : IsSchema s] [Entity α]
+    [h : IsSchema.Has s α] :
+    (DbState.get (α := α) (DbState.empty (s := s))).rows = [] := by
+  unfold DbState.get DbState.empty
+  exact Table.transport_nil_rows h.ty_eq
+
+theorem DbState.empty_next {s α : Type} [i : IsSchema s] [Entity α]
+    [h : IsSchema.Has s α] :
+    (DbState.get (α := α) (DbState.empty (s := s))).next = 1 := by
+  unfold DbState.get DbState.empty
+  exact Table.transport_nil_next h.ty_eq
 
 /-- The next AUTOINCREMENT id: `sqlite_sequence` if present, otherwise
     one past the greatest stored id (1 on an empty table). -/
@@ -124,35 +177,35 @@ def DbState.loadNext (α : Type) [Entity α] (rows : Array (Stored α)) : Db Nat
         if r.id.toInt64 > m then r.id.toInt64 else m
       return maxId.toNatClampNeg + 1
 
-unsafe def DbState.loadImpl {s : Type} [i : IsSchema s] : Db (DbState s) :=
-  readSnapshot do
-    let slots ← i.tables.mapM fun t => do
-      let p := i.pack t
-      let rows ← @fetchAll p.ty p.entity
-      let next ← @DbState.loadNext p.ty p.entity rows
-      pure {
-        name := @Entity.tableName p.ty p.entity
-        next
-        rows := DbState.castRows (α := p.ty) (β := Unit) rows
-      }
-    return ⟨slots⟩
+/-- Build a `DbState` from a list of packed tables (id order of `tables`). -/
+def DbState.ofList {s : Type} [i : IsSchema s]
+    (packed : List (Σ t : Fin i.nTables, Table (i.pack t).ty)) : DbState s where
+  tables := fun t =>
+    let rec find : List (Σ t : Fin i.nTables, Table (i.pack t).ty) → Table (i.pack t).ty
+      | [] => { next := 1, rows := [] }
+      | ⟨t', tbl⟩ :: rest =>
+          if h : t' = t then h ▸ tbl else find rest
+    find packed
 
 /-- Read every table of `s` in id order, under one deferred snapshot. -/
-@[implemented_by DbState.loadImpl]
-def DbState.load {s : Type} [IsSchema s] : Db (DbState s) :=
-  pure ⟨#[]⟩
+def DbState.load {s : Type} [i : IsSchema s] : Db (DbState s) :=
+  readSnapshot do
+    let packed ← i.tables.toList.mapM fun t => do
+      let p := i.pack t
+      have : Entity p.ty := p.entity
+      let rows ← fetchAll p.ty
+      let next ← DbState.loadNext p.ty rows
+      pure (⟨t, { next, rows := rows.toList }⟩ : Σ t : Fin i.nTables, Table (i.pack t).ty)
+    return DbState.ofList packed
 
-unsafe def DbState.getImpl {s α : Type} [IsSchema s] [Entity α]
-    (st : DbState s) : Table α :=
-  match st.slots.find? (fun sl => sl.name == Entity.tableName α) with
-  | none => { next := 1, rows := [] }
-  | some sl =>
-      { next := sl.next, rows := (DbState.castRows (α := Unit) (β := α) sl.rows).toList }
-
-/-- Rows of `α` in this state. -/
-@[implemented_by DbState.getImpl]
-def DbState.get {s α : Type} [IsSchema s] [Entity α] (st : DbState s) : Table α :=
-  { next := 1, rows := [] }
+/-- Whether any schema table named `tableName` contains `id`. -/
+def DbState.containsId {s : Type} [i : IsSchema s] (st : DbState s)
+    (tableName : String) (id : Int64) : Bool :=
+  i.tables.any fun t =>
+    let p := i.pack t
+    have : Entity p.ty := p.entity
+    Entity.tableName p.ty == tableName &&
+      (st.tables t).rows.any fun row => row.id.toInt64 == id
 
 /-- Every foreign key of `α` resolves to a row in the target table. -/
 def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
@@ -161,61 +214,58 @@ def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
     (ForeignKey.all α).all fun fk =>
       let tgt := hf.get fk r.val
       let inst := hf.targetEntity fk
-      let tbl := @DbState.get s (hf.Target fk) inferInstance inst st
-      tbl.rows.any fun row => row.id.toInt64 == tgt.toInt64
+      let name := @Entity.tableName (hf.Target fk) inst
+      DbState.containsId st name tgt.toInt64
 
 /-- One packed entity of the schema: local table check plus foreign keys. -/
-def DbState.checkPacked {s : Type} [IsSchema s] (st : DbState s) (p : PackedEntity) : Bool :=
-  let tbl := @DbState.get s p.ty inferInstance p.entity st
+def DbState.checkPacked {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.nTables) : Bool :=
+  let p := i.pack t
+  let tbl := st.tables t
+  have : Entity p.ty := p.entity
   @Table.check p.ty p.entity p.unique tbl &&
     @Table.fksOk s p.ty inferInstance p.entity p.foreignKey st tbl
 
-/-- Decidable well-formedness: every schema table is present, every row
-    decodes and is `Checked`, ids strictly increase and stay `< next`,
-    unique keys are unique, foreign keys resolve, child lists attach. -/
-def DbState.checkWF {s : Type} [sch : IsSchema s] (st : DbState s) : Bool :=
-  let namesOk := (st.slots.toList.zip sch.tables.toList).all fun (sl, t) =>
-    sl.name == @Entity.tableName (sch.pack t).ty (sch.pack t).entity
-  st.slots.size == sch.tables.size && namesOk &&
-    sch.tables.all fun t => DbState.checkPacked st (sch.pack t)
+/-- Decidable well-formedness: every schema table is present (by the Pi),
+    every row decodes and is `Checked`, ids strictly increase and stay
+    `< next`, unique keys are unique, foreign keys resolve, child lists
+    attach. -/
+def DbState.checkWF {s : Type} [i : IsSchema s] (st : DbState s) : Bool :=
+  i.tables.all fun t => DbState.checkPacked st t
 
 /-- Every row decodes and is `Checked`, and every constraint holds. -/
-def DbState.WF {s : Type} [IsSchema s] (st : DbState s) : Prop :=
+def DbState.WF {s : Type} [i : IsSchema s] (st : DbState s) : Prop :=
   DbState.checkWF st = true
 
-unsafe def DbState.setImpl {s α : Type} [IsSchema s] [Entity α]
-    (st : DbState s) (tbl : Table α) : DbState s :=
-  let name := Entity.tableName α
-  let slot : DbState.Slot := {
-    name
-    next := tbl.next
-    rows := DbState.castRows (α := α) (β := Unit) tbl.rows.toArray
-  }
-  if st.slots.any (·.name == name) then
-    ⟨st.slots.map fun sl => if sl.name == name then slot else sl⟩
-  else
-    ⟨st.slots.push slot⟩
+/-- Total number of rows across every schema table. Bounds `deleteCascading`. -/
+def DbState.rowCount {s : Type} [i : IsSchema s] (st : DbState s) : Nat :=
+  i.tables.foldl (init := 0) fun acc t => acc + (st.tables t).rows.length
 
-/-- Replace the table for `α`. Adds a slot if the name was missing. -/
-@[implemented_by DbState.setImpl]
-def DbState.set {s α : Type} [IsSchema s] [Entity α]
-    (st : DbState s) (tbl : Table α) : DbState s :=
-  st
+/-- Gather in-memory rows for a table list of schema `s`. Each position
+    is `get`, so `Query.denote` does not need a polymorphic `Source`. -/
+class GatherState (s : Type) (ts : List Type) [IsSchema s] where
+  gather : DbState s → Array (Rows ts)
 
-unsafe def DbState.sourceImpl {s : Type} [IsSchema s] (st : DbState s) : Source (_root_.Id) where
-  load _ α _ := (DbState.get (α := α) st).rows.toArray
+instance {s α : Type} [IsSchema s] [Entity α] [IsSchema.Has s α] :
+    GatherState s [α] where
+  gather st := (DbState.get (α := α) st).rows.toArray
 
-/-- In-memory `Source` for `selectSpec`. -/
-@[implemented_by DbState.sourceImpl]
-def DbState.source {s : Type} [IsSchema s] (st : DbState s) : Source (_root_.Id) :=
-  ⟨fun _ α _ => (DbState.get (α := α) st).rows.toArray⟩
+instance {s α β : Type} {ts : List Type} [IsSchema s] [Entity α] [IsSchema.Has s α]
+    [GatherState s (β :: ts)] : GatherState s (α :: β :: ts) where
+  gather st :=
+    let heads := (DbState.get (α := α) st).rows.toArray
+    let tails := GatherState.gather (s := s) (ts := β :: ts) st
+    heads.flatMap fun h => tails.map fun t => (h, t)
+
+/-- Rows of `α`, via `get`. -/
+def DbState.rows {s α : Type} [IsSchema s] [Entity α] [IsSchema.Has s α]
+    (st : DbState s) : Array (Stored α) :=
+  (st.get (α := α)).rows.toArray
 
 /-- A `Pred.Snapshot` of every table, for quantifier denotation. -/
 def DbState.snapshot {s : Type} [i : IsSchema s] (st : DbState s) : Pred.Snapshot :=
   i.tables.foldl (init := Pred.Snapshot.empty) fun snap t =>
     let p := i.pack t
     have : Entity p.ty := p.entity
-    let tbl := DbState.get (α := p.ty) st
-    Pred.Snapshot.add (β := p.ty) snap tbl.rows.toArray
+    Pred.Snapshot.add (β := p.ty) snap (st.tables t).rows.toArray
 
 end LeanDb

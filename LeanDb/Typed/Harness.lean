@@ -12,8 +12,21 @@ def tableEq {α} [Entity α] [BEq α] (a b : Table α) : Bool :=
   a.next == b.next && a.rows.length == b.rows.length &&
     (a.rows.zip b.rows).all fun (x, y) => x.id == y.id && x.val == y.val
 
+/-- Structural comparison of one entity via lawful `DbState.get`. -/
+def getEq {s α} [IsSchema s] [Entity α] [BEq α] [IsSchema.Has s α]
+    (a b : DbState s) : Bool :=
+  tableEq (DbState.get (α := α) a) (DbState.get (α := α) b)
+
 def storedEq {α} [BEq α] (a b : Stored α) : Bool :=
   a.id == b.id && a.val == b.val
+
+def validEq {α} [Entity α] [BEq α] (a b : Valid α) : Bool :=
+  storedEq a.toStored b.toStored
+
+def optValidEq {α} [Entity α] [BEq α] : Option (Valid α) → Option (Valid α) → Bool
+  | none, none => true
+  | some a, some b => validEq a b
+  | _, _ => false
 
 def optStoredEq {α} [BEq α] : Option (Stored α) → Option (Stored α) → Bool
   | none, none => true

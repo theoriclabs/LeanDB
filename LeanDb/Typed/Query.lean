@@ -49,8 +49,8 @@ syntax "exact_plan" : tactic
 
 elab_rules : tactic
   | `(tactic| exact_plan) => do
-      evalTactic (← `(tactic| first | rfl | native_decide)) <|>
-        throwError "this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)"
+      evalTactic (← `(tactic| first | rfl | (dsimp; rfl) | decide)) <|>
+        throwError "this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual). If `decide` cannot close `q.exact = true`, pass an explicit `Exact` proof."
 
 /-- The base query: every row of `α`, id order. -/
 def «from» (α : Type) [Entity α] {s : Type} [IsSchema s] [IsSchema.Has s α] :
@@ -61,6 +61,9 @@ def «from» (α : Type) [Entity α] {s : Type} [IsSchema s] [IsSchema.Has s α]
   order := #[]
   window := {}
   toRow := id
+
+theorem exact_from (α : Type) [Entity α] {s : Type} [IsSchema s] [IsSchema.Has s α] :
+    (Query.from (s := s) α).exact = true := rfl
 
 /-- Filter. `where'` is the existing name: `where` is a Lean keyword.
     The predicate is over `Stored α`, like `select`. `leandb_plan` reifies
@@ -150,14 +153,14 @@ def join {s α β} [IsSchema s] [Entity α] [Entity β] [HasForeignKey α]
   window := q.window
   toRow := id
 
-/-- Meaning: `selectSpec` over the in-memory tables, then the window.
-    Always applies the window after the residual filter, matching
-    compilation of non-exact plans. -/
-def denote {s ts ρ} [IsSchema s] (q : Query s ts ρ) (st : DbState s) : Array ρ :=
-  let src := DbState.source st
+/-- Meaning: gather through `get` (`GatherState`), filter/sort like
+    `selectSpec`, then the window. Always applies the window after the
+    residual filter, matching compilation of non-exact plans. -/
+def denote {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ)
+    (st : DbState s) : Array ρ :=
   let snap := DbState.snapshot st
-  let rows := _root_.Id.run <|
-    @selectSpec _root_.Id _ ts q.rowsOf src (q.pred.denote snap) q.sortBy
+  let gathered := GatherState.gather (s := s) (ts := ts) st
+  let rows := @finishRows ts q.rowsOf gathered (q.pred.denote snap) q.sortBy
   q.window.apply (rows.map q.toRow)
 
 /-- Compilation: `selectP` pushes LIMIT/OFFSET only when the plan is exact.

@@ -46,6 +46,8 @@ unique% Account.byName := name
 
 typed% Account
 
+schema% Acct := Account
+
 /-- Adding `unique Account2.byEmail` makes the same match fail. -/
 structure Account2 where
   name : String
@@ -80,7 +82,7 @@ inductive RegisterError where
   deriving Repr, DecidableEq
 
 /-- QUERIES.md §3.6 register: a clash on the name is a typed domain failure. -/
-def register {σ} (u : Account) : Txn σ Unit RegisterError (Current σ Account) := do
+def register {σ} (u : Account) : Txn σ Acct RegisterError (Current σ Account) := do
   let c ← Entity.check Account u |>.orAbort fun _ => .invalid
   Txn.insert (α := Account) c |>.orAbort fun
     | .duplicate .byName _ => .nameTaken
@@ -238,8 +240,7 @@ private def testRun : IO Unit := do
 open LeanDb.Harness
 
 private def stateEqApp (a b : DbState App) : Bool :=
-  tableEq (DbState.get (α := Team) a) (DbState.get (α := Team) b) &&
-    tableEq (DbState.get (α := User) a) (DbState.get (α := User) b)
+  getEq (α := Team) a b && getEq (α := User) a b
 
 private def eqTxn {ε α} (p : {σ : Type} → Txn σ App ε α)
     (eq : Except ε α → Except ε α → Bool) (msg : String) : DbM Unit := do
@@ -272,12 +273,18 @@ private def insertTeam {σ} (t : Team) : Txn σ App Empty (Stored Team) := do
   let row ← Txn.insertNew (Checked.of t (by unfold Invariant; trivial))
   return row.toStored
 
-private def getStored {σ α} [Entity α] (id : _root_.LeanDb.Id α) :
+private def mustValid {α} [Entity α] (r : Stored α) : DbM (Valid α) :=
+  match Valid.ofStored? r with
+  | some v => return v
+  | none => throw (.sqlite "test row failed Invariant")
+
+private def getStored {σ α} [Entity α] [IsSchema.Has App α]
+    (id : _root_.LeanDb.Id α) :
     Txn σ App Empty (Option (Stored α)) := do
   let r ← Txn.get α id
   return r.map Current.toStored
 
-private def lookupStored {σ α} [Entity α] [HasUnique α]
+private def lookupStored {σ α} [Entity α] [HasUnique α] [IsSchema.Has App α]
     (ix : Unique α) (key : Unique.Key ix) :
     Txn σ App Empty (Option (Stored α)) := do
   let r ← Txn.lookup α ix key
@@ -419,18 +426,20 @@ private def harnessCases : DbM Nat := do
 private def harnessSeeded : DbM Nat := do
   let mut n := 0
   let (eng, ada, alonzo) ← seedWF
-  eqTxn (Txn.ofRead (Read.get User ada.id)) (eqEmpty optStoredEq) "H liftRead get"
+  eqTxn (Txn.ofRead (Read.get User ada.id)) (eqEmpty optValidEq) "H liftRead get"
   n := n + 1
   let c ← mustCheck ⟨ada.val.name, ada.val.email, ada.val.team, ada.val.tags ++ [⟨"x"⟩]⟩
-  eqTxn (Txn.append (α := User) ada c) eqApp "H append tags"
+  let adaV ← mustValid ada
+  eqTxn (Txn.append (α := User) adaV c) eqApp "H append tags"
   n := n + 1
   let c ← mustCheck ⟨ada.val.name, ada.val.email, ada.val.team, []⟩
-  eqTxn (Txn.append (α := User) ada c) eqApp "H notAppend"
+  eqTxn (Txn.append (α := User) adaV c) eqApp "H notAppend"
   n := n + 1
   let c ← mustCheck { ada.val with email := "other@x" }
-  eqTxn (Txn.update (α := User) ada c) eqUpd "H update email"
+  eqTxn (Txn.update (α := User) adaV c) eqUpd "H update email"
   n := n + 1
-  eqTxn (Txn.update (α := User) ⟨⟨99⟩, ada.val⟩ c) eqUpd "H update gone"
+  let goneV ← mustValid ⟨⟨99⟩, ada.val⟩
+  eqTxn (Txn.update (α := User) goneV c) eqUpd "H update gone"
   n := n + 1
   eqTxn (Txn.throw (α := Nat) "stop") (abortStr fun a b => a == b) "H throw abort"
   n := n + 1

@@ -67,9 +67,7 @@ private def mustCheck (u : User) : Except String (Checked User) :=
   | .error _ => .error s!"check {u.name}"
 
 private def stateEqApp (a b : DbState App) : Bool :=
-  tableEq (DbState.get (α := Team) a) (DbState.get (α := Team) b) &&
-    tableEq (DbState.get (α := User) a) (DbState.get (α := User) b) &&
-    tableEq (DbState.get (α := Note) a) (DbState.get (α := Note) b)
+  getEq (α := Team) a b && getEq (α := User) a b && getEq (α := Note) a b
 
 private def eqEmpty {α} (eq : α → α → Bool) :
     Except Empty α → Except Empty α → Bool
@@ -158,7 +156,7 @@ example : Read App (List (Stored User)) := Read.all residualQ
 /--
 error: could not synthesize default value for parameter '_h' using tactics
 ---
-error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual). If `decide` cannot close `q.exact = true`, pass an explicit `Exact` proof.
 -/
 #guard_msgs in
 example : Read App (Option (Stored User)) := Read.first residualQ
@@ -166,7 +164,7 @@ example : Read App (Option (Stored User)) := Read.first residualQ
 /--
 error: could not synthesize default value for parameter '_h' using tactics
 ---
-error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual). If `decide` cannot close `q.exact = true`, pass an explicit `Exact` proof.
 -/
 #guard_msgs in
 example : Read App Nat := Read.count residualQ
@@ -174,7 +172,7 @@ example : Read App Nat := Read.count residualQ
 /--
 error: could not synthesize default value for parameter '_h' using tactics
 ---
-error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual). If `decide` cannot close `q.exact = true`, pass an explicit `Exact` proof.
 -/
 #guard_msgs in
 example : Read App Bool := Read.«exists» residualQ
@@ -182,7 +180,7 @@ example : Read App Bool := Read.«exists» residualQ
 /--
 error: could not synthesize default value for parameter '_h' using tactics
 ---
-error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual)
+error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual). If `decide` cannot close `q.exact = true`, pass an explicit `Exact` proof.
 -/
 #guard_msgs in
 example : Query App [User] (Stored User) := residualQ.withWindow { limit := some 1 }
@@ -193,11 +191,15 @@ private def usersJoin : Query App [User, Team] (Stored User × Stored Team) :=
 
 example : residualQ.exact = false := rfl
 example : usersExact.exact = true := rfl
-example : usersJoin.exact = true := by native_decide
+private theorem usersJoin_exact : usersJoin.exact = true := by
+  unfold usersJoin Query.exact Query.join Query.from
+  simp [Pred.andS, Query.Pred.extend, Query.joinPred, Pred.hasOpaque]
+  rfl
+example : usersJoin.exact = true := usersJoin_exact
 example : Read App (Option (Stored User)) := Read.first usersExact
-example : Read App Nat := Read.count usersJoin
+example : Read App Nat := Read.count usersJoin usersJoin_exact
 example : Query App [User, Team] (Stored User × Stored Team) :=
-  usersJoin.withWindow { limit := some 1 }
+  usersJoin.withWindow { limit := some 1 } usersJoin_exact
 
 def patchEmailOnly {σ} (id : _root_.LeanDb.Id User) (new : Checked User) :
     Txn σ App Empty (Except (SetError User (Fields.singleton User.Field.email)) (Stored User)) := do

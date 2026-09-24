@@ -12,10 +12,12 @@ handles cannot leave `Txn.run` (rank-2). `Read` embeds; writes take
 
 namespace LeanDb
 
-/-- A row this transaction has seen. Coerces to `Stored α`. Cannot leave
-    its transaction: `Txn.run` takes `{σ : Type} → Txn σ s ε α`. -/
+/-- A row this transaction has seen. Carries the invariant proof from
+    the read. Coerces to `Stored α` and `Valid α`. Cannot leave
+    `Txn.run` (`{σ : Type} → Txn σ s ε α`). -/
 structure Current (σ : Type) (α : Type) [Entity α] where
   stored : Stored α
+  property : Invariant α stored.val
 
 def Current.id {σ α} [Entity α] (c : Current σ α) : Id α := c.stored.id
 
@@ -23,26 +25,39 @@ def Current.val {σ α} [Entity α] (c : Current σ α) : α := c.stored.val
 
 def Current.toStored {σ α} [Entity α] (c : Current σ α) : Stored α := c.stored
 
+def Current.toValid {σ α} [Entity α] (c : Current σ α) : Valid α :=
+  ⟨c.stored, c.property⟩
+
+def Current.ofValid {σ α} [Entity α] (v : Valid α) : Current σ α :=
+  ⟨v.stored, v.property⟩
+
 instance {σ α} [Entity α] : CoeOut (Current σ α) (Stored α) where
   coe := Current.toStored
 
+instance {σ α} [Entity α] : CoeOut (Current σ α) (Valid α) where
+  coe := Current.toValid
+
 /-- Reads and writes over schema `s`. Aborts with `ε` discard every write. -/
-inductive Txn (σ : Type) (s : Type) (ε : Type) : Type → Type 1 where
+inductive Txn (σ : Type) (s : Type) [IsSchema s] (ε : Type) : Type → Type 1 where
   | pure : α → Txn σ s ε α
   | bind : Txn σ s ε α → (α → Txn σ s ε β) → Txn σ s ε β
   | liftRead : Read s α → Txn σ s ε α
-  | get (α : Type) [Entity α] (id : Id α) : Txn σ s ε (Option (Current σ α))
-  | lookup (α : Type) [Entity α] [HasUnique α]
+  | get (α : Type) [Entity α] [IsSchema.Has s α]
+      (id : Id α) : Txn σ s ε (Option (Current σ α))
+  | lookup (α : Type) [Entity α] [HasUnique α] [IsSchema.Has s α]
       (ix : Unique α) (key : Unique.Key ix) : Txn σ s ε (Option (Current σ α))
   | throw : ε → Txn σ s ε α
   | orAbort : Txn σ s ε (Except E α) → (E → ε) → Txn σ s ε α
   | orElse : Txn σ s ε (Except E α) → (E → Txn σ s ε α) → Txn σ s ε α
   | insert (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
+      [IsSchema.Has s α]
       (v : Checked α) : Txn σ s ε (Except (InsertError α) (Current σ α))
   | update (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
-      (old : Stored α) (new : Checked α) :
+      [IsSchema.Has s α]
+      (old : Valid α) (new : Checked α) :
       Txn σ s ε (Except (UpdateError α) (Stored α))
   | set (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
+      [IsSchema.Has s α]
       (row : Current σ α) (new : Checked α) :
       Txn σ s ε (Except (SetError α (Fields.all α)) (Current σ α))
   /-- Write only the columns in `fs`. `new` supplies those columns (it is
@@ -52,28 +67,31 @@ inductive Txn (σ : Type) (s : Type) (ε : Type) : Type → Type 1 where
       written and unwritten fields — callers typically build `new` as
       `{old with f := v}`, which makes merge equal `new`. -/
   | patch (α : Type) [Entity α] [HasUnique α] [HasForeignKey α]
+      [IsSchema.Has s α]
       (row : Current σ α) (fs : Fields α) (new : Checked α) :
       Txn σ s ε (Except (SetError α fs) (Current σ α))
   | append (α : Type) [Entity α] [HasListField α]
-      (old : Stored α) (new : Checked α) :
+      [IsSchema.Has s α]
+      (old : Valid α) (new : Checked α) :
       Txn σ s ε (Except (AppendError α) (Stored α))
-  | delete (α : Type) [Entity α] [HasReferencedBy s α] (id : Id α) :
-      Txn σ s ε (Except (DeleteError s α) (Stored α))
+  | delete (α : Type) [Entity α] [HasReferencedBy s α] [IsSchema.Has s α]
+      (id : Id α) : Txn σ s ε (Except (DeleteError s α) (Stored α))
 
-instance {σ s ε : Type} : Monad (Txn σ s ε) where
+instance {σ s ε : Type} [IsSchema s] : Monad (Txn σ s ε) where
   pure := .pure
   bind := .bind
 
 namespace Txn
 
-def ofRead {σ s ε α} (r : Read s α) : Txn σ s ε α := .liftRead r
+def ofRead {σ s ε α} [IsSchema s] (r : Read s α) : Txn σ s ε α := .liftRead r
 
-instance {σ s ε α} : Coe (Read s α) (Txn σ s ε α) where
+instance {σ s ε α} [IsSchema s] : Coe (Read s α) (Txn σ s ε α) where
   coe := ofRead
 
 /-- Insert when the schema makes `InsertError` uninhabited. `IsEmpty` is
     generated for tables with no unique index and no `Ref`. -/
 def insertNew {σ s ε α} [Entity α] [HasUnique α] [HasForeignKey α]
+    [IsSchema s] [IsSchema.Has s α]
     [IsEmpty (InsertError α)] (v : Checked α) : Txn σ s ε (Current σ α) :=
   Txn.bind (.insert α v) fun
     | .ok row => Txn.pure row
@@ -82,7 +100,7 @@ def insertNew {σ s ε α} [Entity α] [HasUnique α] [HasForeignKey α]
 end Txn
 
 /-- Lift a checked/`Except` value into the transaction, aborting on error. -/
-def Except.orAbort {σ s ε E α} (x : Except E α) (f : E → ε) : Txn σ s ε α :=
+def Except.orAbort {σ s ε E α} [IsSchema s] (x : Except E α) (f : E → ε) : Txn σ s ε α :=
   match x with
   | .ok a => Txn.pure a
   | .error e => Txn.throw (f e)
@@ -94,7 +112,7 @@ namespace Txn
 def parentEq {α} [Entity α] (a b : α) : Bool :=
   Entity.encode a == Entity.encode b
 
-def firstDuplicate {s α} [IsSchema s] [Entity α] [HasUnique α]
+def firstDuplicate {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has s α]
     (v : α) (st : DbState s) (except : Option (Id α)) : Option (Unique α × Id α) :=
   Unique.all α |>.findSome? fun ix =>
     let enc := Unique.encodeKey ix (Unique.keyOf ix v)
@@ -107,14 +125,14 @@ def fkMissing {s α} [IsSchema s] [Entity α] [hf : HasForeignKey α]
     (fk : hf.ForeignKey) (v : α) (st : DbState s) : Bool :=
   let tgt := hf.get fk v
   let inst := hf.targetEntity fk
-  let tbl := @DbState.get s (hf.Target fk) inferInstance inst st
-  !(tbl.rows.any fun r => r.id.toInt64 == tgt.toInt64)
+  let name := @Entity.tableName (hf.Target fk) inst
+  !DbState.containsId st name tgt.toInt64
 
 def firstMissingRef {s α} [IsSchema s] [Entity α] [HasForeignKey α]
     (v : α) (st : DbState s) : Option (ForeignKey α) :=
   ForeignKey.all α |>.find? (fkMissing · v st)
 
-def firstDuplicateTouching {s α} [IsSchema s] [Entity α] [HasUnique α]
+def firstDuplicateTouching {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has s α]
     (fs : Fields α) (v : α) (st : DbState s) (except : Option (Id α)) :
     Option (Unique.Touching fs × Id α) :=
   if hAny : Unique.anyTouch (α := α) fs then
@@ -159,30 +177,68 @@ def firstRestricted {s α} [IsSchema s] [HasReferencedBy s α]
       else none
   else none
 
-def replaceRow {s α} [IsSchema s] [Entity α]
+def replaceRow {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
     (st : DbState s) (id : Id α) (v : α) : DbState s :=
   let tbl := DbState.get (α := α) st
   st.set { tbl with rows := tbl.rows.map fun r => if r.id == id then ⟨id, v⟩ else r }
 
-def removeRow {s α} [IsSchema s] [Entity α] (st : DbState s) (id : Id α) : DbState s :=
+def removeRow {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
+    (st : DbState s) (id : Id α) : DbState s :=
   let tbl := DbState.get (α := α) st
   st.set { tbl with rows := tbl.rows.filter (fun r => !(r.id == id)) }
 
-/-- Remove `id` and every row that cascade-references it. -/
-partial def deleteCascading {s α} [IsSchema s] [Entity α] [h : HasReferencedBy s α]
-    (st : DbState s) (id : Id α) : DbState s :=
-  let st := h.all.foldl (init := st) fun st r =>
-    if ReferencedBy.cascade r then
-      let inst := h.sourceEntity r
-      let tbl := @DbState.get s (h.Source r) inferInstance inst st
-      let victims := tbl.rows.filter fun row =>
-        (h.getFk r row.val).toInt64 == id.toInt64
-      victims.foldl (init := st) fun st row =>
-        @deleteCascading s (h.Source r) inferInstance inst inferInstance st row.id
-    else st
-  @removeRow s α inferInstance inferInstance st id
+/-- Remove `id` from table `t`, after recursively removing rows that
+    cascade-reference it. Fuel is `st.rowCount`: each recursive call
+    deletes at least the victim it is invoked on, so this bound
+    suffices on acyclic reference graphs. If fuel runs out (a cycle
+    of cascade keys, which DDL does not emit), the current id is
+    still removed and remaining victims are left — a `DbFault`-free
+    fallback, never `partial`. -/
+def deleteAt {s : Type} [i : IsSchema s]
+    (st : DbState s) (t : Fin i.nTables) (id : Int64) : DbState s :=
+  let rec go (fuel : Nat) (st : DbState s) (t : Fin i.nTables) (id : Int64) :
+      DbState s :=
+    match fuel with
+    | 0 =>
+        let tbl := st.tables t
+        { tables := fun t2 =>
+            if h : t2 = t then
+              h ▸ { tbl with rows := tbl.rows.filter (fun r => r.id.toInt64 != id) }
+            else st.tables t2 }
+    | fuel + 1 =>
+        let pDel := i.pack t
+        have : Entity pDel.ty := pDel.entity
+        let delName := Entity.tableName pDel.ty
+        let st := i.tables.foldl (init := st) fun st t' =>
+          let p' := i.pack t'
+          have : Entity p'.ty := p'.entity
+          let hf := p'.foreignKey
+          hf.all.toList.foldl (init := st) fun st fk =>
+            if @ForeignKey.cascade p'.ty p'.entity hf fk then
+              let inst := hf.targetEntity fk
+              let tgtName := @Entity.tableName (hf.Target fk) inst
+              if tgtName == delName then
+                let tbl' := st.tables t'
+                let victims := tbl'.rows.filter fun row =>
+                  (hf.get fk row.val).toInt64 == id
+                victims.foldl (init := st) fun st row =>
+                  go fuel st t' row.id.toInt64
+              else st
+            else st
+        let tbl := st.tables t
+        { tables := fun t2 =>
+            if h : t2 = t then
+              h ▸ { tbl with rows := tbl.rows.filter (fun r => r.id.toInt64 != id) }
+            else st.tables t2 }
+  go (DbState.rowCount st) st t id
 
-def assign {s α} [IsSchema s] [Entity α] (st : DbState s) (v : α) :
+/-- Remove `id` and every row that cascade-references it. -/
+def deleteCascading {s α} [i : IsSchema s] [Entity α] [IsSchema.Has s α]
+    [HasReferencedBy s α]
+    (st : DbState s) (id : Id α) : DbState s :=
+  deleteAt (s := s) st (IsSchema.Has.id (s := s) (α := α)) id.toInt64
+
+def assign {s α} [IsSchema s] [Entity α] [IsSchema.Has s α] (st : DbState s) (v : α) :
     Stored α × DbState s :=
   let tbl := DbState.get (α := α) st
   let id : Id α := ⟨Int64.ofNat tbl.next⟩
@@ -198,12 +254,12 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
       | (.error e, st') => (.error e, st')
       | (.ok a, st') => denote.go st0 (f a) st'
   | _, .liftRead r, st => (.ok (Read.denote (s := s) r st), st)
-  | _, @Txn.get _ _ _ α _inst id, st =>
-      let found := (DbState.get (α := α) st).rows.find? (·.id == id)
-      (.ok (found.map fun row => ⟨row⟩), st)
-  | _, @Txn.lookup _ _ _ α instE instU ix key, st =>
-      let found := Read.lookupDenote (s := s) st instE instU ix key
-      (.ok (found.map fun row => ⟨row⟩), st)
+  | _, @Txn.get _ _ _ _ α _ent _has id, st =>
+      let found := (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id)
+      (.ok (found.bind Valid.ofStored? |>.map Current.ofValid), st)
+  | _, @Txn.lookup _ _ _ _ α _ent _hu _has ix key, st =>
+      let found := @Read.lookupDenote s α inferInstance _ent _hu _has st ix key
+      (.ok (found.map Current.ofValid), st)
   | _, .throw e, _ => (.error e, st0)
   | _, .orAbort m f, st =>
       match denote.go st0 m st with
@@ -215,74 +271,76 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
       | (.error e, st') => (.error e, st')
       | (.ok (.error err), st') => denote.go st0 (g err) st'
       | (.ok (.ok a), st') => (.ok a, st')
-  | _, @Txn.insert _ _ _ α _ _ _ v, st =>
-      match firstDuplicate v.val st none with
+  | _, @Txn.insert _ _ _ _ α _ent _hu _hf _has v, st =>
+      match @firstDuplicate s α inferInstance _ent _hu _has v.val st none with
       | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
       | none =>
-          match firstMissingRef v.val st with
+          match @firstMissingRef s α inferInstance _ent _hf v.val st with
           | some fk => (.ok (.error (.missingRef fk)), st)
           | none =>
-              let (row, st') := assign st v.val
-              (.ok (.ok ⟨row⟩), st')
-  | _, @Txn.update _ _ _ α _ _ _ old new, st =>
-      match (DbState.get (α := α) st).rows.find? (·.id == old.id) with
+              let (row, st') := @assign s α inferInstance _ent _has st v.val
+              (.ok (.ok ⟨⟨row.id, v.val⟩, v.property⟩), st')
+  | _, @Txn.update _ _ _ _ α _ent _hu _hf _has old new, st =>
+      match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
       | some cur =>
-          if !parentEq cur.val old.val then
+          if !@parentEq α _ent cur.val old.val then
             (.ok (.error (.stale cur)), st)
           else
-            match firstDuplicate new.val st (some old.id) with
+            match @firstDuplicate s α inferInstance _ent _hu _has new.val st (some old.id) with
             | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
             | none =>
-                match firstMissingRef new.val st with
+                match @firstMissingRef s α inferInstance _ent _hf new.val st with
                 | some fk => (.ok (.error (.missingRef fk)), st)
                 | none =>
-                    let st' := replaceRow st old.id new.val
+                    let st' := @replaceRow s α inferInstance _ent _has st old.id new.val
                     (.ok (.ok ⟨old.id, new.val⟩), st')
-  | _, @Txn.set _ _ _ α _ _ _ row new, st =>
-      match (DbState.get (α := α) st).rows.find? (·.id == row.id) with
+  | _, @Txn.set _ _ _ _ α _ent _hu _hf _has row new, st =>
+      match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == row.id) with
       | none => (.ok (.error .gone), st)
       | some _ =>
-          match firstDuplicateTouching (Fields.all α) new.val st (some row.id) with
+          match @firstDuplicateTouching s α inferInstance _ent _hu _has (Fields.all α) new.val st (some row.id) with
           | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
           | none =>
-              match firstMissingWithin (Fields.all α) new.val st with
+              match @firstMissingWithin s α inferInstance _ent _hf (Fields.all α) new.val st with
               | some fk => (.ok (.error (.missingRef fk)), st)
               | none =>
-                  let st' := replaceRow st row.id new.val
-                  (.ok (.ok ⟨⟨row.id, new.val⟩⟩), st')
-  | _, @Txn.patch _ _ _ α _ _ _ row fs new, st =>
-      match (DbState.get (α := α) st).rows.find? (·.id == row.id) with
+                  let st' := @replaceRow s α inferInstance _ent _has st row.id new.val
+                  (.ok (.ok ⟨⟨row.id, new.val⟩, new.property⟩), st')
+  | _, @Txn.patch _ _ _ _ α _ent _hu _hf _has row fs new, st =>
+      match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == row.id) with
       | none => (.ok (.error .gone), st)
       | some cur =>
-          let merged := Fields.apply fs cur.val new.val
-          match firstDuplicateTouching fs merged st (some row.id) with
+          let merged := @Fields.apply α _ent fs cur.val new.val
+          match @firstDuplicateTouching s α inferInstance _ent _hu _has fs merged st (some row.id) with
           | some (ix, holder) => (.ok (.error (.duplicate ix holder)), st)
           | none =>
-              match firstMissingWithin fs merged st with
+              match @firstMissingWithin s α inferInstance _ent _hf fs merged st with
               | some fk => (.ok (.error (.missingRef fk)), st)
               | none =>
-                  let st' := replaceRow st row.id merged
-                  (.ok (.ok ⟨⟨row.id, merged⟩⟩), st')
-  | _, @Txn.append _ _ _ α _ _ old new, st =>
-      match (DbState.get (α := α) st).rows.find? (·.id == old.id) with
+                  let st' := @replaceRow s α inferInstance _ent _has st row.id merged
+                  match Valid.ofStored? ⟨row.id, merged⟩ with
+                  | some v => (.ok (.ok (Current.ofValid v)), st')
+                  | none => (.ok (.error .gone), st)
+  | _, @Txn.append _ _ _ _ α _ent _hl _has old new, st =>
+      match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == old.id) with
       | none => (.ok (.error .gone), st)
       | some cur =>
-          if !parentEq cur.val old.val || listsMoved cur.val old.val then
+          if !@parentEq α _ent cur.val old.val || @listsMoved α _ent cur.val old.val then
             (.ok (.error (.stale cur)), st)
           else
-            match firstNotAppend old.val new.val with
+            match @firstNotAppend α _ent _hl old.val new.val with
             | some lf => (.ok (.error (.notAppend lf)), st)
             | none =>
-                let st' := replaceRow st old.id new.val
+                let st' := @replaceRow s α inferInstance _ent _has st old.id new.val
                 (.ok (.ok ⟨old.id, new.val⟩), st')
-  | _, @Txn.delete _ _ _ α _ _ id, st =>
-      match (DbState.get (α := α) st).rows.find? (·.id == id) with
+  | _, @Txn.delete _ _ _ _ α _ent _hr _has id, st =>
+      match (@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id) with
       | none => (.ok (.error .gone), st)
       | some row =>
-          match firstRestricted st id with
+          match @firstRestricted s α inferInstance _hr st id with
           | some (who, n) => (.ok (.error (.restricted who n)), st)
-          | none => (.ok (.ok row), deleteCascading st id)
+          | none => (.ok (.ok row), @deleteCascading s α inferInstance _ent _has _hr st id)
 
 /-- Pure meaning. An abort (`throw` / `orAbort`) returns the original state. -/
 def denote {σ s ε α : Type} [IsSchema s] (p : Txn σ s ε α) (st : DbState s) :
@@ -349,7 +407,8 @@ def firstMissingWithinDb {α} [Entity α] [HasForeignKey α]
   else
     (Pure.pure (f := Db) none)
 
-def countRefsDb {s α} [HasReferencedBy s α] (r : ReferencedBy s α) (id : Id α) : Db Nat :=
+def countRefsDb {s α} [IsSchema s] [HasReferencedBy s α]
+    (r : ReferencedBy s α) (id : Id α) : Db Nat :=
   untrackedSqlite fun db => do
     let sql :=
       s!"SELECT COUNT(*) FROM {quoteIdent (ReferencedBy.sourceName r)} WHERE {quoteIdent (ReferencedBy.columnName r)} = ?"
@@ -359,7 +418,7 @@ def countRefsDb {s α} [HasReferencedBy s α] (r : ReferencedBy s α) (id : Id �
       return (← stmt.columnInt64 0).toNatClampNeg
     else return 0
 
-def firstRestrictedDb {s α} [HasReferencedBy s α] (id : Id α) :
+def firstRestrictedDb {s α} [IsSchema s] [HasReferencedBy s α] (id : Id α) :
     Db (Option (ReferencedBy.Restricting s α × Nat)) :=
   if hAny : ReferencedBy.anyRestrict s α then
     ReferencedBy.all s α |>.foldlM (m := Db) (init := none) fun acc r => do
@@ -384,10 +443,10 @@ def insertExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
         | some fk => return .error (.missingRef fk)
         | none =>
             let row ← LeanDb.insert α v.val
-            return .ok ⟨row⟩
+            return .ok ⟨⟨row.id, v.val⟩, v.property⟩
 
 def updateExec {α} [Entity α] [HasUnique α] [HasForeignKey α]
-    (old : Stored α) (new : Checked α) : Db (Except (UpdateError α) (Stored α)) :=
+    (old : Valid α) (new : Checked α) : Db (Except (UpdateError α) (Stored α)) :=
   withTransaction do
     match ← LeanDb.get old.id with
     | none => return .error .gone
@@ -400,7 +459,7 @@ def updateExec {α} [Entity α] [HasUnique α] [HasForeignKey α]
             match ← firstMissingRefDb new.val with
             | some fk => return .error (.missingRef fk)
             | none =>
-                let row ← LeanDb.update old new.val
+                let row ← LeanDb.update old.toStored new.val
                 return .ok row
 
 def setExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
@@ -417,7 +476,7 @@ def setExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
             | some fk => return .error (.missingRef fk)
             | none =>
                 let written ← LeanDb.update cur new.val
-                return .ok ⟨written⟩
+                return .ok ⟨⟨written.id, new.val⟩, new.property⟩
 
 /-- `patch`: merge `fs` into the stored row and `UPDATE` only those columns. -/
 def patchExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
@@ -440,10 +499,13 @@ def patchExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
                 | .updated =>
                     match ← LeanDb.get row.id with
                     | none => return .error .gone
-                    | some written => return .ok ⟨written⟩
+                    | some written =>
+                        match Valid.ofStored? written with
+                        | some v => return .ok (Current.ofValid v)
+                        | none => return .error .gone
 
 def appendExec {α} [Entity α] [HasListField α]
-    (old : Stored α) (new : Checked α) : Db (Except (AppendError α) (Stored α)) :=
+    (old : Valid α) (new : Checked α) : Db (Except (AppendError α) (Stored α)) :=
   withTransaction do
     match ← LeanDb.get old.id with
     | none => return .error .gone
@@ -453,10 +515,10 @@ def appendExec {α} [Entity α] [HasListField α]
         match firstNotAppend old.val new.val with
         | some lf => return .error (.notAppend lf)
         | none =>
-            let row ← LeanDb.append old new.val
+            let row ← LeanDb.append old.toStored new.val
             return .ok row
 
-def deleteExec {s α} [Entity α] [HasReferencedBy s α] (id : Id α) :
+def deleteExec {s α} [IsSchema s] [Entity α] [HasReferencedBy s α] (id : Id α) :
     Db (Except (DeleteError s α) (Stored α)) :=
   withTransaction do
     match ← LeanDb.get id with
@@ -476,12 +538,21 @@ def exec.go {σ s ε : Type} [IsSchema s] :
       | .error e => return Except.error e
       | .ok a => exec.go (f a)
   | _, .liftRead r => Except.ok <$> Read.exec (s := s) r
-  | _, @Txn.get _ _ _ α _ id => do
-      let found ← LeanDb.get id
-      return Except.ok (found.map fun row => ⟨row⟩)
-  | _, @Txn.lookup _ _ _ α instE instU ix key => do
-      let rows ← selectP (ts := [α]) (@Unique.predOf α instE instU ix key)
-      return Except.ok (rows[0]?.map fun row => ⟨row⟩)
+  | _, @Txn.get _ _ _ _ α _ent _has id => do
+      match ← @LeanDb.get α _ent id with
+      | none => return Except.ok none
+      | some row =>
+          match Valid.ofStored? row with
+          | some v => return Except.ok (some (Current.ofValid v))
+          | none => DbM.ofExcept (.error (.invariant (Entity.tableName α) "Valid.ofStored?"))
+  | _, @Txn.lookup _ _ _ _ α _ent _hu _has ix key => do
+      let rows ← selectP (ts := [α]) (@Unique.predOf α _ent _hu ix key)
+      match rows[0]? with
+      | none => return Except.ok none
+      | some row =>
+          match Valid.ofStored? row with
+          | some v => return Except.ok (some (Current.ofValid v))
+          | none => DbM.ofExcept (.error (.invariant (Entity.tableName α) "Valid.ofStored?"))
   | _, .throw e => (Pure.pure (f := Db) (Except.error e))
   | _, .orAbort m f => do
       match ← exec.go m with
@@ -493,14 +564,18 @@ def exec.go {σ s ε : Type} [IsSchema s] :
       | .error e => return Except.error e
       | .ok (.error err) => exec.go (g err)
       | .ok (.ok a) => return Except.ok a
-  | _, @Txn.insert _ _ _ α _ _ _ v => Except.ok <$> insertExec (σ := σ) v
-  | _, @Txn.update _ _ _ α _ _ _ old new => Except.ok <$> updateExec old new
-  | _, @Txn.set _ _ _ α _ _ _ row new =>
-      Except.ok <$> setExec (σ := σ) row (Fields.all α) new
-  | _, @Txn.patch _ _ _ α _ _ _ row fs new =>
-      Except.ok <$> patchExec (σ := σ) row fs new
-  | _, @Txn.append _ _ _ α _ _ old new => Except.ok <$> appendExec old new
-  | _, @Txn.delete _ _ _ α _ _ id => Except.ok <$> deleteExec (s := s) id
+  | _, @Txn.insert _ _ _ _ α _ent _hu _hf _has v =>
+      Except.ok <$> @insertExec σ α _ent _hu _hf v
+  | _, @Txn.update _ _ _ _ α _ent _hu _hf _has old new =>
+      Except.ok <$> @updateExec α _ent _hu _hf old new
+  | _, @Txn.set _ _ _ _ α _ent _hu _hf _has row new =>
+      Except.ok <$> @setExec σ α _ent _hu _hf row (Fields.all α) new
+  | _, @Txn.patch _ _ _ _ α _ent _hu _hf _has row fs new =>
+      Except.ok <$> @patchExec σ α _ent _hu _hf row fs new
+  | _, @Txn.append _ _ _ _ α _ent _hl _has old new =>
+      Except.ok <$> @appendExec α _ent _hl old new
+  | _, @Txn.delete _ _ _ _ α _ent _hr _has id =>
+      Except.ok <$> deleteExec (s := s) (α := α) id
 
 /-- `BEGIN IMMEDIATE`; a SAVEPOINT around each write. Domain abort rolls
     back. Infrastructure problems are `DbFault`, not `ε`. -/
