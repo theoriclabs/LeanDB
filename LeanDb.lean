@@ -22,3 +22,4 @@ import LeanDb.Host
 import LeanDb.Import
 import LeanDb.Scaffold
 import LeanDb.Typed.Schema
+import LeanDb.Typed.State
