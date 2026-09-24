@@ -166,7 +166,38 @@ private def testSymbols : IO Unit := do
   | .error _ => throw <| IO.userError "FAIL: ada should check"
   | .ok c => check (c.val.name == "ada") "Checked.val"
 
+private def testDenote : IO Unit := do
+  let st0 := DbState.empty (s := App)
+  let (r, st1) := Txn.denote (σ := Unit) (s := App) (addTeam ⟨"eng"⟩) st0
+  match r with
+  | .error e => nomatch e
+  | .ok id =>
+      check (id.toInt64 == 1) "first team id is 1"
+      check ((DbState.get (α := Team) st1).next == 2) "next is 2"
+      check ((DbState.get (α := Team) st1).rows.length == 1) "one team"
+  let ada : User := ⟨"ada", "ada@x", ⟨99⟩, []⟩
+  match Entity.check User ada with
+  | .error _ => throw <| IO.userError "FAIL: ada invariant"
+  | .ok cAda => do
+      let insAda : Txn Unit App Empty (Except (InsertError User) (Current Unit User)) :=
+        Txn.insert (α := User) cAda
+      let (r2, _) := Txn.denote insAda st1
+      match r2 with
+      | .error e => nomatch e
+      | .ok (.error (.missingRef .team)) => pure ()
+      | .ok (.error (.duplicate ..)) => throw <| IO.userError "FAIL: expected missingRef"
+      | .ok (.ok _) => throw <| IO.userError "FAIL: insert ada should miss team"
+  let (rAbort, stA) :=
+    Txn.denote (σ := Unit) (s := App)
+      (Txn.throw (σ := Unit) (s := App) (ε := String) (α := Nat) "nope") st1
+  match rAbort with
+  | .error "nope" => pure ()
+  | _ => throw <| IO.userError "FAIL: throw aborts"
+  check ((DbState.get (α := Team) stA).rows.length ==
+      (DbState.get (α := Team) st1).rows.length) "abort keeps original state"
+
 def run : IO Unit := do
   testSymbols
+  testDenote
 
 end TestsM14b
