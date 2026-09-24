@@ -24,3 +24,5 @@ import LeanDb.Scaffold
 import LeanDb.Typed.Schema
 import LeanDb.Typed.State
 import LeanDb.Typed.Query
+import LeanDb.Typed.Fault
+import LeanDb.Typed.Read
