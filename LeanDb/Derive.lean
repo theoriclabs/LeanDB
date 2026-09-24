@@ -279,7 +279,7 @@ private def inlineSubFields (who : String) (owner fname : Name) (τ : Expr) :
     `parent` — the parent's `Entity` instance does not exist yet when the
     child is derived, so `RefTarget` cannot name the table). -/
 private def walkFields (who : String) (declName : Name) (entity : Bool)
-    (cascade : Array (Name × String) := #[]) : TermElabM (Array FieldGen) := do
+    (cascade : Array (Name × String) := #[]) (declaredCascade : Array Name := #[]) : TermElabM (Array FieldGen) := do
   let env ← getEnv
   let ctorInfo ← getConstInfoCtor (← getConstInfoInduct declName).ctors.head!
   let fields := getStructureFields env declName
@@ -404,7 +404,12 @@ private def walkFields (who : String) (declName : Name) (entity : Bool)
         | some (_, target) =>
             `({ LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx with
                 fkTable := some $(quote target), cascade := true })
-        | none => `(LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx)
+        | none =>
+            if declaredCascade.contains fname then
+              `({ LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx with
+                  cascade := true })
+            else
+              `(LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx)
       let col : ColGen := {
         symName := fname, colName := fname.toString, tyStx, getStx
         codecStx := ← `((inferInstance : LeanDb.ColCodec $tyStx))
@@ -716,6 +721,45 @@ initialize invariantAttr : TagAttribute ←
 not check {declName}. Declare the invariant first, then \
 `deriving instance LeanDb.Entity for {typeName}`."
 
+/-- `cascade% User.team` — this `Ref` is `ON DELETE CASCADE`. Must be
+    declared before `deriving LeanDb.Entity`. Default is RESTRICT. -/
+structure CascadeDecl where
+  typeName : Name
+  field : Name
+  deriving Repr, BEq
+
+initialize cascadeExt : EnvExtension (Array CascadeDecl) ←
+  registerEnvExtension (pure #[])
+
+syntax (name := cascadeCmd) "cascade% " ident : command
+
+@[command_elab cascadeCmd]
+def elabCascade : CommandElab := fun stx => do
+  let `(cascade% $id:ident) := stx | throwUnsupportedSyntax
+  let n := id.getId
+  let field := Name.mkSimple n.getString!
+  let rawType := n.getPrefix
+  if rawType.isAnonymous then
+    throwError "cascade%: expected `Type.field`, got {n}"
+  let env ← getEnv
+  let ns := (← getCurrNamespace)
+  let typeName :=
+    if isStructure env rawType then rawType
+    else if isStructure env (ns ++ rawType) then ns ++ rawType
+    else rawType
+  unless isStructure env typeName do
+    throwError "cascade%: {rawType} is not a structure"
+  unless (getStructureFields env typeName).any (· == field) do
+    throwError "cascade%: {typeName} has no field '{field}'"
+  let has ← liftTermElabM do
+    return (← Meta.synthInstance?
+      (mkApp (mkConst ``LeanDb.Entity) (mkConst typeName))).isSome
+  if has then
+    throwError "cascade%: LeanDb.Entity {typeName} already exists; declare `cascade%` first, then derive"
+  if (cascadeExt.getState env).any fun e => e.typeName == typeName && e.field == field then
+    throwError "cascade%: {n} is already declared"
+  modifyEnv (cascadeExt.modifyState · (·.push { typeName, field }))
+
 /-- `deriving LeanDb.Entity` for `declName`. `tableName?` overrides the
     table name (a generated child's `<parent>_<field>`); `cascade` names
     the `Ref` fields whose FK cascades and the table each references (a
@@ -734,7 +778,9 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
   let fieldTyName := declName ++ `Field
   -- 1. The walk, then the field symbols (one per column: an inline field
   --    contributes `field_sub` for each of its sub-fields; a child list none).
-  let gens ← liftTermElabM (walkFields who declName (entity := true) cascade)
+  let gens ← liftTermElabM (walkFields who declName (entity := true) cascade
+    ((cascadeExt.getState env).filterMap fun e =>
+      if e.typeName == declName then some e.field else none))
   liftTermElabM (checkSymNames who declName gens)
   declareSymbols who declName gens
   -- 2. The child entities, one per child list, each with its own symbols

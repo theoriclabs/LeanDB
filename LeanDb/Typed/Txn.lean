@@ -150,10 +150,14 @@ def firstNotAppend {α} [Entity α] [HasListField α] (old new : α) : Option (L
     else ListField.all α |>.find? (fun f => ListField.table f == link.table)
 
 def firstRestricted {s α} [IsSchema s] [HasReferencedBy s α]
-    (st : DbState s) (id : Id α) : Option (ReferencedBy s α × Nat) :=
-  ReferencedBy.all s α |>.findSome? fun r =>
-    let n := ReferencedBy.count r st id
-    if n == 0 then none else some (r, n)
+    (st : DbState s) (id : Id α) : Option (ReferencedBy.Restricting s α × Nat) :=
+  if hAny : ReferencedBy.anyRestrict s α then
+    ReferencedBy.all s α |>.findSome? fun r =>
+      if h : ReferencedBy.restricts r then
+        let n := ReferencedBy.count r st id
+        if n == 0 then none else some (ReferencedBy.toRestricting r h hAny, n)
+      else none
+  else none
 
 def replaceRow {s α} [IsSchema s] [Entity α]
     (st : DbState s) (id : Id α) (v : α) : DbState s :=
@@ -163,6 +167,20 @@ def replaceRow {s α} [IsSchema s] [Entity α]
 def removeRow {s α} [IsSchema s] [Entity α] (st : DbState s) (id : Id α) : DbState s :=
   let tbl := DbState.get (α := α) st
   st.set { tbl with rows := tbl.rows.filter (fun r => !(r.id == id)) }
+
+/-- Remove `id` and every row that cascade-references it. -/
+partial def deleteCascading {s α} [IsSchema s] [Entity α] [h : HasReferencedBy s α]
+    (st : DbState s) (id : Id α) : DbState s :=
+  let st := h.all.foldl (init := st) fun st r =>
+    if ReferencedBy.cascade r then
+      let inst := h.sourceEntity r
+      let tbl := @DbState.get s (h.Source r) inferInstance inst st
+      let victims := tbl.rows.filter fun row =>
+        (h.getFk r row.val).toInt64 == id.toInt64
+      victims.foldl (init := st) fun st row =>
+        @deleteCascading s (h.Source r) inferInstance inst inferInstance st row.id
+    else st
+  @removeRow s α inferInstance inferInstance st id
 
 def assign {s α} [IsSchema s] [Entity α] (st : DbState s) (v : α) :
     Stored α × DbState s :=
@@ -264,7 +282,7 @@ def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :
       | some row =>
           match firstRestricted st id with
           | some (who, n) => (.ok (.error (.restricted who n)), st)
-          | none => (.ok (.ok row), removeRow st id)
+          | none => (.ok (.ok row), deleteCascading st id)
 
 /-- Pure meaning. An abort (`throw` / `orAbort`) returns the original state. -/
 def denote {σ s ε α : Type} [IsSchema s] (p : Txn σ s ε α) (st : DbState s) :
@@ -342,13 +360,19 @@ def countRefsDb {s α} [HasReferencedBy s α] (r : ReferencedBy s α) (id : Id �
     else return 0
 
 def firstRestrictedDb {s α} [HasReferencedBy s α] (id : Id α) :
-    Db (Option (ReferencedBy s α × Nat)) :=
-  ReferencedBy.all s α |>.foldlM (m := Db) (init := none) fun acc r => do
-    match acc with
-    | some _ => return acc
-    | none =>
-        let n ← countRefsDb r id
-        if n == 0 then return none else return some (r, n)
+    Db (Option (ReferencedBy.Restricting s α × Nat)) :=
+  if hAny : ReferencedBy.anyRestrict s α then
+    ReferencedBy.all s α |>.foldlM (m := Db) (init := none) fun acc r => do
+      match acc with
+      | some _ => return acc
+      | none =>
+          if h : ReferencedBy.restricts r then
+            let n ← countRefsDb r id
+            if n == 0 then return none
+            else return some (ReferencedBy.toRestricting r h hAny, n)
+          else return none
+  else
+    (Pure.pure (f := Db) none)
 
 def insertExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
     (v : Checked α) : Db (Except (InsertError α) (Current σ α)) :=

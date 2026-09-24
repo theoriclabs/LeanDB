@@ -130,6 +130,10 @@ def ForeignKey.targetEntity {α : Type} [Entity α] [HasForeignKey α] (fk : For
 def ForeignKey.all (α : Type) [Entity α] [HasForeignKey α] : Array (ForeignKey α) :=
   HasForeignKey.all (α := α)
 
+/-- `ON DELETE CASCADE` when true; RESTRICT (the default) otherwise. -/
+def ForeignKey.cascade {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey α) : Bool :=
+  (Entity.fieldSpec (ForeignKey.field fk)).cascade
+
 /-- The foreign-key column as a two-table `Pred.Col`, generated where
     `fieldTy` is definitionally `Id β`. -/
 class JoinCol (α β : Type) [Entity α] [Entity β] where
@@ -179,6 +183,11 @@ class HasReferencedBy (s : Type) (α : Type) where
   getFk : (r : ReferencedBy) → Source r → Id α
   /-- SQLite column name of the inbound key. -/
   columnName : ReferencedBy → String
+  /-- `ON DELETE CASCADE` when true. -/
+  cascade : ReferencedBy → Bool
+  /-- Unfolds to a Boolean literal so `Restricting` is definitionally
+      `Empty` when every inbound key cascades (or there are none). -/
+  anyRestrict : Bool
   /-- Every inbound key, sources in schema order then field order. -/
   all : Array ReferencedBy
 
@@ -188,6 +197,8 @@ class HasReferencedBy (s : Type) (α : Type) where
   sourceEntity := fun x => nomatch x
   getFk := fun x _ => nomatch x
   columnName := fun x => nomatch x
+  cascade := fun x => nomatch x
+  anyRestrict := false
   all := #[]
 
 abbrev ReferencedBy (s : Type) (α : Type) [HasReferencedBy s α] :=
@@ -212,6 +223,52 @@ def ReferencedBy.sourceName {s α : Type} [HasReferencedBy s α] (r : Referenced
 
 def ReferencedBy.all (s α : Type) [HasReferencedBy s α] : Array (ReferencedBy s α) :=
   HasReferencedBy.all (s := s) (α := α)
+
+/-- `ON DELETE CASCADE` when true; RESTRICT otherwise. -/
+@[reducible] def ReferencedBy.cascade {s α : Type} [HasReferencedBy s α]
+    (r : ReferencedBy s α) : Bool :=
+  HasReferencedBy.cascade r
+
+/-- True when this inbound key restricts a delete of `α`. -/
+@[reducible] def ReferencedBy.restricts {s α : Type} [HasReferencedBy s α]
+    (r : ReferencedBy s α) : Bool :=
+  !ReferencedBy.cascade r
+
+/-- Whether any inbound key restricts a delete. -/
+@[reducible] def ReferencedBy.anyRestrict (s α : Type) [HasReferencedBy s α] : Bool :=
+  HasReferencedBy.anyRestrict (s := s) (α := α)
+
+/-- Inbound keys that restrict a delete. `Empty` when every inbound key
+    cascades (or there are none), so `DeleteError.restricted` is omitted. -/
+@[reducible] def ReferencedBy.Restricting (s α : Type) [HasReferencedBy s α] : Type :=
+  if ReferencedBy.anyRestrict s α then
+    { r : ReferencedBy s α // ReferencedBy.restricts r = true }
+  else
+    Empty
+
+def ReferencedBy.Restricting.val {s α : Type} [HasReferencedBy s α]
+    (t : ReferencedBy.Restricting s α) : ReferencedBy s α :=
+  if hAny : ReferencedBy.anyRestrict s α then
+    (cast (by simp [ReferencedBy.Restricting, hAny]) t :
+      { r : ReferencedBy s α // ReferencedBy.restricts r = true }).1
+  else
+    nomatch (cast (by simp [ReferencedBy.Restricting, hAny]) t : Empty)
+
+def ReferencedBy.toRestricting {s α : Type} [HasReferencedBy s α]
+    (r : ReferencedBy s α) (h : ReferencedBy.restricts r = true)
+    (hAny : ReferencedBy.anyRestrict s α = true) : ReferencedBy.Restricting s α :=
+  cast (by simp [ReferencedBy.Restricting, hAny])
+    (⟨r, h⟩ : { r : ReferencedBy s α // ReferencedBy.restricts r = true })
+
+instance {s α : Type} [h : HasReferencedBy s α] [IsEmpty h.ReferencedBy] :
+    IsEmpty (ReferencedBy.Restricting s α) where
+  false t :=
+    if hAny : ReferencedBy.anyRestrict s α then
+      IsEmpty.false
+        (cast (by simp [ReferencedBy.Restricting, hAny]) t :
+          { r : ReferencedBy s α // ReferencedBy.restricts r = true }).1
+    else
+      nomatch (cast (by simp [ReferencedBy.Restricting, hAny]) t : Empty)
 
 /-! ## Checked values -/
 
@@ -726,7 +783,9 @@ def elabSchema : CommandElab := fun stx => do
     let mut entAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut getAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut colAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
+    let mut cascadeAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut allLits : Array Term := #[]
+    let env ← getEnv
     for (src, f) in inbound do
       let ctor := Name.mkSimple (src.getString!.toLower ++ "_" ++ f.getString!)
       let ctorId := mkIdent ctor
@@ -739,7 +798,14 @@ def elabSchema : CommandElab := fun stx => do
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
       colAlts := colAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(quote f.getString!)))
+      let casc := (LeanDb.Derive.cascadeExt.getState env).any fun e =>
+        e.typeName == src && e.field == f
+      cascadeAlts := cascadeAlts.push
+        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(quote casc)))
       allLits := allLits.push (← `(term| .$ctorId:ident))
+    let anyR := inbound.any fun (src, f) =>
+      !(LeanDb.Derive.cascadeExt.getState env).any fun e =>
+        e.typeName == src && e.field == f
     elabCommand (← `(
       @[reducible] def $(rootIdent (rbName ++ `source)):ident : $rbId → Type
         $srcAlts:matchAlt*
@@ -751,6 +817,8 @@ def elabSchema : CommandElab := fun stx => do
         sourceEntity $entAlts:matchAlt*
         getFk $getAlts:matchAlt*
         columnName $colAlts:matchAlt*
+        cascade $cascadeAlts:matchAlt*
+        anyRestrict := $(quote anyR)
         all := #[$allLits,*]
     ))
 

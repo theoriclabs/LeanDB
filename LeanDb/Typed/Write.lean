@@ -208,7 +208,7 @@ inductive AppendError (α : Type) [Entity α] [HasListField α] where
     row, and how many such rows. -/
 inductive DeleteError (s : Type) (α : Type) [Entity α] [HasReferencedBy s α] where
   | gone
-  | restricted (who : ReferencedBy s α) (rows : Nat)
+  | restricted (who : ReferencedBy.Restricting s α) (rows : Nat)
 
 instance {α : Type} [Entity α] [hu : HasUnique α] [hf : HasForeignKey α]
     [IsEmpty hu.Unique] [IsEmpty hf.ForeignKey] : IsEmpty (@InsertError α _ hu hf) where
@@ -244,7 +244,8 @@ instance {s α : Type} [Entity α] [HasReferencedBy s α]
     [BEq (ReferencedBy s α)] : BEq (DeleteError s α) where
   beq
     | .gone, .gone => true
-    | .restricted b1 n1, .restricted b2 n2 => b1 == b2 && n1 == n2
+    | .restricted b1 n1, .restricted b2 n2 =>
+        ReferencedBy.Restricting.val b1 == ReferencedBy.Restricting.val b2 && n1 == n2
     | _, _ => false
 
 instance {s α : Type} [Entity α] [HasReferencedBy s α]
@@ -252,7 +253,8 @@ instance {s α : Type} [Entity α] [HasReferencedBy s α]
   reprPrec
     | .gone, _ => "DeleteError.gone"
     | .restricted b n, _ =>
-        Std.Format.bracket "DeleteError.restricted (" (repr b ++ ", " ++ repr n) ")"
+        Std.Format.bracket "DeleteError.restricted ("
+          (repr (ReferencedBy.Restricting.val b) ++ ", " ++ repr n) ")"
 
 instance {α : Type} [Entity α] [HasListField α] [BEq (ListField α)] :
     BEq (AppendError α) where

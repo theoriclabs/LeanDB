@@ -10,6 +10,9 @@ open LeanDb.Harness
 private def check (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError s!"FAIL: {message}"
 
+private def check' (condition : Bool) (message : String) : DbM Unit :=
+  unless condition do throw (.sqlite s!"FAIL: {message}")
+
 structure Team where
   name : String
   deriving Repr, BEq, LeanDb.Entity
@@ -33,7 +36,15 @@ deriving instance LeanDb.Entity for User
 unique% User.byName := name
 unique% User.byEmail := email
 
-schema% App := Team, User
+structure Note where
+  body : String
+  author : Ref User
+  deriving Repr, BEq
+
+cascade% Note.author
+deriving instance LeanDb.Entity for Note
+
+schema% App := Team, User, Note
 
 private def specs : List TableSpec := IsSchema.specs App
 
@@ -57,7 +68,8 @@ private def mustCheck (u : User) : Except String (Checked User) :=
 
 private def stateEqApp (a b : DbState App) : Bool :=
   tableEq (DbState.get (α := Team) a) (DbState.get (α := Team) b) &&
-    tableEq (DbState.get (α := User) a) (DbState.get (α := User) b)
+    tableEq (DbState.get (α := User) a) (DbState.get (α := User) b) &&
+    tableEq (DbState.get (α := Note) a) (DbState.get (α := Note) b)
 
 private def eqEmpty {α} (eq : α → α → Bool) :
     Except Empty α → Except Empty α → Bool
@@ -119,6 +131,22 @@ example (e : SetError User (Fields.singleton User.Field.team)) : Nat :=
 
 example [IsEmpty (Unique.Touching (α := User) (Fields.singleton User.Field.team))] :
     True := trivial
+
+/-- Deleting a `User` cannot be restricted: the only inbound key (`Note.author`)
+    cascades, so `restricted` is omitted. -/
+example (e : DeleteError App User) : Nat :=
+  match e with
+  | .gone => 0
+
+example [IsEmpty (ReferencedBy.Restricting App User)] : True := trivial
+
+/-- Deleting a `Team` is still restricted by `User.team`. -/
+example (e : DeleteError App Team) : Nat :=
+  match e with
+  | .gone => 0
+  | .restricted w k =>
+      match ReferencedBy.Restricting.val w with
+      | .user_team => k
 
 /-- A residual Lean filter: unwindowed `all` is allowed; `first`/`count`/`exists`
     and `withWindow` are refused. -/
@@ -285,7 +313,7 @@ private def testPatchSurvivesHarness : IO Unit := do
 private def dbPathSvc : System.FilePath := ".lake" / "leandb_test_m14c_svc.sqlite"
 
 private def appBase : Base :=
-  { name := "m14c", tables := [CliTable.of Team, CliTable.of User] }
+  { name := "m14c", tables := [CliTable.of Team, CliTable.of User, CliTable.of Note] }
 
 /-- `runRead` uses a reader connection (never the writer); `runTxn` uses
     the writer under `BEGIN IMMEDIATE`. -/
@@ -322,10 +350,80 @@ private def testRunRead : IO Unit := do
   | .ok k => throw <| IO.userError s!"FAIL: runRead count {k}"
   svc.close
 
+private def eqDelUser :
+    Except Empty (Except (DeleteError App User) (Stored User)) →
+    Except Empty (Except (DeleteError App User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.restricted x _), .error (.restricted _ _) => nomatch x
+    | _, _ => false
+
+private def eqDelTeam :
+    Except Empty (Except (DeleteError App Team) (Stored Team)) →
+    Except Empty (Except (DeleteError App Team) (Stored Team)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.restricted _ n1), .error (.restricted _ n2) => n1 == n2
+    | _, _ => false
+
+private def eqInsNote :
+    Except Empty (Except (InsertError Note) (Stored Note)) →
+    Except Empty (Except (InsertError Note) (Stored Note)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error (.missingRef _), .error (.missingRef _) => true
+    | .error (.duplicate ..), .error (.duplicate ..) => true
+    | _, _ => false
+
+/-- Harness: `ON DELETE CASCADE` removes notes with the user; `RESTRICT`
+    still blocks deleting a team that has users. -/
+private def testDeleteCascade : IO Unit := do
+  fresh dbPath
+  let n ← expectOk (← withDb dbPath specs do
+    check' (ForeignKey.cascade (α := Note) Note.ForeignKey.author)
+      "Note.author ColumnSpec.cascade"
+    check' (!ForeignKey.cascade (α := User) User.ForeignKey.team)
+      "User.team is restrict"
+    check' (((Entity.spec Note).ddl.splitOn "ON DELETE CASCADE").length == 2)
+      "Note.author DDL is CASCADE"
+    check' (((Entity.spec User).ddl.splitOn "ON DELETE RESTRICT").length == 2)
+      "User.team DDL is RESTRICT"
+    let (eng, ada) ← seedAda
+    let note := Checked.of (⟨"hi", ada.id⟩ : Note) (by unfold Invariant; trivial)
+    eqTxn (fun {_} => do
+        let r ← Txn.insert (α := Note) note
+        return r.map Current.toStored)
+      eqInsNote "H insert note"
+    eqTxn (Txn.delete (α := User) ada.id) eqDelUser "H delete user cascades note"
+    let st ← DbState.load (s := App)
+    unless (DbState.get (α := Note) st).rows.isEmpty do
+      throw (.sqlite "FAIL: note survived cascade")
+    unless (DbState.get (α := User) st).rows.isEmpty do
+      throw (.sqlite "FAIL: user not deleted")
+    let ada2 ← match mustCheck ⟨"ada", "ada@x", eng.id, []⟩ with
+      | .ok c => pure c
+      | .error e => throw (.sqlite e)
+    eqTxn (fun {_} => do
+        let r ← Txn.insert (α := User) ada2
+        return r.map Current.toStored)
+      (eqEmpty fun
+        | .ok a, .ok b => storedEq a b
+        | .error (.duplicate ..), .error (.duplicate ..) => true
+        | .error (.missingRef ..), .error (.missingRef ..) => true
+        | _, _ => false)
+      "H reinsert user after cascade"
+    eqTxn (Txn.delete (α := Team) eng.id) eqDelTeam "H delete team restricted"
+    return (4 : Nat)
+  ) "delete cascade"
+  IO.println s!"M14c delete harness cases: {n}"
+
 def run : IO Unit := do
   testPatchMergeDenote
   testCheckWF
   testPatchSurvivesHarness
+  testDeleteCascade
   testRunRead
   check (!ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.email))
     "email patch does not touch a Ref"
@@ -337,5 +435,7 @@ def run : IO Unit := do
     "email patch touches byEmail"
   check usersJoin.exact "join along a foreign key is exact"
   check (!residualQ.exact) "opaque residual is not exact"
+  check (ForeignKey.cascade (α := Note) Note.ForeignKey.author) "Note.author cascades"
+  check (!ForeignKey.cascade (α := User) User.ForeignKey.team) "User.team restricts"
 
 end TestsM14c

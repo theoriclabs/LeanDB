@@ -94,7 +94,9 @@ inductive NoteError where
 def deleteTeam {σ} (id : _root_.LeanDb.Id Team) : Txn σ App NoteError Unit := do
   let _ ← Txn.delete (α := Team) id |>.orAbort fun
     | .gone => .notFound
-    | .restricted .user_team k => .hasUsers k
+    | .restricted w k =>
+        match ReferencedBy.Restricting.val w with
+        | .user_team => .hasUsers k
   return ()
 
 /-- `insertNew` is available for `Team` (no unique, no `Ref`). -/
@@ -126,7 +128,9 @@ example (e : DeleteError App User) : Nat :=
 example (e : DeleteError App Team) : Nat :=
   match e with
   | .gone => 0
-  | .restricted .user_team k => k
+  | .restricted w k =>
+      match ReferencedBy.Restricting.val w with
+      | .user_team => k
 
 /-- `AppendError` on `Team`: no child lists, so `notAppend` is absent. -/
 example (e : AppendError Team) : Nat :=
@@ -351,7 +355,8 @@ private def eqDelTeam :
   eqEmpty fun
     | .ok a, .ok b => storedEq a b
     | .error .gone, .error .gone => true
-    | .error (.restricted x n1), .error (.restricted y n2) => rbTeamEq x y && n1 == n2
+    | .error (.restricted x n1), .error (.restricted y n2) =>
+        rbTeamEq (ReferencedBy.Restricting.val x) (ReferencedBy.Restricting.val y) && n1 == n2
     | _, _ => false
 
 private def eqDelUser :
