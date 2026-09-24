@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **LDB-19.** `Runtime.Service.withReader` locks each pooled connection
+  and never hands out the writer. `readers := 0` still opens one
+  dedicated read-only slot, so a reader cannot write and two callbacks
+  cannot share one SQLite handle.
 - **LDB-18.** `Nat` columns are bounded to `0 … Int64.maxValue`. Writes
   of a larger `Nat` are `.decode`; a comparison bound outside that range
   renders as a tautology or contradiction instead of wrapping, so
