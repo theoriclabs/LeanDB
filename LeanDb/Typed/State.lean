@@ -55,9 +55,46 @@ def Table.invariantsOk [Entity α] (t : Table α) : Bool :=
     | none => true
     | some (_, p) => p r.val
 
-/-- Well-formedness of one table. Unique-key and foreign-key closure of
-    the whole `DbState` are M15. -/
-def Table.WF [Entity α] (t : Table α) : Prop := t.idsOk = true ∧ t.invariantsOk = true
+/-- Parent columns round-trip through `encode`/`decode`. -/
+def Table.decodesOk [Entity α] (t : Table α) : Bool :=
+  t.rows.all fun r =>
+    match Entity.decode (α := α) (Entity.encode r.val) with
+    | .ok v => Entity.encode (α := α) v == Entity.encode r.val
+    | .error _ => false
+
+/-- Every row is `Checked` (`Entity.check` succeeds). -/
+def Table.checkedOk [Entity α] (t : Table α) : Bool :=
+  t.rows.all fun r =>
+    match Entity.check α r.val with
+    | .ok _ => true
+    | .error _ => false
+
+/-- Child lists re-attach (derived columns check). Vacuous with no lists. -/
+def Table.childrenOk [Entity α] (t : Table α) : Bool :=
+  t.rows.all fun r =>
+    (Entity.children (α := α)).all fun link =>
+      let pairs := (link.rows r.val).zipIdx.map fun (cols, i) => (i, cols)
+      match link.attach pairs r.val with
+      | .ok _ => true
+      | .error _ => false
+
+/-- Unique-index keys are unique among rows. -/
+def Table.uniquesOk [Entity α] [HasUnique α] (t : Table α) : Bool :=
+  (Unique.all α).all fun ix =>
+    let rec distinct : List (Stored α) → Bool
+      | [] => true
+      | r :: rs =>
+          let enc := Unique.encodeKey ix (Unique.keyOf ix r.val)
+          rs.all (fun o => Unique.encodeKey ix (Unique.keyOf ix o.val) != enc) &&
+            distinct rs
+    distinct t.rows
+
+/-- Local well-formedness of one table (ids, decode, Checked, children,
+    unique keys). Foreign keys need the whole `DbState`. -/
+def Table.check [Entity α] [HasUnique α] (t : Table α) : Bool :=
+  t.idsOk && t.invariantsOk && t.decodesOk && t.checkedOk && t.childrenOk && t.uniquesOk
+
+def Table.WF [Entity α] [HasUnique α] (t : Table α) : Prop := t.check = true
 
 unsafe def DbState.castRows {α β : Type} (rows : Array (Stored α)) : Array (Stored β) :=
   unsafeCast rows
@@ -68,11 +105,6 @@ def DbState.empty {s : Type} [i : IsSchema s] : DbState s where
     let p := i.pack t
     { name := @Entity.tableName p.ty p.entity, next := 1
       rows := (#[] : Array (Stored Unit)) }
-
-/-- Every listed table is present. Per-row WF is checked through `get`.
-    Constraint closure is an M15 law of `load` and of every successful write. -/
-def DbState.WF {s : Type} [i : IsSchema s] (st : DbState s) : Prop :=
-  st.slots.size = i.tables.size
 
 /-- The next AUTOINCREMENT id: `sqlite_sequence` if present, otherwise
     one past the greatest stored id (1 on an empty table). -/
@@ -121,6 +153,35 @@ unsafe def DbState.getImpl {s α : Type} [IsSchema s] [Entity α]
 @[implemented_by DbState.getImpl]
 def DbState.get {s α : Type} [IsSchema s] [Entity α] (st : DbState s) : Table α :=
   { next := 1, rows := [] }
+
+/-- Every foreign key of `α` resolves to a row in the target table. -/
+def Table.fksOk {s α : Type} [IsSchema s] [Entity α] [hf : HasForeignKey α]
+    (st : DbState s) (t : Table α) : Bool :=
+  t.rows.all fun r =>
+    (ForeignKey.all α).all fun fk =>
+      let tgt := hf.get fk r.val
+      let inst := hf.targetEntity fk
+      let tbl := @DbState.get s (hf.Target fk) inferInstance inst st
+      tbl.rows.any fun row => row.id.toInt64 == tgt.toInt64
+
+/-- One packed entity of the schema: local table check plus foreign keys. -/
+def DbState.checkPacked {s : Type} [IsSchema s] (st : DbState s) (p : PackedEntity) : Bool :=
+  let tbl := @DbState.get s p.ty inferInstance p.entity st
+  @Table.check p.ty p.entity p.unique tbl &&
+    @Table.fksOk s p.ty inferInstance p.entity p.foreignKey st tbl
+
+/-- Decidable well-formedness: every schema table is present, every row
+    decodes and is `Checked`, ids strictly increase and stay `< next`,
+    unique keys are unique, foreign keys resolve, child lists attach. -/
+def DbState.checkWF {s : Type} [sch : IsSchema s] (st : DbState s) : Bool :=
+  let namesOk := (st.slots.toList.zip sch.tables.toList).all fun (sl, t) =>
+    sl.name == @Entity.tableName (sch.pack t).ty (sch.pack t).entity
+  st.slots.size == sch.tables.size && namesOk &&
+    sch.tables.all fun t => DbState.checkPacked st (sch.pack t)
+
+/-- Every row decodes and is `Checked`, and every constraint holds. -/
+def DbState.WF {s : Type} [IsSchema s] (st : DbState s) : Prop :=
+  DbState.checkWF st = true
 
 unsafe def DbState.setImpl {s α : Type} [IsSchema s] [Entity α]
     (st : DbState s) (tbl : Table α) : DbState s :=

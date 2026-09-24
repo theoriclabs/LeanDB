@@ -7,6 +7,7 @@ import LeanDb
 namespace TestsM14a
 
 open LeanDb
+open LeanDb.Harness
 
 private def check (condition : Bool) (message : String) : IO Unit :=
   unless condition do throw <| IO.userError s!"FAIL: {message}"
@@ -86,11 +87,14 @@ private def pagePair (a b : Page (Stored User × Stored Team)) : Bool :=
 /-- `run r` equals `denote r (← load)`. -/
 private def eqRun {α} (r : Read App α) (eq : α → α → Bool) (msg : String) : DbM α := do
   let st ← DbState.load (s := App)
+  requireWF st s!"{msg} (load)"
   match ← Read.run (s := App) r with
   | .error e => throw (.sqlite s!"FAIL: {msg}: fault {e}")
   | .ok got =>
       let want := Read.denote (s := App) r st
       check' (eq got want) s!"{msg}: run ≠ denote (load)"
+      let st1 ← DbState.load (s := App)
+      requireWF st1 s!"{msg} (after)"
       return got
 
 /-- The empty unique type is empty, so `IsEmpty` is found. -/

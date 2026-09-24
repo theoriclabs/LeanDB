@@ -88,13 +88,16 @@ private def eqSet (fs : Fields User) :
 private def eqTxn {ε α} (p : {σ : Type} → Txn σ App ε α)
     (eq : Except ε α → Except ε α → Bool) (msg : String) : DbM Unit := do
   let st0 ← DbState.load (s := App)
+  requireWF st0 s!"{msg} (load)"
   match ← Txn.run (s := App) p with
   | .error e => throw (.sqlite s!"FAIL: {msg}: fault {e}")
   | .ok got =>
       let (want, stD) := Txn.denote (σ := Unit) (s := App) (p (σ := Unit)) st0
       unless eq got want do
         throw (.sqlite s!"FAIL: {msg}: run ≠ denote")
+      requireWF stD s!"{msg} (denote)"
       let st1 ← DbState.load (s := App)
+      requireWF st1 s!"{msg} (load after)"
       unless stateEqApp st1 stD do
         throw (.sqlite s!"FAIL: {msg}: final state ≠ denote")
 
@@ -216,6 +219,38 @@ private def testPatchMergeDenote : IO Unit := do
       check (stored.val.name == "ada") "state name survived"
       check (stored.val.email == "new@x") "state email written"
       check (stored.val.tags == [⟨"lead"⟩]) "state tags survived"
+  check (DbState.checkWF st0) "empty denote state is WF"
+  check (DbState.checkWF st3) "after patch denote is WF"
+
+/-- Decidable `checkWF`: empty is WF; duplicate unique, dangling FK,
+    id ≥ next, and a broken invariant are not. -/
+private def testCheckWF : IO Unit := do
+  let empty := DbState.empty (s := App)
+  check (DbState.checkWF empty) "empty is WF"
+  let team : Stored Team := ⟨⟨1⟩, ⟨"eng"⟩⟩
+  let ada : Stored User := ⟨⟨1⟩, ⟨"ada", "ada@x", ⟨1⟩, [⟨"lead"⟩]⟩⟩
+  let good :=
+    empty
+      |>.set (α := Team) { next := 2, rows := [team] }
+      |>.set (α := User) { next := 2, rows := [ada] }
+  check (DbState.checkWF good) "seeded is WF"
+  let dup := good.set (α := User) {
+    next := 3
+    rows := [ada, ⟨⟨2⟩, ⟨"bob", "ada@x", ⟨1⟩, []⟩⟩]
+  }
+  check (!DbState.checkWF dup) "duplicate email is not WF"
+  let dangling := good.set (α := User) {
+    next := 2
+    rows := [⟨⟨1⟩, ⟨"ada", "ada@x", ⟨99⟩, []⟩⟩]
+  }
+  check (!DbState.checkWF dangling) "missing FK is not WF"
+  let badId := good.set (α := Team) { next := 1, rows := [team] }
+  check (!DbState.checkWF badId) "id not < next is not WF"
+  let inv := good.set (α := User) {
+    next := 2
+    rows := [⟨⟨1⟩, ⟨"", "ada@x", ⟨1⟩, []⟩⟩]
+  }
+  check (!DbState.checkWF inv) "invariant failure is not WF"
 
 private def seedAda : DbM (Stored Team × Stored User) := do
   let eng ← LeanDb.insert Team ⟨"eng"⟩
@@ -249,6 +284,7 @@ private def testPatchSurvivesHarness : IO Unit := do
 
 def run : IO Unit := do
   testPatchMergeDenote
+  testCheckWF
   testPatchSurvivesHarness
   check (!ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.email))
     "email patch does not touch a Ref"

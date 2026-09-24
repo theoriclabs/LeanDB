@@ -52,4 +52,9 @@ def Rng.bool (r : Rng) : Rng × Bool :=
   let (r, n) := r.next
   (r, n % 2 == 0)
 
+/-- `checkWF` after a completed program. Production `load` must be WF. -/
+def requireWF {s} [IsSchema s] (st : DbState s) (msg : String) : DbM Unit :=
+  unless DbState.checkWF st do
+    throw (.sqlite s!"FAIL: {msg}: DbState.checkWF failed")
+
 end LeanDb.Harness

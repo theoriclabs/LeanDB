@@ -240,13 +240,16 @@ private def stateEqApp (a b : DbState App) : Bool :=
 private def eqTxn {ε α} (p : {σ : Type} → Txn σ App ε α)
     (eq : Except ε α → Except ε α → Bool) (msg : String) : DbM Unit := do
   let st0 ← DbState.load (s := App)
+  requireWF st0 s!"{msg} (load)"
   match ← Txn.run (s := App) p with
   | .error e => throw (.sqlite s!"FAIL: {msg}: fault {e}")
   | .ok got =>
       let (want, stD) := Txn.denote (σ := Unit) (s := App) (p (σ := Unit)) st0
       unless eq got want do
         throw (.sqlite s!"FAIL: {msg}: run ≠ denote")
+      requireWF stD s!"{msg} (denote)"
       let st1 ← DbState.load (s := App)
+      requireWF st1 s!"{msg} (load after)"
       unless stateEqApp st1 stD do
         throw (.sqlite s!"FAIL: {msg}: final state ≠ denote")
 
