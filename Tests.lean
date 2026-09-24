@@ -14,6 +14,7 @@ import TestsLdb24
 import TestsM14a
 import TestsM14b
 import TestsM14c
+import TestsM15a
 import CheckAxioms
 
 /-! Engine tests: codecs, deriving, the dependent select against a real
@@ -3521,5 +3522,6 @@ def main : IO UInt32 := do
   TestsM14a.run
   TestsM14b.run
   TestsM14c.run
+  TestsM15a.run
   IO.println "all engine tests passed"
   return 0

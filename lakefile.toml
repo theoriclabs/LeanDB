@@ -57,6 +57,9 @@ name = "TestsM14b"
 name = "TestsM14c"
 
 [[lean_lib]]
+name = "TestsM15a"
+
+[[lean_lib]]
 name = "CheckAxioms"
 srcDir = "scripts"
 
