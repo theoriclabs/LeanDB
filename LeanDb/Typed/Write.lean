@@ -279,13 +279,13 @@ instance {α : Type} [Entity α] [HasListField α] [HasUnique α] [HasForeignKey
     | .missingRef f1, .missingRef f2 => f1 == f2
     | _, _ => false
 
-instance {α : Type} [Entity α] [HasUnique α] [HasForeignKey α]
-    [BEq (Unique α)] [BEq (ForeignKey α)] : BEq (UpdateError α) where
+instance {α : Type} [Entity α] [HasUnique α] [HasForeignKey α] [BEq α] :
+    BEq (UpdateError α) where
   beq
     | .gone, .gone => true
-    | .stale c1, .stale c2 => c1.id == c2.id
-    | .duplicate i1 h1, .duplicate i2 h2 => i1 == i2 && h1 == h2
-    | .missingRef f1, .missingRef f2 => f1 == f2
+    | .stale c1, .stale c2 => c1.id.toInt64 == c2.id.toInt64 && c1.val == c2.val
+    | .duplicate _ h1, .duplicate _ h2 => h1.toInt64 == h2.toInt64
+    | .missingRef _, .missingRef _ => true
     | _, _ => false
 
 instance {α : Type} [Entity α] [HasUnique α] [HasForeignKey α] {fs : Fields α}

@@ -464,18 +464,15 @@ error: schema: TestsM15a.ParentWithChildRef field 'kids' is a child list of Test
 #guard_msgs in
 schema% BadChildRef := ParentWithChildRef
 
-private def staleIdOnly (a b : UpdateError Bag) : Bool :=
-  match a, b with
-  | .stale x, .stale y => x.id == y.id
-  | .gone, .gone => true
-  | _, _ => false
-
-private def testStaleBEq : IO Unit := do
+private def testStaleBEq : IO Bool := do
   let a : Stored Bag := ⟨⟨1⟩, ⟨"a", [⟨"x"⟩]⟩⟩
   let b : Stored Bag := ⟨⟨1⟩, ⟨"a", [⟨"y"⟩]⟩⟩
   let e1 : UpdateError Bag := .stale a
   let e2 : UpdateError Bag := .stale b
-  IO.println s!"  stale BEq-by-id (same id, different val) = {staleIdOnly e1 e2}"
+  let sameIdDiffVal := e1 == e2
+  let same := (e1 == e1)
+  IO.println s!"  stale BEq same-id different-val = {sameIdDiffVal} (want false); reflexive = {same}"
+  return !sameIdDiffVal && same
 
 def run : IO Unit := do
   let d1 ← testD1
@@ -488,7 +485,8 @@ def run : IO Unit := do
   let d8 ← testD8
   let d9 ← testD9
   let d10 ← testD10
-  testStaleBEq
+  let beq ← testStaleBEq
+  check beq "UpdateError.stale BEq compares payloads, not just ids"
   -- Pinned against `79cfbcc` (M15-pre2). `true` = run equals denote
   -- on answer, failure payload, and tables. Flipped to `true` as each
   -- finding is fixed.
