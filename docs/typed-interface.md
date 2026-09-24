@@ -24,7 +24,9 @@ sees the same `DbState` the compiled code runs.
 - `Checked α := { v : α // Invariant α v }`, built by `Entity.check` /
   `Checked.check` at runtime or `Checked.of` from a proof.
 - `Valid α` is a stored row plus `Invariant α stored.val`. `Read.get` /
-  `lookup` return `Option (Valid α)`. Coerces to `Stored α`.
+  `lookup` / `first` / `all` / `page` return `Valid α` (joins
+  `Valid α × Valid β`). Coerces to `Stored α`, so `Query.from` /
+  `where'` / `orderBy` still see `Stored α`.
 
 Commands are spelled `unique%` / `schema%` / `typed%` / `cascade%` so
 `unique` stays an identifier (`IndexSpec.unique`) and `schema` stays a
@@ -46,7 +48,11 @@ structure DbState (s) [i : IsSchema s] where
 
 The Pi lives in `Type` because each `Table _` does, so `DbState s` is a
 `DbM` result. There is no `unsafe` / `implemented_by` in `LeanDb/Typed`:
-the logical body is the executed one.
+the logical body is the executed one. `Table.rows` is `List (Valid α)`:
+the invariant proof is stored with the row (by construction). `get` /
+`set` transport `Table` along `IsSchema.Has.ty_eq` using
+`Has.entity_eq` (generated `rfl`), so `Valid` does not need a separate
+`Eq.rec` motive.
 
 - `get` transports `st.tables h.id` along `IsSchema.Has.ty_eq`.
 - `set` is function update (`if t = h.id then transport tbl else st.tables t`).
@@ -75,11 +81,13 @@ often need an explicit `Exact` proof (see deviations).
 **Reads.** `Read s α` has `get`, `lookup`, `first`, `all`, `page`, `count`,
 `exists` (as `Read.exists` / `Read.exists'`), `pure`/`bind`. No write
 constructor and no failure channel. `Read.get` / `lookup` return
-`Option (Valid α)`: in the meaning, `Valid.ofStored?` on the row from
-`get` (on a `WF` state this is `some`); in execution, a decode-time
-invariant failure is `DbFault.corruption`, never a returned row.
-`Valid` coerces to `Stored α`. `Query.from` still answers `Stored α`, so
-`first` / `all` / `page` of a from-query keep `ρ = Stored α`.
+`Option (Valid α)` from the table (by construction). `first` / `all` /
+`page` wrap the query's `ρ` through `QueryRow`: a from-query answers
+`Valid α`, a join `Valid α × Valid β`. Meaning looks the gathered
+`Stored` row up in `Table.rows`; execution uses `Valid.ofStoredM`
+(decode-time invariant failure is `DbFault.corruption`, never a
+returned row). `Valid` coerces to `Stored α`. `Query.from` still
+answers `Stored α`, so `where'` / `orderBy` are unchanged.
 `Read.denote` is total on a well-formed state. `Read.run` executes in
 one deferred snapshot and returns `Except DbFault α`.
 `Runtime.Service.runRead` uses a reader connection (`withReader`);
@@ -189,10 +197,10 @@ close `q.exact = true`; then pass an explicit proof. Unwindowed
 `cascade%` before derive. Mirrored in SQLite `ON DELETE`, in
 `deleteCascading`, and in `DeleteError` (`Restricting`, not every
 `ReferencedBy`). `deleteAt` is fueled by `DbState.rowCount` (not
-`partial`). Each recursive call deletes at least its victim, so the
-bound suffices on acyclic graphs. If fuel runs out (a cascade cycle,
-which DDL does not emit), the current id is still removed and remaining
-victims are left — a `DbFault`-free fallback.
+`partial`). The current row is erased *before* the recursive walk, so
+each row is deleted at most once and a cycle cannot re-enter it.
+Recursion depth on remaining rows is ≤ the starting `rowCount`. The
+fuel-0 branch is totality only, not a distinct SQLite fallback.
 
 ## M15-pre
 
@@ -204,18 +212,19 @@ appears. Imported from `Tests.lean`, so `lake exe leandb_tests` runs it.
 
 **LeanAPI migration** (`examples/**/DbApi.lean`, e.g. private-games
 `writeStep`). Do not re-check `GameRow.invariant s.val` after a typed
-read. Point reads already carry the proof:
+read. Point reads *and* `Read.first` / `all` / `page` carry the proof:
 
 - `Read.get` / `lookup` : `Option (Stored α)` → `Option (Valid α)`
   (still coerces to `Stored α`).
+- `Read.first` / `all` / `page` of a from-query: `Option (Valid α)` /
+  `List (Valid α)` / `Page (Valid α)` (joins `Valid α × Valid β`).
 - `Txn.get` / `lookup` : `Option (Current σ α)` with `property`.
 - `Txn.update` / `append` take `Valid α` (not `Stored α`) plus `Checked`.
 - Delete the `if hv : GameRow.invariant s.val = true then … else
-  unreachable` around `writeStep`. Pass `s : Valid GameRow` (or
+  unreachable` around `writeStep`. `visibleGame` already uses
+  `Read.first`; its row is `Valid GameRow`. Pass that `s` (or
   `Current.toValid`) and use `s.property` in `GameRow.checkedStep`.
-- `Read.first` / `all` / `page` of a `Query.from` still answer
-  `Stored α`. A write of that row should `Txn.get` by id (proof from
-  `Current`) or wrap with `Valid.ofStored?` (corruption if `none`).
+  `TestsM14c.writeEmail` is the compiling pattern.
 
 ## Remaining deviations
 
@@ -237,15 +246,17 @@ Relative to QUERIES.md §3 / §5. Not silently weakened.
   `restricted` lists inbound keys of the deleted row only. If a cascade
   victim is itself restrict-referenced, SQLite fails the statement (a
   `DbFault`); the meaning still removes the cascade victims. Nested
-  restrict-on-cascade is not typed. `deleteAt` is fueled by `rowCount`;
-  a cascade cycle hits the fuel-0 fallback (delete this id only).
-- **`Query.from` answers `Stored α`, not `Valid α`.** Point reads
-  (`get` / `lookup` / `Current`) carry the invariant proof. Windowed
-  `first` / `all` / `page` keep the query's `ρ`.
-- **Tables store `Stored α`, not `Checked`.** Validity on read is
-  `Valid.ofStored?` (meaning) / decode-time check (execution). Storing
-  `Checked` rows would make the proof by construction but would block
-  `ty_eq` transport of `Table` (no `[Entity α]` on the structure).
+  restrict-on-cascade is not typed. `deleteAt` erases before walking;
+  fuel = `rowCount` suffices because each row is deleted at most once
+  (a cycle cannot re-enter a gone id). Lean cannot inhabit a cyclic
+  `Ref` on a structure (nested occurrence), so there is no derived
+  cyclic-DDL fixture; the bound is the agreement with SQLite CASCADE.
+- **`Query.from` answers `Stored α`, not `Valid α`.** Filters and
+  ordering stay over `Stored` (`Valid` coerces). `Read.first` / `all` /
+  `page` wrap through `QueryRow` to `Valid α` (joins `Valid α × Valid β`).
+- **Tables store `Valid α`.** The proof is by construction (`Table.cast`
+  along `ty_eq` / `entity_eq`). Execution still refuses a decode-time
+  invariant failure as `DbFault.corruption`.
 - **`Touching` / `Within` / `Restricting` are `if`/`Empty`, not
   generated inductives.** They reduce to `Empty` when nothing applies,
   which is what exhaustive match and `IsEmpty` need in Lean 4.33.
