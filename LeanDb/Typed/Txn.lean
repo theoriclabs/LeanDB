@@ -1,5 +1,6 @@
 import LeanDb.Typed.Read
 import LeanDb.Typed.Write
+import LeanDb.Runtime
 
 /-! # Transaction programs (M14b)
 
@@ -491,5 +492,17 @@ def run {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) :
     | .error e => return .ok (.error (DbFault.ofDbError e))
 
 end Txn
+
+/-- Run a `Txn` on the writer connection under `BEGIN IMMEDIATE`. -/
+def Runtime.Service.runTxn {s ε α} [IsSchema s] (svc : Runtime.Service)
+    (p : {σ : Type} → Txn σ s ε α) : IO (Except DbFault (Except ε α)) := do
+  match ← svc.withConnection fun conn => do
+    if conn.readOnly then
+      throw <| IO.userError "runTxn obtained a read-only connection"
+    (Txn.run (s := s) (ε := ε) p conn).run
+  with
+  | .error e => return .error (Runtime.Service.faultOfRuntime e)
+  | .ok (.error e) => return .error (DbFault.ofDbError e)
+  | .ok (.ok r) => return r
 
 end LeanDb

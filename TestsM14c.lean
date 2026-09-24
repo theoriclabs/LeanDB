@@ -282,10 +282,51 @@ private def testPatchSurvivesHarness : IO Unit := do
   ) "patch survives"
   IO.println s!"M14c harness cases: {n}"
 
+private def dbPathSvc : System.FilePath := ".lake" / "leandb_test_m14c_svc.sqlite"
+
+private def appBase : Base :=
+  { name := "m14c", tables := [CliTable.of Team, CliTable.of User] }
+
+/-- `runRead` uses a reader connection (never the writer); `runTxn` uses
+    the writer under `BEGIN IMMEDIATE`. -/
+private def testRunRead : IO Unit := do
+  fresh dbPathSvc
+  let svc ← Runtime.Service.new appBase (Instance.ofPath dbPathSvc) .serve true
+    { readers := 0 }
+  let p : {σ : Type} → Txn σ App Empty (Stored Team) := fun {_} => do
+    let row ← Txn.insertNew (Checked.of (⟨"eng"⟩ : Team) (by unfold Invariant; trivial))
+    return row.toStored
+  let ins ← svc.runTxn (s := App) p
+  let team ← match ins with
+    | .error f => throw <| IO.userError s!"FAIL: runTxn: {f}"
+    | .ok (.error e) => nomatch e
+    | .ok (.ok row) => pure row
+  check (team.val.name == "eng") "runTxn insert team"
+  match ← svc.runRead (s := App) (Read.get Team team.id) with
+  | .error f => throw <| IO.userError s!"FAIL: runRead get: {f}"
+  | .ok none => throw <| IO.userError "FAIL: runRead missed team"
+  | .ok (some row) =>
+      check (row.val.name == "eng") "runRead get team"
+  let ro ← svc.withReader fun conn => do
+    check conn.readOnly "runRead pool connection is read-only"
+    DbM.run conn (insert Team ⟨"nope"⟩)
+  match ro with
+  | .ok (.error e) =>
+      check (e.code == "read_only") s!"write on reader: {e}"
+  | .ok (.ok _) =>
+      throw <| IO.userError "FAIL: Read/withReader handed out the writer"
+  | .error e => throw <| IO.userError s!"FAIL: withReader: {e}"
+  match ← svc.runRead (s := App) (Read.count (Query.from Team)) with
+  | .error f => throw <| IO.userError s!"FAIL: runRead count: {f}"
+  | .ok 1 => pure ()
+  | .ok k => throw <| IO.userError s!"FAIL: runRead count {k}"
+  svc.close
+
 def run : IO Unit := do
   testPatchMergeDenote
   testCheckWF
   testPatchSurvivesHarness
+  testRunRead
   check (!ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.email))
     "email patch does not touch a Ref"
   check (ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.team))

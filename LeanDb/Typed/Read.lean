@@ -1,5 +1,6 @@
 import LeanDb.Typed.Query
 import LeanDb.Typed.Fault
+import LeanDb.Runtime
 
 namespace LeanDb
 
@@ -120,5 +121,27 @@ def run {s α} [IsSchema s] (r : Read s α) : Db (Except DbFault α) :=
     | .error e => return .ok (.error (DbFault.ofDbError e))
 
 end Read
+
+/-- Map a service lifecycle error onto a `DbFault`. -/
+def Runtime.Service.faultOfRuntime : Runtime.RuntimeError → DbFault
+  | .host m => .io m
+  | .notReady st => .io s!"service is not ready ({repr st})"
+  | .reentrant => .io "withConnection called reentrantly from its own callback"
+  | .gated e => DbFault.ofDbError e
+
+/-- Run a `Read` on a pooled reader connection, in one deferred snapshot.
+    The writer connection is never used (`withReader`); a writable
+    connection here is a `DbFault`. -/
+def Runtime.Service.runRead {s α} [IsSchema s] (svc : Runtime.Service)
+    (r : Read s α) : IO (Except DbFault α) := do
+  match ← svc.withReader fun conn => do
+    unless conn.readOnly do
+      throw <| IO.userError "runRead obtained a writable connection"
+    (Read.run (s := s) r conn).run
+  with
+  | .error e => return .error (Runtime.Service.faultOfRuntime e)
+  | .ok (.error e) => return .error (DbFault.ofDbError e)
+  | .ok (.ok (.error f)) => return .error f
+  | .ok (.ok (.ok a)) => return .ok a
 
 end LeanDb
