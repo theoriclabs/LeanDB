@@ -568,6 +568,119 @@ theorem approx_sound {ts : List Type} (snap : Snapshot) : ∀ (p : Pred ts) (r :
   | .isNotNull .., _, h => h
   | .bit (ce := _) .., _, h => h
 
+/-- `hasOpaque = false` means `residuals = 0`. -/
+theorem residuals_eq_zero_of_not_opaque {ts : List Type} {p : Pred ts}
+    (h : p.hasOpaque = false) : p.residuals = 0 := by
+  simp only [hasOpaque] at h
+  cases hr : p.residuals with
+  | zero => rfl
+  | succ _ => simp [hr] at h
+
+/-- No opaque leaf ⇒ `approx` denotes the same as `pred`. Structural
+    equality `approx = pred` fails because `approx` uses `andS`/`orS`,
+    which collapse `tt`/`ff`; denotational equality is the sound law
+    (pushed windows and counts). -/
+theorem approx_eq_denote {ts : List Type} (snap : Snapshot) :
+    ∀ (p : Pred ts), p.hasOpaque = false →
+      ∀ r : Rows ts, p.approx.denote snap r = p.denote snap r
+  | .tt, _, _ => rfl
+  | .ff, _, _ => rfl
+  | .eq .., _, _ => rfl
+  | .ord (so := _) .., _, _ => rfl
+  | .eq2 .., _, _ => rfl
+  | .ord2 (so := _) .., _, _ => rfl
+  | .isNull .., _, _ => rfl
+  | .isNotNull .., _, _ => rfl
+  | .bit (ce := _) .., _, _ => rfl
+  | .opaque _, h, _ => by
+      have : (1 : Nat) = 0 := residuals_eq_zero_of_not_opaque (p := .opaque _) h
+      cases this
+  | .and a b, h, r => by
+      have hz : a.residuals + b.residuals = 0 := by
+        simpa [residuals] using residuals_eq_zero_of_not_opaque (p := .and a b) h
+      have ⟨ha0, hb0⟩ := Nat.add_eq_zero_iff.mp hz
+      have ha : a.hasOpaque = false := by simp [hasOpaque, ha0]
+      have hb : b.hasOpaque = false := by simp [hasOpaque, hb0]
+      simp only [approx]
+      rw [denote_andS, approx_eq_denote snap a ha r, approx_eq_denote snap b hb r]
+      simp [denote]
+  | .or a b, h, r => by
+      have hz : a.residuals + b.residuals = 0 := by
+        simpa [residuals] using residuals_eq_zero_of_not_opaque (p := .or a b) h
+      have ⟨ha0, hb0⟩ := Nat.add_eq_zero_iff.mp hz
+      have ha : a.hasOpaque = false := by simp [hasOpaque, ha0]
+      have hb : b.hasOpaque = false := by simp [hasOpaque, hb0]
+      simp only [approx]
+      rw [denote_orS, approx_eq_denote snap a ha r, approx_eq_denote snap b hb r]
+      simp [denote]
+  | .«exists» (ent := ent) parent fk body, h, r => by
+      have hb0 : body.residuals = 0 := by
+        simpa [residuals] using residuals_eq_zero_of_not_opaque
+          (p := .«exists» (ent := ent) parent fk body) h
+      have hb : body.hasOpaque = false := by simp [hasOpaque, hb0]
+      have hpt : ∀ c, body.approx.denote snap (Rows.cons c r) =
+          body.denote snap (Rows.cons c r) :=
+        fun c => approx_eq_denote snap body hb _
+      simp [approx, denote, hpt]
+  | .«forall» (ent := ent) parent fk body, h, r => by
+      have hb0 : body.residuals = 0 := by
+        simpa [residuals] using residuals_eq_zero_of_not_opaque
+          (p := .«forall» (ent := ent) parent fk body) h
+      have hb : body.hasOpaque = false := by simp [hasOpaque, hb0]
+      have hpt : ∀ c, body.approx.denote snap (Rows.cons c r) =
+          body.denote snap (Rows.cons c r) :=
+        fun c => approx_eq_denote snap body hb _
+      simp [approx, denote, hpt]
+
+end Pred
+
+/-- Encoding preserves Lean order. `SqlOrd` itself is a marker; this law
+    is what makes a pushed `<`/`≤`/`>`/`≥` agree with the lambda. -/
+class LawfulSqlOrd (α : Type) [ColCodec α] [SqlOrd α] [Ord α] : Prop where
+  order_toCol : ∀ a b : α, Col.order (toCol (α := α) a) (toCol (α := α) b) = some (compare a b)
+
+instance : LawfulSqlOrd Int64 where
+  order_toCol _ _ := rfl
+
+instance : LawfulSqlOrd String where
+  order_toCol _ _ := rfl
+
+instance : LawfulSqlOrd Bool where
+  order_toCol a b := by
+    cases a <;> cases b <;> rfl
+
+instance : LawfulSqlOrd (Id α) where
+  order_toCol a b := by
+    -- `toCol` is `Col.int a.toInt64`; `compare` on `Id` is `compare` on `Int64`.
+    change Col.order (Col.int a.toInt64) (Col.int b.toInt64) = some (compare a.toInt64 b.toInt64)
+    rfl
+
+/-- `SqlOrd Nat` is sound on `0 … Int64.maxValue`; above that `toCol` clamps. -/
+theorem nat_order_toCol (n m : Nat) (hn : n ≤ natSqlMax) (hm : m ≤ natSqlMax) :
+    Col.order (toCol (α := Nat) n) (toCol (α := Nat) m) = some (compare n m) := by
+  have hn' := nat_lt_two_pow_63_of_le_max hn
+  have hm' := nat_lt_two_pow_63_of_le_max hm
+  have hencn : toCol (α := Nat) n = Col.int (Int64.ofNat n) := by
+    change Col.int ((natToSql n).getD Int64.maxValue) = Col.int (Int64.ofNat n)
+    rw [natToSql_of_le hn]; rfl
+  have hencm : toCol (α := Nat) m = Col.int (Int64.ofNat m) := by
+    change Col.int ((natToSql m).getD Int64.maxValue) = Col.int (Int64.ofNat m)
+    rw [natToSql_of_le hm]; rfl
+  rw [hencn, hencm]
+  change some (compare (Int64.ofNat n) (Int64.ofNat m)) = some (compare n m)
+  congr 1
+  have hinj : Int64.ofNat n = Int64.ofNat m ↔ n = m := by
+    constructor
+    · intro heq
+      have := congrArg Int64.toNatClampNeg heq
+      rw [Int64.toNatClampNeg_ofNat_of_lt hn', Int64.toNatClampNeg_ofNat_of_lt hm'] at this
+      exact this
+    · intro heq
+      rw [heq]
+  simp [compare, compareOfLessAndEq, Int64.ofNat_lt_iff_lt hn' hm', hinj]
+
+namespace Pred
+
 /-! ### The plan surface -/
 
 /-- Table indices a predicate touches. A quantifier touches its parent's

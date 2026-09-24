@@ -235,6 +235,12 @@ class ColCodec (α : Type) where
 
 export ColCodec (toCol fromCol toSql?)
 
+/-- Round-trip of `toCol` / `fromCol`. A custom codec may omit this
+    instance: it still typechecks, but cannot be used where a proof needs
+    the round trip (QUERIES.md §3.11, BOUNDARIES §3.2). -/
+class LawfulColCodec (α : Type) [ColCodec α] : Prop where
+  roundTrip : ∀ v : α, fromCol (α := α) (toCol (α := α) v) = .ok v
+
 /-- Marker for column types whose Lean ordering is preserved by SQLite's
     ordering of their encoded values. The planner only pushes `<`/`≤`/`>`/`≥`
     for these types; equality is pushable for every codec. Custom codecs
@@ -261,6 +267,9 @@ instance : ColCodec Int64 where
   fromCol
     | .int v => .ok v
     | c => expected "INTEGER" c
+
+instance : LawfulColCodec Int64 where
+  roundTrip _ := rfl
 
 instance : SqlOrd Int64 where
 
@@ -290,17 +299,101 @@ instance : ColCodec Nat where
     | .int v => if v < 0 then .error s!"expected Nat, found {v}" else .ok v.toNatClampNeg
     | c => expected "INTEGER" c
 
+/-- `Nat` above `Int64.maxValue` encodes by clamping, so there is no
+    `LawfulColCodec Nat`. In range the round trip holds, and `SqlOrd Nat`
+    is sound on the same bound (`LawfulSqlOrd` in `Pred.lean`). -/
+theorem natSqlMax_lt_two_pow_63 : natSqlMax < 2 ^ 63 :=
+  Int64.toNatClampNeg_lt Int64.maxValue
+
+theorem nat_lt_two_pow_63_of_le_max {n : Nat} (h : n ≤ natSqlMax) : n < 2 ^ 63 :=
+  Nat.lt_of_le_of_lt h natSqlMax_lt_two_pow_63
+
+theorem natToSql_of_le {n : Nat} (h : n ≤ natSqlMax) :
+    natToSql n = some (Int64.ofNat n) := by
+  unfold natToSql
+  split
+  · next hgt => exact absurd h (Nat.not_le_of_gt hgt)
+  · rfl
+
+theorem fromCol_toCol_nat (n : Nat) (h : n ≤ natSqlMax) :
+    fromCol (α := Nat) (toCol n) = Except.ok n := by
+  have hn : n < 2 ^ 63 := nat_lt_two_pow_63_of_le_max h
+  have henc : toCol (α := Nat) n = Col.int (Int64.ofNat n) := by
+    change Col.int ((natToSql n).getD Int64.maxValue) = Col.int (Int64.ofNat n)
+    rw [natToSql_of_le h]
+    rfl
+  rw [henc]
+  have hnn : ¬ (Int64.ofNat n < (0 : Int64)) :=
+    Int64.not_lt.mpr (Int64.zero_le_ofNat_of_lt hn)
+  dsimp [fromCol]
+  simp [hnn, Int64.toNatClampNeg_ofNat_of_lt hn]
+
 instance : SqlOrd Nat where
+
+/-- Round-trip of `ColCodec.via` when the decoder inverts the encoder. -/
+theorem ColCodec.via_roundTrip {α β : Type} [ColCodec β] [LawfulColCodec β]
+    (enc : α → β) (dec : β → Except String α)
+    (hdec : ∀ a, dec (enc a) = Except.ok a) (a : α) :
+    @fromCol α (ColCodec.via enc dec) (@toCol α (ColCodec.via enc dec) a) = Except.ok a := by
+  change (fromCol (α := β) (toCol (enc a)) >>= dec) = Except.ok a
+  rw [LawfulColCodec.roundTrip (α := β)]
+  exact hdec a
 
 instance : ColCodec UInt32 := ColCodec.via (β := Int64) (fun n => Int64.ofNat n.toNat)
   (fun v => if 0 ≤ v && v < Int64.ofNat UInt32.size then .ok (UInt32.ofNat v.toNatClampNeg)
             else .error s!"UInt32 out of range: {v}")
 instance : SqlOrd UInt32 where
 
+private theorem uint32_toNat_lt_two_pow_63 (n : UInt32) : n.toNat < 2 ^ 63 :=
+  Nat.lt_trans n.toNat_lt (by decide : UInt32.size < 2 ^ 63)
+
+private theorem uint32_dec_enc (n : UInt32) :
+    (fun v : Int64 =>
+      if 0 ≤ v && v < Int64.ofNat UInt32.size then
+        Except.ok (UInt32.ofNat v.toNatClampNeg)
+      else Except.error s!"UInt32 out of range: {v}") (Int64.ofNat n.toNat) = Except.ok n := by
+  have hn : n.toNat < 2 ^ 63 := uint32_toNat_lt_two_pow_63 n
+  have hsz : UInt32.size < 2 ^ 63 := by decide
+  have hge : (0 : Int64) ≤ Int64.ofNat n.toNat := Int64.zero_le_ofNat_of_lt hn
+  have hlt : Int64.ofNat n.toNat < Int64.ofNat UInt32.size :=
+    (Int64.ofNat_lt_iff_lt hn hsz).mpr n.toNat_lt
+  simp [hge, hlt, Int64.toNatClampNeg_ofNat_of_lt hn, UInt32.ofNat_toNat]
+
+instance : LawfulColCodec UInt32 where
+  roundTrip n :=
+    ColCodec.via_roundTrip (fun n => Int64.ofNat n.toNat)
+      (fun v => if 0 ≤ v && v < Int64.ofNat UInt32.size then
+          .ok (UInt32.ofNat v.toNatClampNeg)
+        else .error s!"UInt32 out of range: {v}")
+      uint32_dec_enc n
+
 instance : ColCodec UInt16 := ColCodec.via (β := Int64) (fun n => Int64.ofNat n.toNat)
   (fun v => if 0 ≤ v && v < Int64.ofNat UInt16.size then .ok (UInt16.ofNat v.toNatClampNeg)
             else .error s!"UInt16 out of range: {v}")
 instance : SqlOrd UInt16 where
+
+private theorem uint16_toNat_lt_two_pow_63 (n : UInt16) : n.toNat < 2 ^ 63 :=
+  Nat.lt_trans n.toNat_lt (by decide : UInt16.size < 2 ^ 63)
+
+private theorem uint16_dec_enc (n : UInt16) :
+    (fun v : Int64 =>
+      if 0 ≤ v && v < Int64.ofNat UInt16.size then
+        Except.ok (UInt16.ofNat v.toNatClampNeg)
+      else Except.error s!"UInt16 out of range: {v}") (Int64.ofNat n.toNat) = Except.ok n := by
+  have hn : n.toNat < 2 ^ 63 := uint16_toNat_lt_two_pow_63 n
+  have hsz : UInt16.size < 2 ^ 63 := by decide
+  have hge : (0 : Int64) ≤ Int64.ofNat n.toNat := Int64.zero_le_ofNat_of_lt hn
+  have hlt : Int64.ofNat n.toNat < Int64.ofNat UInt16.size :=
+    (Int64.ofNat_lt_iff_lt hn hsz).mpr n.toNat_lt
+  simp [hge, hlt, Int64.toNatClampNeg_ofNat_of_lt hn, UInt16.ofNat_toNat]
+
+instance : LawfulColCodec UInt16 where
+  roundTrip n :=
+    ColCodec.via_roundTrip (fun n => Int64.ofNat n.toNat)
+      (fun v => if 0 ≤ v && v < Int64.ofNat UInt16.size then
+          .ok (UInt16.ofNat v.toNatClampNeg)
+        else .error s!"UInt16 out of range: {v}")
+      uint16_dec_enc n
 
 instance : ColCodec Bool where
   sqlType := .integer
@@ -313,6 +406,11 @@ instance : ColCodec Bool where
   boolCodec := true
 instance : SqlOrd Bool where
 
+instance : LawfulColCodec Bool where
+  roundTrip
+    | false => rfl
+    | true => rfl
+
 instance : ColCodec String where
   sqlType := .text
   toCol := .text
@@ -320,6 +418,9 @@ instance : ColCodec String where
     | .text v => .ok v
     | c => expected "TEXT" c
 instance : SqlOrd String where
+
+instance : LawfulColCodec String where
+  roundTrip _ := rfl
 
 instance : ColCodec Float where
   sqlType := .real
@@ -332,8 +433,20 @@ instance : ColCodec Float where
     | .int v => .ok v.toFloat
     | c => expected "REAL" c
 
+/-- Finite floats round-trip; NaN/Inf are refused by `fromCol`. No
+    `LawfulColCodec Float` because those values inhabit `Float`. -/
+theorem fromCol_toCol_float (v : Float) (h : v.isNaN = false ∧ v.isInf = false) :
+    fromCol (α := Float) (toCol v) = Except.ok v := by
+  change (if v.isNaN || v.isInf then
+      Except.error s!"expected a finite REAL, found {v}" else Except.ok v) = Except.ok v
+  simp [h.1, h.2]
+
 instance : ColCodec (Id α) := ColCodec.via (β := Int64) Id.toInt64 (fun v => .ok ⟨v⟩)
 instance : SqlOrd (Id α) where
+
+instance : LawfulColCodec (Id α) where
+  roundTrip v :=
+    ColCodec.via_roundTrip Id.toInt64 (fun x => Except.ok ⟨x⟩) (fun _ => rfl) v
 
 instance [ColCodec α] : ColCodec (Option α) where
   sqlType := ColCodec.sqlType α
@@ -350,6 +463,59 @@ instance [ColCodec α] : ColCodec (Option α) where
     | none => some .null
     | some a => ColCodec.toSql? a
 
+/-- Inner `toCol` never produces NULL, so `Option` does not collapse
+    `some none` with `none`. Nullable codecs (`Option` itself) omit this. -/
+class NonNullCodec (α : Type) [ColCodec α] : Prop where
+  toCol_ne_null : ∀ a : α, toCol (α := α) a ≠ Col.null
+
+instance : NonNullCodec Int64 where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec Nat where
+  toCol_ne_null n h := by
+    change Col.int _ = Col.null at h
+    nomatch h
+
+instance : NonNullCodec Bool where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec String where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec Float where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec (Id α) where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec UInt16 where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec UInt32 where
+  toCol_ne_null _ h := nomatch h
+
+instance [ColCodec α] [LawfulColCodec α] [NonNullCodec α] : LawfulColCodec (Option α) where
+  roundTrip
+    | none => rfl
+    | some a => by
+        have hn : toCol (α := α) a ≠ Col.null := NonNullCodec.toCol_ne_null a
+        have hr : fromCol (α := α) (toCol (α := α) a) = Except.ok a :=
+          LawfulColCodec.roundTrip a
+        cases hC : toCol (α := α) a with
+        | null => exact (hn hC).elim
+        | int v =>
+            simp [fromCol, hC] at hr ⊢
+            rw [hr]
+            rfl
+        | text v =>
+            simp [fromCol, hC] at hr ⊢
+            rw [hr]
+            rfl
+        | real v =>
+            simp [fromCol, hC] at hr ⊢
+            rw [hr]
+            rfl
+
 /-- A closed world: a payload-free inductive whose constructors are the
     complete vocabulary. Instances come from `deriving LeanDb.ClosedEnum`.
     Closed types are not entities — they have no table of their own to
@@ -363,6 +529,12 @@ class ClosedEnum (α : Type) where
   encodeName : α → String
   decodeName : String → Option α
 
+/-- `decodeName ∘ encodeName = some`. Derived closed enums satisfy this
+    by construction; a custom instance without it still typechecks. -/
+class LawfulClosedEnum (α : Type) [ClosedEnum α] : Prop where
+  decode_encode : ∀ a : α,
+    ClosedEnum.decodeName (α := α) (ClosedEnum.encodeName a) = some a
+
 /-- Closed enums store as TEXT constructor names, guarded by a CHECK
     constraint in the DDL and a drift scan at open. -/
 instance [ClosedEnum α] : ColCodec α where
@@ -374,6 +546,19 @@ instance [ClosedEnum α] : ColCodec α where
         | some a => .ok a
         | none => .error s!"{String.quote s} is not in the closed world"
     | c => expected "TEXT" c
+
+instance [ClosedEnum α] [LawfulClosedEnum α] : LawfulColCodec α where
+  roundTrip a := by
+    have h : ClosedEnum.decodeName (α := α) (ClosedEnum.encodeName a) = some a :=
+      LawfulClosedEnum.decode_encode a
+    change (match ClosedEnum.decodeName (α := α) (ClosedEnum.encodeName a) with
+      | some b => Except.ok b
+      | none => Except.error s!"{String.quote (ClosedEnum.encodeName a)} is not in the closed world")
+      = Except.ok a
+    rw [h]
+
+instance [ClosedEnum α] : NonNullCodec α where
+  toCol_ne_null _ h := nomatch h
 
 /-- Closed-world metadata for a column type, for CHECK generation and the
     open-time drift scan. -/
