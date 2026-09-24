@@ -465,6 +465,86 @@ error: schema: TestsM15a.ParentWithChildRef field 'kids' is a child list of Test
 #guard_msgs in
 schema% BadChildRef := ParentWithChildRef
 
+/-! ## Float unique key: IEEE and SQLite both equate `-0.0` with `0.0`. -/
+
+structure Measure where
+  x : Float
+  deriving Repr, BEq, LeanDb.Entity
+
+unique% Measure.byX := x
+
+schema% Measures := Measure
+
+private def measureSpecs : List TableSpec := IsSchema.specs Measures
+private def measurePath : System.FilePath := ".lake" / "leandb_test_m15a_measure.sqlite"
+
+private def ckM (v : Measure)
+    (h : Invariant Measure v := by
+      unfold Invariant
+      simp only [sqlRangeOk]
+      trivial) :
+    Checked Measure :=
+  Checked.of v h
+
+private def eqInsM :
+    Except Empty (Except (InsertError Measure) Int64) →
+    Except Empty (Except (InsertError Measure) Int64) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => a == b
+    | .error (.duplicate ..), .error (.duplicate ..) => true
+    | .error (.missingRef _), .error (.missingRef _) => true
+    | _, _ => false
+
+private def cmpTxnM {ε α} (p : {σ : Type} → Txn σ Measures ε α)
+    (eq : Except ε α → Except ε α → Bool) (msg : String) : DbM Bool := do
+  let st0 ← DbState.load (s := Measures)
+  requireWF st0 s!"{msg} (load)"
+  let (want, stD) := Txn.denote (σ := Unit) (s := Measures) (p (σ := Unit)) st0
+  match ← Txn.run (s := Measures) p with
+  | .error f =>
+      IO.println s!"  {msg}: DISAGREE run=DbFault {f}"
+      return false
+  | .ok got =>
+      let st1 ← DbState.load (s := Measures)
+      requireWF st1 s!"{msg} (load after)"
+      let ans := eq got want
+      let stOk := getEq (α := Measure) st1 stD
+      if ans && stOk then
+        IO.println s!"  {msg}: AGREE"
+        return true
+      else
+        IO.println s!"  {msg}: DISAGREE ans={ans} state={stOk}"
+        return false
+
+/-- Insert `0.0`, then `-0.0` (duplicate: IEEE and SQLite), then `1.5` twice. -/
+private def testFloatUnique : IO Bool := do
+  fresh measurePath
+  expectOk (← withDb measurePath measureSpecs do
+    let z ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(0.0 : Float)⟩)
+        return r.map (fun c => c.id.toInt64))
+      eqInsM "float unique insert 0.0"
+    let nz ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(-0.0 : Float)⟩)
+        return match r with
+          | .ok _ => "ok"
+          | .error (.duplicate ..) => "dup"
+          | .error (.missingRef _) => "missing")
+      eqStr "float unique insert -0.0 clashes with 0.0"
+    let a ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(1.5 : Float)⟩)
+        return r.map (fun c => c.id.toInt64))
+      eqInsM "float unique insert 1.5"
+    let b ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(1.5 : Float)⟩)
+        return match r with
+          | .ok _ => "ok"
+          | .error (.duplicate ..) => "dup"
+          | .error (.missingRef _) => "missing")
+      eqStr "float unique insert 1.5 again"
+    return z && nz && a && b
+  ) "float unique"
+
 private def testStaleBEq : IO Bool := do
   let a : Stored Bag := ⟨⟨1⟩, ⟨"a", [⟨"x"⟩]⟩⟩
   let b : Stored Bag := ⟨⟨1⟩, ⟨"a", [⟨"y"⟩]⟩⟩
@@ -668,7 +748,9 @@ def run : IO Unit := do
   check d8 "D8 first after limit 0; huge window applied in Lean"
   check d9 "D9 join keeps the left-side quantifier"
   check d10 "D10 mixed-invariant patch is SetError.invalid in both"
-  IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10}"
+  let fu ← testFloatUnique
+  check fu "Float unique key: -0.0 = 0.0 in IEEE and SQLite; run equals denote"
+  IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10} floatUnique={fu}"
   let n ← testHarness
   check (decide (n ≥ 500)) s!"M15a harness has ≥ 500 cases, got {n}"
 

@@ -120,7 +120,8 @@ def firstDuplicate {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has 
     let enc := Unique.encodeKey ix (Unique.keyOf ix v)
     (DbState.get (α := α) st).rows.findSome? fun r =>
       if except == some r.id then none
-      else if Unique.encodeKey ix (Unique.keyOf ix r.val) == enc then some (ix, r.id)
+      else if Unique.keyClash (Unique.encodeKey ix (Unique.keyOf ix r.val)) enc then
+        some (ix, r.id)
       else none
 
 def fkMissing {s α} [IsSchema s] [Entity α] [hf : HasForeignKey α]
@@ -145,7 +146,7 @@ def firstDuplicateTouching {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSch
         let enc := Unique.encodeKey ix (Unique.keyOf ix v)
         (DbState.get (α := α) st).rows.findSome? fun r =>
           if except == some r.id then none
-          else if Unique.encodeKey ix (Unique.keyOf ix r.val) == enc then
+          else if Unique.keyClash (Unique.encodeKey ix (Unique.keyOf ix r.val)) enc then
             some (Unique.toTouching ix h hAny, r.id)
           else none
       else none

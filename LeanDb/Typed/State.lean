@@ -101,13 +101,15 @@ def Table.childrenOk [Entity α] (t : Table α) : Bool :=
       let pairs := (link.rows r.val).zipIdx.map fun (cols, i) => (i, cols)
       (link.attach pairs r.val).isOk
 
-/-- Keys of `ix` are pairwise distinct on this list. -/
+/-- Keys of `ix` are pairwise distinct on this list. Comparison is
+    `Unique.keyClash` (symmetric by construction). -/
 def Table.uniquesOk.distinct [Entity α] [HasUnique α] (ix : Unique α) :
     List (Valid α) → Bool
   | [] => true
   | r :: rs =>
       let enc := Unique.encodeKey ix (Unique.keyOf ix r.val)
-      rs.all (fun o => enc != Unique.encodeKey ix (Unique.keyOf ix o.val)) &&
+      rs.all (fun o =>
+        !Unique.keyClash enc (Unique.encodeKey ix (Unique.keyOf ix o.val))) &&
         Table.uniquesOk.distinct ix rs
 
 /-- Unique-index keys are unique among rows. -/

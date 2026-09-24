@@ -79,6 +79,19 @@ def Unique.encodeKey {α : Type} [Entity α] [HasUnique α] (ix : Unique α) (k 
     Array Col :=
   HasUnique.encodeKey ix k
 
+/-- Unique-key comparison, symmetric by construction. Runtime `==` on
+    `Array Col` is already symmetric (IEEE equality, including
+    `-0.0 = 0.0`), but `Float.beq` is `extern` so `(a == b) = (b == a)`
+    is not a theorem. `keyClash a b := a == b || b == a` answers the
+    same as `==` on live values and is commutative by `Bool.or_comm`.
+    SQLite REAL has no NaN and treats `-0.0 = 0.0`. -/
+def Unique.keyClash (a b : Array Col) : Bool :=
+  a == b || b == a
+
+theorem Unique.keyClash_comm (a b : Array Col) :
+    Unique.keyClash a b = Unique.keyClash b a :=
+  Bool.or_comm (a == b) (b == a)
+
 def Unique.predOf {α : Type} [Entity α] [HasUnique α] (ix : Unique α) (k : Unique.Key ix) :
     Pred [α] :=
   HasUnique.predOf ix k

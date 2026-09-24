@@ -1134,8 +1134,9 @@ theorem Table.uniquesOk.distinct_snoc {α} [Entity α] [HasUnique α] (ix : Uniq
     (rows : List (Valid α)) (r : Valid α)
     (h : Table.uniquesOk.distinct ix rows = true)
     (hnone : ∀ o ∈ rows,
-      Unique.encodeKey ix (Unique.keyOf ix o.val) !=
-        Unique.encodeKey ix (Unique.keyOf ix r.val)) :
+      Unique.keyClash
+        (Unique.encodeKey ix (Unique.keyOf ix o.val))
+        (Unique.encodeKey ix (Unique.keyOf ix r.val)) = false) :
     Table.uniquesOk.distinct ix (rows ++ [r]) = true := by
   induction rows with
   | nil =>
@@ -1149,7 +1150,7 @@ theorem Table.uniquesOk.distinct_snoc {α} [Entity α] [HasUnique α] (ix : Uniq
       rw [Bool.and_eq_true]
       refine ⟨hhead, ?_⟩
       have hne := hnone r0 (List.mem_cons.mpr (Or.inl rfl))
-      exact hne
+      simpa [Bool.not_eq_true'] using hne
 
 theorem Txn.firstDuplicate_none_key {s α} [IsSchema s] [Entity α] [HasUnique α]
     [IsSchema.Has s α]
@@ -1157,18 +1158,19 @@ theorem Txn.firstDuplicate_none_key {s α} [IsSchema s] [Entity α] [HasUnique �
     (h : Txn.firstDuplicate v st none = none) (ix : Unique α)
     (hix : ix ∈ Unique.all α) (r : Valid α)
     (hr : r ∈ (DbState.get (α := α) st).rows) :
-    Unique.encodeKey ix (Unique.keyOf ix r.val) !=
-      Unique.encodeKey ix (Unique.keyOf ix v) := by
+    Unique.keyClash
+      (Unique.encodeKey ix (Unique.keyOf ix r.val))
+      (Unique.encodeKey ix (Unique.keyOf ix v)) = false := by
   unfold Txn.firstDuplicate at h
   rw [Array.findSome?_eq_none_iff] at h
   have hixn := h ix hix
   simp at hixn
   have hf := hixn r hr
-  simp only [bne]
-  cases hbeq : (Unique.encodeKey ix (Unique.keyOf ix r.val) ==
-      Unique.encodeKey ix (Unique.keyOf ix v))
+  cases hcl : Unique.keyClash
+      (Unique.encodeKey ix (Unique.keyOf ix r.val))
+      (Unique.encodeKey ix (Unique.keyOf ix v))
   · rfl
-  · simp [hbeq] at hf
+  · simp [hcl] at hf
 
 theorem Table.uniquesOk_snoc {s α} [IsSchema s] [Entity α] [HasUnique α]
     [IsSchema.Has s α]

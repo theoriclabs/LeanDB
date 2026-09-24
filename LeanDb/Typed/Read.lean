@@ -109,7 +109,7 @@ def lookupDenote {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has s 
     (st : DbState s) (ix : Unique α) (key : Unique.Key ix) : Option (Valid α) :=
   let enc := Unique.encodeKey ix key
   (DbState.get (α := α) st).rows.findSome? fun r =>
-    if Unique.encodeKey ix (Unique.keyOf ix r.val) == enc then
+    if Unique.keyClash (Unique.encodeKey ix (Unique.keyOf ix r.val)) enc then
       some r
     else none
 

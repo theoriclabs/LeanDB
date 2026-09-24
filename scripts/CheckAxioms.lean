@@ -105,6 +105,8 @@ elab "#check_m15_axioms" : command => do
   -- M15b2: insert preserves WF
   assertAxioms ``LeanDb.Txn.assign_wf
   assertAxioms ``LeanDb.Txn.insert_wf
+  -- M15b3: unique-key comparison is symmetric by construction
+  assertAxioms ``LeanDb.Unique.keyClash_comm
   -- remaining M15b theorems
   assertAxioms ``LeanDb.Array.size_qsort
   assertAxioms ``LeanDb.finishRows_size
