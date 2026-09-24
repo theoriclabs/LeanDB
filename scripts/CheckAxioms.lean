@@ -95,6 +95,13 @@ elab "#check_m15_axioms" : command => do
   assertAxioms ``LeanDb.Txn.insert_wf_of_fail
   assertAxioms ``LeanDb.Txn.assign_invariantsOk
   assertAxioms ``LeanDb.Txn.delete_gone_state
+  -- M15b2: nextOk / empty_wf
+  assertAxioms ``LeanDb.natSqlMax_eq
+  assertAxioms ``LeanDb.natSqlMax_pos
+  assertAxioms ``LeanDb.Table.nextOk_one
+  assertAxioms ``LeanDb.Table.check_ofPacked_nil
+  assertAxioms ``LeanDb.DbState.checkPacked_empty
+  assertAxioms ``LeanDb.DbState.empty_wf
   -- remaining M15b theorems
   assertAxioms ``LeanDb.Array.size_qsort
   assertAxioms ``LeanDb.finishRows_size

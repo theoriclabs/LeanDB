@@ -41,18 +41,27 @@ theorem Entity.eq_symm {α β : Type} {ea : Entity α} {eb : Entity β}
 structure DbState (s : Type) [i : IsSchema s] : Type where
   tables : (t : Fin i.nTables) → @Table (i.pack t).ty (i.pack t).entity
 
+/-- Walk of `idsOk`. `next` is the AUTOINCREMENT counter. -/
+def Table.idsOk.go [Entity α] (next : Nat) : Option Int64 → List (Valid α) → Bool
+  | _, [] => true
+  | prev, r :: rs =>
+      let id := r.id.toInt64
+      let ordered := match prev with
+        | none => true
+        | some p => p < id
+      let inRange := (0 : Int64) < id && id.toNatClampNeg < next
+      ordered && inRange && Table.idsOk.go next (some id) rs
+
 /-- Ids strictly increase, are positive, and stay below `next`. -/
 def Table.idsOk [Entity α] (t : Table α) : Bool :=
-  let rec go (prev : Option Int64) : List (Valid α) → Bool
-    | [] => true
-    | r :: rs =>
-        let id := r.id.toInt64
-        let ordered := match prev with
-          | none => true
-          | some p => p < id
-        let inRange := (0 : Int64) < id && id.toNatClampNeg < t.next
-        ordered && inRange && go (some id) rs
-  go none t.rows
+  Table.idsOk.go t.next none t.rows
+
+/-- AUTOINCREMENT counter is at least 1 and at most one past the largest
+    SQLite INTEGER (`natSqlMax + 1`). `next = natSqlMax + 1` means every
+    representable id has been issued; a further `insert` must not wrap
+    `Int64.ofNat`. Empty tables start at 1. -/
+def Table.nextOk [Entity α] (t : Table α) : Bool :=
+  1 ≤ t.next && t.next ≤ natSqlMax + 1
 
 /-- Every `Ref` / `Option (Ref)` on a stored row is unset or at least 1.
     Combined with `idsOk`, apps can map issued ids to `Nat` without a
@@ -94,21 +103,23 @@ def Table.childrenOk [Entity α] (t : Table α) : Bool :=
       | .ok _ => true
       | .error _ => false
 
+/-- Keys of `ix` are pairwise distinct on this list. -/
+def Table.uniquesOk.distinct [Entity α] [HasUnique α] (ix : Unique α) :
+    List (Valid α) → Bool
+  | [] => true
+  | r :: rs =>
+      let enc := Unique.encodeKey ix (Unique.keyOf ix r.val)
+      rs.all (fun o => Unique.encodeKey ix (Unique.keyOf ix o.val) != enc) &&
+        Table.uniquesOk.distinct ix rs
+
 /-- Unique-index keys are unique among rows. -/
 def Table.uniquesOk [Entity α] [HasUnique α] (t : Table α) : Bool :=
-  (Unique.all α).all fun ix =>
-    let rec distinct : List (Valid α) → Bool
-      | [] => true
-      | r :: rs =>
-          let enc := Unique.encodeKey ix (Unique.keyOf ix r.val)
-          rs.all (fun o => Unique.encodeKey ix (Unique.keyOf ix o.val) != enc) &&
-            distinct rs
-    distinct t.rows
+  (Unique.all α).all fun ix => Table.uniquesOk.distinct ix t.rows
 
 /-- Local well-formedness of one table (ids, decode, Checked, children,
-    unique keys). Foreign keys need the whole `DbState`. -/
+    unique keys, AUTOINCREMENT range). Foreign keys need the whole `DbState`. -/
 def Table.check [Entity α] [HasUnique α] [HasForeignKey α] (t : Table α) : Bool :=
-  t.idsOk && t.refsOk && t.invariantsOk && t.decodesOk && t.checkedOk &&
+  t.nextOk && t.idsOk && t.refsOk && t.invariantsOk && t.decodesOk && t.checkedOk &&
     t.childrenOk && t.uniquesOk
 
 def Table.WF [Entity α] [HasUnique α] [HasForeignKey α] (t : Table α) : Prop :=
@@ -290,8 +301,8 @@ def DbState.checkPacked {s : Type} [i : IsSchema s] (st : DbState s) (t : Fin i.
 
 /-- Decidable well-formedness: every schema table is present (by the Pi),
     every row decodes and is `Checked`, ids and `Ref`s are ≥ 1 and ids
-    stay `< next`, unique keys are unique, foreign keys resolve, child
-    lists attach. -/
+    stay `< next`, the AUTOINCREMENT counter is `1 ≤ next ≤ natSqlMax + 1`,
+    unique keys are unique, foreign keys resolve, child lists attach. -/
 def DbState.checkWF {s : Type} [i : IsSchema s] (st : DbState s) : Bool :=
   i.tables.all fun t => DbState.checkPacked st t
 

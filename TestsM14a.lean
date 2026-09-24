@@ -59,8 +59,15 @@ theorem insert_team_on_empty :
         (tbl.rows.map Valid.toStored) = [⟨row.id, v⟩] ∧ tbl.next = 2 := by
   have hU : Unique.all (α := Team) = #[] := rfl
   have hF : ForeignKey.all (α := Team) = #[] := rfl
+  have hif : ¬ ((DbState.get (α := Team) (DbState.empty (s := App))).next = 0 ∨
+      natSqlMax < (DbState.get (α := Team) (DbState.empty (s := App))).next) := by
+    rw [DbState.empty_next]
+    intro h
+    cases h with
+    | inl h0 => cases h0
+    | inr hlt => exact (Nat.not_lt.mpr (Nat.succ_le_of_lt natSqlMax_pos) hlt)
   simp [Txn.denote, Txn.denote.go, Txn.firstDuplicate, Txn.firstMissingRef,
-    Txn.assign, hU, hF, Array.findSome?, Array.find?]
+    Txn.assign, hU, hF, hif, Array.findSome?, Array.find?]
   simp [DbState.get_set_same, DbState.empty_rows, DbState.empty_next]
   constructor <;> rfl
 

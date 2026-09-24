@@ -261,12 +261,19 @@ def deleteCascading {s α} [i : IsSchema s] [Entity α] [IsSchema.Has s α]
     (st : DbState s) (id : Id α) : DbState s :=
   deleteAt (s := s) st (IsSchema.Has.id (s := s) (α := α)) id.toInt64
 
+/-- Assign the next AUTOINCREMENT id. When `next` is 0 or already past
+    `natSqlMax`, `Int64.ofNat` would wrap: leave the table unchanged so
+    `WF` (`nextOk`) stays closed. That branch is unreachable from `empty`
+    in fewer than `natSqlMax` inserts. -/
 def assign {s α} [IsSchema s] [Entity α] [IsSchema.Has s α] (st : DbState s) (c : Checked α) :
     Valid α × DbState s :=
   let tbl := DbState.get (α := α) st
   let id : Id α := ⟨Int64.ofNat tbl.next⟩
   let row := Valid.ofChecked id c
-  (row, st.set { next := tbl.next + 1, rows := tbl.rows ++ [row] })
+  if h : tbl.next = 0 ∨ natSqlMax < tbl.next then
+    (row, st)
+  else
+    (row, st.set { next := tbl.next + 1, rows := tbl.rows ++ [row] })
 
 /-- Inner interpreter; `st0` is the state at the start of the program (abort). -/
 def denote.go {σ s ε : Type} [IsSchema s] (st0 : DbState s) :

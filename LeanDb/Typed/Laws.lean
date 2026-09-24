@@ -247,7 +247,10 @@ theorem Txn.assign_get_other {s α β} [IsSchema s] [Entity α] [Entity β]
     [ha : IsSchema.Has s α] [hb : IsSchema.Has s β]
     (st : DbState s) (c : Checked α) (hneq : ha.id ≠ hb.id) :
     DbState.get (α := β) (assign (α := α) st c).2 = DbState.get (α := β) st := by
-  simp [assign, DbState.get_set_other (hneq := hneq)]
+  by_cases hif : (DbState.get (α := α) st).next = 0 ∨
+      natSqlMax < (DbState.get (α := α) st).next
+  · simp [assign, hif]
+  · simp [assign, hif, DbState.get_set_other (hneq := hneq)]
 
 theorem Txn.replaceRow_get_other {s α β} [IsSchema s] [Entity α] [Entity β]
     [ha : IsSchema.Has s α] [hb : IsSchema.Has s β]
@@ -295,15 +298,26 @@ theorem Txn.update_get_other {σ s ε α β} [IsSchema s] [Entity α] [Entity β
         · exact Txn.replaceRow_get_other st old.id new hneq
 
 theorem Txn.assign_next {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
-    (st : DbState s) (c : Checked α) :
+    (st : DbState s) (c : Checked α)
+    (hin : (DbState.get (α := α) st).next ≠ 0)
+    (hmax : (DbState.get (α := α) st).next ≤ natSqlMax) :
     (DbState.get (α := α) (assign st c).2).next =
       (DbState.get (α := α) st).next + 1 := by
-  simp [assign, DbState.get_set_same]
+  have hif : ¬ ((DbState.get (α := α) st).next = 0 ∨
+      natSqlMax < (DbState.get (α := α) st).next) := by
+    intro h
+    cases h with
+    | inl h0 => exact hin h0
+    | inr hgt => exact Nat.not_lt.mpr hmax hgt
+  simp [assign, hif, DbState.get_set_same]
 
 theorem Txn.assign_id_eq_next {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
     (st : DbState s) (c : Checked α) :
-    (assign st c).1.id.toInt64 = Int64.ofNat (DbState.get (α := α) st).next :=
-  rfl
+    (assign st c).1.id.toInt64 = Int64.ofNat (DbState.get (α := α) st).next := by
+  by_cases hif : (DbState.get (α := α) st).next = 0 ∨
+      natSqlMax < (DbState.get (α := α) st).next
+  · simp [assign, hif, Valid.ofChecked, Valid.id]
+  · simp [assign, hif, Valid.ofChecked, Valid.id]
 
 theorem Txn.replaceRow_next {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
     (st : DbState s) (id : Id α) (c : Checked α) :
@@ -666,6 +680,23 @@ theorem Table.idsOk_nil {α} [Entity α] (n : Nat) :
     Table.idsOk ({ next := n, rows := [] } : Table α) = true :=
   rfl
 
+theorem natSqlMax_eq : natSqlMax = 2 ^ 63 - 1 := by
+  unfold natSqlMax
+  change (Int64.maxValue.toInt).toNat = 2 ^ 63 - 1
+  rw [Int64.toInt_maxValue]
+  rfl
+
+theorem natSqlMax_pos : 0 < natSqlMax := by
+  rw [natSqlMax_eq]
+  exact Nat.sub_pos_of_lt (Nat.one_lt_two_pow (by decide : 63 ≠ 0))
+
+theorem Table.nextOk_one {α} [Entity α] :
+    Table.nextOk ({ next := 1, rows := [] } : Table α) = true := by
+  unfold Table.nextOk
+  rw [Bool.and_eq_true]
+  exact ⟨decide_eq_true (Nat.le_refl 1),
+    decide_eq_true (Nat.le_add_left 1 natSqlMax)⟩
+
 theorem Table.refsOk_nil {α} [Entity α] [HasForeignKey α] (n : Nat) :
     Table.refsOk ({ next := n, rows := [] } : Table α) = true :=
   rfl
@@ -698,14 +729,41 @@ theorem Table.uniquesOk_nil {α} [Entity α] [HasUnique α] (n : Nat) :
 
 theorem Table.check_nil {α} [Entity α] [HasUnique α] [HasForeignKey α] :
     Table.check ({ next := 1, rows := [] } : Table α) = true := by
-  simp [Table.check, Table.idsOk_nil, Table.refsOk_nil, Table.invariantsOk_nil,
-    Table.decodesOk_nil, Table.checkedOk_nil, Table.childrenOk_nil,
-    Table.uniquesOk_nil]
+  simp [Table.check, Table.nextOk_one, Table.idsOk_nil, Table.refsOk_nil,
+    Table.invariantsOk_nil, Table.decodesOk_nil, Table.checkedOk_nil,
+    Table.childrenOk_nil, Table.uniquesOk_nil]
 
 theorem Table.fksOk_nil {s α} [IsSchema s] [Entity α] [HasForeignKey α]
     (st : DbState s) (n : Nat) :
     Table.fksOk (α := α) st ({ next := n, rows := [] } : Table α) = true :=
   rfl
+
+theorem Table.check_ofPacked_nil (p : PackedEntity) :
+    @Table.check p.ty p.entity p.unique p.foreignKey
+      (@Table.mk p.ty p.entity 1 []) = true :=
+  @Table.check_nil p.ty p.entity p.unique p.foreignKey
+
+theorem Table.fksOk_ofPacked_nil {s} [IsSchema s] (st : DbState s) (p : PackedEntity) :
+    @Table.fksOk s p.ty inferInstance p.entity p.foreignKey st
+      (@Table.mk p.ty p.entity 1 []) = true :=
+  rfl
+
+theorem DbState.checkPacked_empty {s} [i : IsSchema s] (t : Fin i.nTables) :
+    DbState.checkPacked (DbState.empty (s := s)) t = true := by
+  unfold DbState.checkPacked DbState.empty
+  simp only [Table.ofPacked]
+  rw [Table.check_ofPacked_nil, Bool.true_and]
+  exact Table.fksOk_ofPacked_nil _ _
+
+theorem DbState.empty_wf {s} [i : IsSchema s] : (DbState.empty (s := s)).WF := by
+  unfold DbState.WF DbState.checkWF
+  rw [Array.all_eq_true_iff_forall_mem]
+  intro t ht
+  have ht' : t ∈ Array.ofFn (n := i.nTables) id := by
+    simpa [IsSchema.tables] using ht
+  obtain ⟨k, hk⟩ := Array.mem_ofFn.mp ht'
+  cases hk
+  exact DbState.checkPacked_empty k
 
 theorem Table.invariantsOk_valid {α} [Entity α] (t : Table α) :
     t.invariantsOk = true := by
