@@ -401,6 +401,22 @@ def neg {ts : List Type} : Pred ts → Pred ts
 
 /-! ### Denotation -/
 
+/-- Bound `v` as SQL, or a constant 1/0 when it is outside the column's
+    SQLite range. `none` from `toSql?` means the bound is larger than
+    every stored value (`Nat` above `Int64.maxValue`): `<`/`≤`/`IS NOT`
+    become true, `>`/`≥`/`IS` become false (LDB-18). -/
+private def boundSql {τ : Type} [i : ColCodec τ] (sql : String) (outOfRangeTrue : Bool)
+    (v : τ) : String × Array LeanDb.Col :=
+  match i.toSql? v with
+  | some c => (sql, #[c])
+  | none => (if outOfRangeTrue then "1" else "0", #[])
+
+private def boundHolds {τ : Type} [i : ColCodec τ] (eval : LeanDb.Col → LeanDb.Col → Bool)
+    (outOfRange : Bool) (col v : τ) : Bool :=
+  match i.toSql? v with
+  | some b => eval (i.toCol col) b
+  | none => outOfRange
+
 /-- What a plan means over a row, given the child rows it may quantify
     over. `eq`/`isNull` in the encoded domain; `ord` in the encoded domain
     too (`OrdOp.eval`, see there); the residual is its function; a
@@ -413,8 +429,10 @@ def neg {ts : List Type} : Pred ts → Pred ts
 def denote {ts : List Type} (snap : Snapshot) : Pred ts → Rows ts → Bool
   | .tt => fun _ => true
   | .ff => fun _ => false
-  | .eq (i := i) c op v => fun r => op.eval (i.toCol (c.proj r)) (i.toCol v)
-  | .ord (i := i) (so := _) c op v => fun r => op.eval (i.toCol (c.proj r)) (i.toCol v)
+  | .eq (i := i) c op v => fun r =>
+      boundHolds (i := i) op.eval (op == .ne) (c.proj r) v
+  | .ord (i := i) (so := _) c op v => fun r =>
+      boundHolds (i := i) op.eval (op == .lt || op == .le) (c.proj r) v
   | .eq2 (i := i) (j := j) a op b => fun r => op.eval (i.toCol (a.proj r)) (j.toCol (b.proj r))
   | .ord2 (i := i) (j := j) (so := _) a op b => fun r =>
       op.eval (i.toCol (a.proj r)) (j.toCol (b.proj r))
@@ -622,8 +640,10 @@ theorem size_neg {ts : List Type} : ∀ p : Pred ts, p.neg.size = p.size
 def render {ts : List Type} (aliasOf : Nat → String) (depth : Nat := 0) : Pred ts → String × Array LeanDb.Col
   | .tt => ("1", #[])
   | .ff => ("0", #[])
-  | .eq (i := i) c op v => (s!"{col aliasOf c} {op.sql} ?", #[i.toCol v])
-  | .ord (i := i) (so := _) c op v => (s!"{col aliasOf c} {op.sql} ?", #[i.toCol v])
+  | .eq (i := i) c op v =>
+      boundSql (i := i) s!"{col aliasOf c} {op.sql} ?" (op == .ne) v
+  | .ord (i := i) (so := _) c op v =>
+      boundSql (i := i) s!"{col aliasOf c} {op.sql} ?" (op == .lt || op == .le) v
   | .eq2 a op b =>
       -- col/col comparison: `IS`/`IS NOT` are valid SQLite binary operators
       (s!"{col aliasOf a} {op.sql} {col aliasOf b}", #[])

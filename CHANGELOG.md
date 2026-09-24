@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **LDB-18.** `Nat` columns are bounded to `0 … Int64.maxValue`. Writes
+  of a larger `Nat` are `.decode`; a comparison bound outside that range
+  renders as a tautology or contradiction instead of wrapping, so
+  `select (·.n < 2^64)` agrees with its meaning. `SqlOrd Nat` stays.
 - **LDB-17.** `selectP` / `existsP` apply `LIMIT`/`OFFSET` after the
   residual Lean filter unless the plan is exact (and not a join). A
   pushed window on the `approx` superset can no longer hide a later

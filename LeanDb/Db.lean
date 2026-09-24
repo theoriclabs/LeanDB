@@ -466,6 +466,15 @@ private def checkInvariant [Entity α] (a : α) : DbM Unit :=
       if holds a then pure () else throw (.invariant (Entity.tableName α) name)
   | none => pure ()
 
+/-- Every field must fit in its SQLite column (LDB-18). A `Nat` above
+    `Int64.maxValue` is refused rather than wrapping. -/
+private def checkSqlRange [Entity α] (a : α) : DbM Unit :=
+  (Entity.fields (α := α)).forM fun f =>
+    match (Entity.codec f).toSql? (Entity.get f a) with
+    | some _ => pure ()
+    | none => throw (.decode (Entity.tableName α) (Entity.fieldName f)
+        "value is outside the range SQLite INTEGER can store")
+
 /-- Every typed read ends here: the child lists attached (`attachLists`),
     then the entity's invariant checked on each whole value (LDB-16). A row
     that fails is refused with `.invariant`, never returned. -/
@@ -502,6 +511,7 @@ private def insertChildren [Entity α] (link : ChildLink α) (id : Int64) (a : �
 def insert (α : Type) [Entity α] (a : α) : DbM (Stored α) := withLog "insert" (Entity.tableName α) (fun _ => 1) do
   requireWritable "insert"
   checkInvariant a
+  checkSqlRange a
   let spec := Entity.spec α
   let links := Entity.children (α := α)
   let names := String.intercalate ", " (spec.columns.toList.map (quoteId ·.name))
@@ -556,6 +566,7 @@ def fetchAll (α : Type) [Entity α] : DbM (Array (Stored α)) := transaction do
 def update [Entity α] (old : Stored α) (new : α) : DbM (Stored α) := withLog "update" (Entity.tableName α) (fun _ => 1) do
   requireWritable "update"
   checkInvariant new
+  checkSqlRange new
   let spec := Entity.spec α
   let links := Entity.children (α := α)
   let cas : DbM Unit := do
@@ -620,6 +631,7 @@ def append [Entity α] (old : Stored α) (new : α) : DbM (Stored α) :=
       throw (.notAppend link.table "the list does not continue the stored one")
     added := added.push (link, before.size, after.extract before.size after.size)
   checkInvariant new
+  checkSqlRange new
   transaction (begin := "BEGIN IMMEDIATE") do
     -- the parent: `update`'s compare-and-swap against `old`
     let pins := spec.columns.toList.map fun c => s!"{quoteId c.name} IS ?"
@@ -1327,6 +1339,7 @@ def insertMany (α : Type) [Entity α] (rows : Array α) : DbM (Array (Stored α
   withLog "insertMany" (Entity.tableName α) (·.size) do
     requireWritable "insertMany"
     rows.forM checkInvariant
+    rows.forM checkSqlRange
     if rows.isEmpty then return #[]
     let spec := Entity.spec α
     let links := Entity.children (α := α)

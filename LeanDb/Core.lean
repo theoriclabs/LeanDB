@@ -220,8 +220,13 @@ class ColCodec (α : Type) where
       `Nat` cannot silently store 0. Not DDL and not part of the
       fingerprint or schema JSON. -/
   boolCodec : Bool := false
+  /-- Encode a value SQLite can store. `none` means it is outside the
+      column's SQL range: for `Nat`, larger than `Int64.maxValue`. Ordered
+      and equality leaves then become tautologies or contradictions so a
+      comparison like `n < 2^64` agrees with its Lean meaning (LDB-18). -/
+  toSql? : α → Option Col := fun a => some (toCol a)
 
-export ColCodec (toCol fromCol)
+export ColCodec (toCol fromCol toSql?)
 
 /-- Marker for column types whose Lean ordering is preserved by SQLite's
     ordering of their encoded values. The planner only pushes `<`/`≤`/`>`/`≥`
@@ -238,6 +243,7 @@ class SqlOrd (α : Type) : Prop where
   fromCol c := do dec (← fromCol c)
   shape := ColCodec.shape β
   boolCodec := false
+  toSql? a := ColCodec.toSql? (enc a)
 
 private def expected (want : String) (got : Col) : Except String α :=
   .error s!"expected {want}, found {got.describe}"
@@ -251,12 +257,21 @@ instance : ColCodec Int64 where
 
 instance : SqlOrd Int64 where
 
-/-- `Nat` stores as INTEGER. Values ≥ 2^63 are not representable in a
-    SQLite INTEGER and wrap on encode; model such magnitudes explicitly
-    rather than reaching them through a `Nat` column. -/
+/-- Largest `Nat` a SQLite INTEGER column can hold. -/
+def natSqlMax : Nat := Int64.maxValue.toNatClampNeg
+
+/-- `some` iff `n` fits in a SQLite INTEGER (`0 … Int64.maxValue`). -/
+def natToSql (n : Nat) : Option Int64 :=
+  if n > natSqlMax then none else some (Int64.ofNat n)
+
+/-- `Nat` stores as INTEGER. Values above `Int64.maxValue` are not
+    representable: writes refuse them, and a comparison bound that does
+    not fit becomes a tautology or contradiction rather than wrapping
+    (so `n < 2^64` agrees with its meaning; LDB-18). -/
 instance : ColCodec Nat where
   sqlType := .integer
-  toCol n := .int (Int64.ofNat n)
+  toCol n := .int ((natToSql n).getD Int64.maxValue)
+  toSql? n := (natToSql n).map .int
   fromCol
     | .int v => if v < 0 then .error s!"expected Nat, found {v}" else .ok v.toNatClampNeg
     | c => expected "INTEGER" c
@@ -317,6 +332,9 @@ instance [ColCodec α] : ColCodec (Option α) where
   fromCol
     | .null => .ok none
     | c => .some <$> fromCol (α := α) c
+  toSql?
+    | none => some .null
+    | some a => ColCodec.toSql? a
 
 /-- A closed world: a payload-free inductive whose constructors are the
     complete vocabulary. Instances come from `deriving LeanDb.ClosedEnum`.
