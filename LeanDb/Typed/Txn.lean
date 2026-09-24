@@ -193,46 +193,60 @@ def removeRow {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
   let tbl := DbState.get (α := α) st
   st.set { tbl with rows := tbl.rows.filter (fun r => !(r.id == id)) }
 
-/-- Remove `id` from table `t`, after recursively removing rows that
-    cascade-reference it. Fuel is `st.rowCount`: each recursive call
-    deletes at least the victim it is invoked on, so this bound
-    suffices on acyclic reference graphs. If fuel runs out (a cycle
-    of cascade keys, which DDL does not emit), the current id is
-    still removed and remaining victims are left — a `DbFault`-free
-    fallback, never `partial`. -/
+/-- Drop `id` from packed table `t`. -/
+def eraseAt {s : Type} [i : IsSchema s]
+    (st : DbState s) (t : Fin i.nTables) (id : Int64) : DbState s :=
+  let p := i.pack t
+  { tables := fun t2 =>
+      if h : t2 = t then h ▸ Table.eraseIdP p (st.tables t) id
+      else st.tables t2 }
+
+/-- True when packed table `t` still contains this id. -/
+def hasIdAt {s : Type} [i : IsSchema s]
+    (st : DbState s) (t : Fin i.nTables) (id : Int64) : Bool :=
+  let p := i.pack t
+  (@Table.rows p.ty p.entity (st.tables t)).any fun r =>
+    (@Valid.id p.ty p.entity r).toInt64 == id
+
+/-- Remove `id` from table `t`, then recursively remove rows that
+    cascade-reference it. The current row is erased *before* the
+    recursive walk, so a cycle cannot re-enter it: each row is
+    deleted at most once.
+
+    Fuel is `st.rowCount`. Recursion happens only after the current
+    row is gone, so the depth on remaining rows is at most the number
+    of still-present rows, which is ≤ the starting `rowCount`. The
+    fuel-0 branch is totality only (delete this id); it is not a
+    distinct SQLite fallback. DDL does not emit cascade cycles;
+    the same bound covers a cyclic graph of rows. -/
 def deleteAt {s : Type} [i : IsSchema s]
     (st : DbState s) (t : Fin i.nTables) (id : Int64) : DbState s :=
   let rec go (fuel : Nat) (st : DbState s) (t : Fin i.nTables) (id : Int64) :
       DbState s :=
-    match fuel with
-    | 0 =>
-        let p := i.pack t
-        { tables := fun t2 =>
-            if h : t2 = t then h ▸ Table.eraseIdP p (st.tables t) id
-            else st.tables t2 }
-    | fuel + 1 =>
-        let pDel := i.pack t
-        let delName := @Entity.tableName pDel.ty pDel.entity
-        let st := i.tables.foldl (init := st) fun st t' =>
-          let p' := i.pack t'
-          let hf := p'.foreignKey
-          hf.all.toList.foldl (init := st) fun st fk =>
-            if @ForeignKey.cascade p'.ty p'.entity hf fk then
-              let inst := hf.targetEntity fk
-              let tgtName := @Entity.tableName (hf.Target fk) inst
-              if tgtName == delName then
-                let tbl' := st.tables t'
-                let victims := (@Table.rows p'.ty p'.entity tbl').filter fun row =>
-                  (@ForeignKey.get p'.ty p'.entity hf fk
-                    (@Valid.val p'.ty p'.entity row)).toInt64 == id
-                victims.foldl (init := st) fun st row =>
-                  go fuel st t' (@Valid.id p'.ty p'.entity row).toInt64
+    if !hasIdAt (s := s) st t id then st
+    else
+      match fuel with
+      | 0 => eraseAt (s := s) st t id
+      | fuel + 1 =>
+          let pDel := i.pack t
+          let delName := @Entity.tableName pDel.ty pDel.entity
+          let st := eraseAt (s := s) st t id
+          i.tables.foldl (init := st) fun st t' =>
+            let p' := i.pack t'
+            let hf := p'.foreignKey
+            hf.all.toList.foldl (init := st) fun st fk =>
+              if @ForeignKey.cascade p'.ty p'.entity hf fk then
+                let inst := hf.targetEntity fk
+                let tgtName := @Entity.tableName (hf.Target fk) inst
+                if tgtName == delName then
+                  let tbl' := st.tables t'
+                  let victims := (@Table.rows p'.ty p'.entity tbl').filter fun row =>
+                    (@ForeignKey.get p'.ty p'.entity hf fk
+                      (@Valid.val p'.ty p'.entity row)).toInt64 == id
+                  victims.foldl (init := st) fun st row =>
+                    go fuel st t' (@Valid.id p'.ty p'.entity row).toInt64
+                else st
               else st
-            else st
-        let p := i.pack t
-        { tables := fun t2 =>
-            if h : t2 = t then h ▸ Table.eraseIdP p (st.tables t) id
-            else st.tables t2 }
   go (DbState.rowCount st) st t id
 
 /-- Remove `id` and every row that cascade-references it. -/
