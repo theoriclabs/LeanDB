@@ -17,6 +17,39 @@ structure Page (α : Type) where
   total : Nat
   deriving Repr, BEq
 
+/-- Recover the `Valid` proof stored in the table for a gathered `Stored`
+    row. `Query.denote` gathers `Valid.toStored`, so the lookup succeeds
+    on those rows. -/
+def recoverValid {s α} [IsSchema s] [Entity α] [IsSchema.Has s α]
+    (st : DbState s) (r : Stored α) : Option (Valid α) :=
+  (DbState.get (α := α) st).rows.find? (fun v => v.id == r.id)
+
+/-- How `first`/`all`/`page` present a query's `ρ`. `Query.from` / `where'` /
+    `orderBy` still work over `Stored α` (and `Valid` coerces to it). -/
+class QueryRow (s : Type) [IsSchema s] (ts : List Type) (ρ : Type) where
+  Out : Type
+  wrap : DbState s → ρ → Option Out
+  wrapExec : ρ → Db Out
+
+instance {s α : Type} [IsSchema s] [Entity α] [IsSchema.Has s α] :
+    QueryRow s [α] (Stored α) where
+  Out := Valid α
+  wrap st r := recoverValid st r
+  wrapExec := Valid.ofStoredM
+
+instance {s α β : Type} [IsSchema s] [Entity α] [Entity β]
+    [IsSchema.Has s α] [IsSchema.Has s β] :
+    QueryRow s [α, β] (Stored α × Stored β) where
+  Out := Valid α × Valid β
+  wrap st r :=
+    match recoverValid (α := α) st r.1, recoverValid (α := β) st r.2 with
+    | some a, some b => some (a, b)
+    | _, _ => none
+  wrapExec r := do
+    let a ← Valid.ofStoredM r.1
+    let b ← Valid.ofStoredM r.2
+    return (a, b)
+
 /-- A read-only program over schema `s`. -/
 inductive Read (s : Type) [IsSchema s] : Type → Type 1 where
   | pure : α → Read s α
@@ -25,12 +58,12 @@ inductive Read (s : Type) [IsSchema s] : Type → Type 1 where
       (id : Id α) : Read s (Option (Valid α))
   | lookup (α : Type) [Entity α] [HasUnique α] [IsSchema.Has s α]
       (ix : Unique α) (key : Unique.Key ix) : Read s (Option (Valid α))
-  | firstQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] →
-      Query s ts ρ → Read s (Option ρ)
-  | all : {ts : List Type} → {ρ : Type} → [GatherState s ts] →
-      Query s ts ρ → Read s (List ρ)
-  | pageQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] →
-      Query s ts ρ → Window → Read s (Page ρ)
+  | firstQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] → [out : QueryRow s ts ρ] →
+      Query s ts ρ → Read s (Option out.Out)
+  | all : {ts : List Type} → {ρ : Type} → [GatherState s ts] → [out : QueryRow s ts ρ] →
+      Query s ts ρ → Read s (List out.Out)
+  | pageQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] → [out : QueryRow s ts ρ] →
+      Query s ts ρ → Window → Read s (Page out.Out)
   | countQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] →
       Query s ts ρ → Read s Nat
   | existsQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] →
@@ -47,9 +80,11 @@ def «exists» {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ)
     (_h : q.exact = true := by exact_plan) : Read s Bool :=
   .existsQ q
 
-/-- `first q` requires an exact plan (no opaque leaf). -/
-def first {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ)
-    (_h : q.exact = true := by exact_plan) : Read s (Option ρ) :=
+/-- `first q` requires an exact plan (no opaque leaf). Answers `Valid α`
+    for a from-query (and `Valid α × Valid β` for a join). -/
+def first {s ts ρ} [IsSchema s] [GatherState s ts] [out : QueryRow s ts ρ]
+    (q : Query s ts ρ) (_h : q.exact = true := by exact_plan) :
+    Read s (Option out.Out) :=
   .firstQ q
 
 /-- `count q` requires an exact plan. -/
@@ -58,8 +93,9 @@ def count {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ)
   .countQ q
 
 /-- One page; the query must be exact so the window is sound. -/
-def page {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ) (w : Window)
-    (_h : q.exact = true := by exact_plan) : Read s (Page ρ) :=
+def page {s ts ρ} [IsSchema s] [GatherState s ts] [out : QueryRow s ts ρ]
+    (q : Query s ts ρ) (w : Window) (_h : q.exact = true := by exact_plan) :
+    Read s (Page out.Out) :=
   .pageQ q w
 
 /-- Unwindowed `all` may keep a Lean residual. A windowed query must go
@@ -77,10 +113,6 @@ def lookupDenote {s α} [IsSchema s] [Entity α] [HasUnique α] [IsSchema.Has s 
       some r
     else none
 
-/-- Wrap a stored row; an invalid value is not a returned row (corruption). -/
-def wrapStored {α} [Entity α] (r : Stored α) : Option (Valid α) :=
-  Valid.ofStored? r
-
 /-- Pure meaning. Total on a well-formed state. -/
 def denote {s : Type} [IsSchema s] : {α : Type} → Read s α → DbState s → α
   | _, .pure a, _ => a
@@ -89,13 +121,13 @@ def denote {s : Type} [IsSchema s] : {α : Type} → Read s α → DbState s →
       ((@DbState.get s α inferInstance _ent _has st).rows.find? (·.id == id))
   | _, @Read.lookup _ _ α _ent _hu _has ix key, st =>
       @lookupDenote s α inferInstance _ent _hu _has st ix key
-  | _, @Read.firstQ _ _ ts ρ _gs q, st =>
-      (@Query.denote s ts ρ inferInstance _gs q st)[0]?
-  | _, @Read.all _ _ ts ρ _gs q, st =>
-      (@Query.denote s ts ρ inferInstance _gs q st).toList
-  | _, @Read.pageQ _ _ ts ρ _gs q w, st =>
+  | _, @Read.firstQ _ _ ts ρ _gs _out q, st =>
+      ((@Query.denote s ts ρ inferInstance _gs q st)[0]?).bind (_out.wrap st)
+  | _, @Read.all _ _ ts ρ _gs _out q, st =>
+      ((@Query.denote s ts ρ inferInstance _gs q st).toList).filterMap (_out.wrap st)
+  | _, @Read.pageQ _ _ ts ρ _gs _out q w, st =>
       let all := @Query.denote s ts ρ inferInstance _gs { q with window := {} } st
-      { items := (w.apply all).toList, total := all.size }
+      { items := (w.apply all).toList.filterMap (_out.wrap st), total := all.size }
   | _, @Read.countQ _ _ ts ρ _gs q, st =>
       (@Query.denote s ts ρ inferInstance _gs { q with window := {} } st).size
   | _, @Read.existsQ _ _ ts ρ _gs q, st =>
@@ -122,15 +154,17 @@ def exec {s : Type} [IsSchema s] : {α : Type} → Read s α → Db α
           match Valid.ofStored? r with
           | some v => (Pure.pure (f := Db) (some v))
           | none => DbM.ofExcept (.error (.invariant (Entity.tableName α) "Valid.ofStored?"))
-  | _, @Read.firstQ _ _ ts ρ _gs q => do
+  | _, @Read.firstQ _ _ ts ρ _gs _out q => do
       let rows ← Query.exec (s := s) (ts := ts) { q with window := { q.window with limit := some 1 } }
-      return rows[0]?
-  | _, @Read.all _ _ ts ρ _gs q => do
+      match rows[0]? with
+      | none => (Pure.pure (f := Db) none)
+      | some r => some <$> _out.wrapExec r
+  | _, @Read.all _ _ ts ρ _gs _out q => do
       let rows ← Query.exec (s := s) (ts := ts) q
-      return rows.toList
-  | _, @Read.pageQ _ _ ts ρ _gs q w => do
+      rows.toList.mapM _out.wrapExec
+  | _, @Read.pageQ _ _ ts ρ _gs _out q w => do
       let total ← Query.execCount (s := s) (ts := ts) { q with window := {} }
-      let items := (← Query.exec (s := s) (ts := ts) { q with window := w }).toList
+      let items ← (← Query.exec (s := s) (ts := ts) { q with window := w }).toList.mapM _out.wrapExec
       return { items, total }
   | _, @Read.countQ _ _ ts _ρ _gs q => Query.execCount (s := s) (ts := ts) { q with window := {} }
   | _, @Read.existsQ _ _ ts _ρ _gs q => Query.execExists (s := s) (ts := ts) { q with window := {} }

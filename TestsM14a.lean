@@ -105,17 +105,17 @@ private def optTeam : Option (Stored Team) → Option (Stored Team) → Bool
   | some a, some b => teamEq a b
   | _, _ => false
 
-private def listUser (as bs : List (Stored User)) : Bool :=
-  as.length == bs.length && (as.zip bs).all fun (a, b) => userEq a b
+private def listUser (as bs : List (Valid User)) : Bool :=
+  as.length == bs.length && (as.zip bs).all fun (a, b) => userEq a.toStored b.toStored
 
-private def listPair (as bs : List (Stored User × Stored Team)) : Bool :=
+private def listPair (as bs : List (Valid User × Valid Team)) : Bool :=
   as.length == bs.length && (as.zip bs).all fun (a, b) =>
-    userEq a.1 b.1 && teamEq a.2 b.2
+    userEq a.1.toStored b.1.toStored && teamEq a.2.toStored b.2.toStored
 
-private def pageUser (a b : Page (Stored User)) : Bool :=
+private def pageUser (a b : Page (Valid User)) : Bool :=
   a.total == b.total && listUser a.items b.items
 
-private def pagePair (a b : Page (Stored User × Stored Team)) : Bool :=
+private def pagePair (a b : Page (Valid User × Valid Team)) : Bool :=
   a.total == b.total && listPair a.items b.items
 
 /-- `run r` equals `denote r (← load)`. -/
@@ -181,7 +181,7 @@ private def testEmpty : IO Unit := do
     discard <| eqRun (Read.all usersQ) listUser "empty all"
     discard <| eqRun (Read.count usersQ) (· == ·) "empty count"
     discard <| eqRun (Read.«exists» usersQ) (· == ·) "empty exists"
-    discard <| eqRun (Read.first usersQ) optUser "empty first"
+    discard <| eqRun (Read.first usersQ) optValidUser "empty first"
     discard <| eqRun (Read.page usersQ { limit := some 10 }) pageUser "empty page"
     discard <| eqRun (Read.lookup User User.Unique.byName "ada") optValidUser "empty lookup"
     discard <| eqRun (Read.all withTeam) listPair "empty join"
@@ -215,7 +215,7 @@ private def testSeeded : IO Unit := do
     check' (match got with | some r => r.id == ada.id | none => false) "lookup ada id"
     discard <| eqRun (Read.lookup User User.Unique.byEmail "grace@x") optValidUser "lookup byEmail"
     discard <| eqRun (Read.lookup User User.Unique.byName "missing") optValidUser "lookup miss"
-    discard <| eqRun (Read.first usersQ) optUser "first id-order"
+    discard <| eqRun (Read.first usersQ) optValidUser "first id-order"
     discard <| eqRun (Read.all usersQ) listUser "all users"
     discard <| eqRun (Read.all namedAda) listUser "where name"
     discard <| eqRun (Read.all namedDesc) listUser "orderBy name desc"
@@ -229,7 +229,7 @@ private def testSeeded : IO Unit := do
     discard <| eqRun (Read.all withTeam) listPair "join all"
     discard <| eqRun (Read.first withTeam withTeam_exact) (fun a b => match a, b with
       | none, none => true
-      | some x, some y => userEq x.1 y.1 && teamEq x.2 y.2
+      | some x, some y => userEq x.1.toStored y.1.toStored && teamEq x.2.toStored y.2.toStored
       | _, _ => false) "join first"
     discard <| eqRun (Read.count withTeam withTeam_exact) (· == ·) "join count"
     discard <| eqRun (Read.«exists» withTeam withTeam_exact) (· == ·) "join exists"
@@ -239,7 +239,7 @@ private def testSeeded : IO Unit := do
     discard <| eqRun (Read.page withTeam win withTeam_exact) pagePair "join page"
     discard <| eqRun (Read.first (withTeam.withWindow win withTeam_exact) withTeam_exact) (fun a b => match a, b with
       | none, none => true
-      | some x, some y => userEq x.1 y.1 && teamEq x.2 y.2
+      | some x, some y => userEq x.1.toStored y.1.toStored && teamEq x.2.toStored y.2.toStored
       | _, _ => false) "join first window"
     let prog : Read App Bool := do
       let a ← Read.get User ada.id

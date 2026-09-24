@@ -151,7 +151,7 @@ example (e : DeleteError App Team) : Nat :=
 def residualQ : Query App [User] (Stored User) :=
   { Query.from (s := App) User with pred := .opaque fun r => r.val.name == "ada" }
 
-example : Read App (List (Stored User)) := Read.all residualQ
+example : Read App (List (Valid User)) := Read.all residualQ
 
 /--
 error: could not synthesize default value for parameter '_h' using tactics
@@ -159,7 +159,7 @@ error: could not synthesize default value for parameter '_h' using tactics
 error: this query is not exact: `first`, `count`, `exists`, `page`, and a window need a plan with no opaque leaf (unwindowed `all` may keep a Lean residual). If `decide` cannot close `q.exact = true`, pass an explicit `Exact` proof.
 -/
 #guard_msgs in
-example : Read App (Option (Stored User)) := Read.first residualQ
+example : Read App (Option (Valid User)) := Read.first residualQ
 
 /--
 error: could not synthesize default value for parameter '_h' using tactics
@@ -196,7 +196,7 @@ private theorem usersJoin_exact : usersJoin.exact = true := by
   simp [Pred.andS, Query.Pred.extend, Query.joinPred, Pred.hasOpaque]
   rfl
 example : usersJoin.exact = true := usersJoin_exact
-example : Read App (Option (Stored User)) := Read.first usersExact
+example : Read App (Option (Valid User)) := Read.first usersExact
 example : Read App Nat := Read.count usersJoin usersJoin_exact
 example : Query App [User, Team] (Stored User × Stored Team) :=
   usersJoin.withWindow { limit := some 1 } usersJoin_exact
