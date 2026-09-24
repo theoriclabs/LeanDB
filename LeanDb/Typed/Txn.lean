@@ -14,8 +14,10 @@ namespace LeanDb
 
 /-- A row this transaction has seen. Carries the invariant proof from
     the read. Coerces to `Stored α` and `Valid α`. Cannot leave
-    `Txn.run` (`{σ : Type} → Txn σ s ε α`). -/
+    `Txn.run` (`{σ : Type} → Txn σ s ε α`). The constructor is private:
+    the only `Current`s are those `Txn` hands out. -/
 structure Current (σ : Type) (α : Type) [Entity α] where
+  private mk ::
   stored : Stored α
   property : Invariant α stored.val
 

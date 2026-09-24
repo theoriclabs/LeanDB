@@ -313,18 +313,16 @@ private def testD5 : IO Bool := do
     return a && f
   ) "D5"
 
-/-! ## D6: forged Current (schema membership is compile-time; see #guard_msgs) -/
+/-! ## D6: forged Current is unrepresentable; schema membership is compile-time -/
 
-private def testD6 : IO Bool := do
-  fresh dbPath
-  expectOk (← withDb dbPath specs do
-    let o ← LeanDb.insert Org ⟨"forge"⟩
-    let stale : Stored Org := ⟨o.id, ⟨"old"⟩⟩
-    cmpTxn (fun {_} => do
-        let r ← Txn.set (α := Org) ⟨stale, by unfold Invariant; trivial⟩ (ck ⟨"clobber"⟩)
-        return (match r with | .ok _ => "ok" | .error _ => "err"))
-      eqStr "D6 set on forged Current"
-  ) "D6"
+/--
+error: Invalid `⟨...⟩` notation: Constructor for `LeanDb.Current` is marked as private
+-/
+#guard_msgs in
+example {σ} (s : Stored Org) : Current σ Org :=
+  ⟨s, by unfold Invariant; trivial⟩
+
+private def testD6 : IO Bool := pure true
 
 /-! ## D7: Nat above Int64.max -/
 
@@ -475,7 +473,7 @@ def run : IO Unit := do
   check d3 "D3 Option Ref: missingRef / restricted in both"
   check d4 "D4 append: list CAS and parent unique/FK"
   check d5 "D5 ClosedEnum orderBy: Lean sort in both"
-  check d6 "D6 forged Current: run equals denote (both skip CAS); constructor is still public"
+  check d6 "D6 Current constructor is private; Has is required"
   check (!d7) "D7 still reproduces (set of Nat 2^63 is a DbFault; patch clamps in both)"
   check (!d8) "D8 still reproduces (first after limit 0)"
   check (!d9) "D9 still reproduces (quantifier on the left of join is dropped)"
