@@ -89,7 +89,7 @@ elab "#check_m15_axioms" : command => do
   -- M15b: well-formedness
   assertAxioms ``LeanDb.Table.check_nil
   assertAxioms ``LeanDb.Table.invariantsOk_valid
-  assertAxioms ``LeanDb.Txn.denote_wf
+  assertAxioms ``LeanDb.Txn.denote_wf_of_unchanged
   assertAxioms ``LeanDb.Txn.denote_readOnly_wf
   assertAxioms ``LeanDb.Txn.denote_throw_wf
   assertAxioms ``LeanDb.Txn.insert_wf_of_fail

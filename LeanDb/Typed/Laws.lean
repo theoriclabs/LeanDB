@@ -783,11 +783,13 @@ theorem Txn.assign_invariantsOk {s α} [IsSchema s] [Entity α] [h : IsSchema.Ha
     (DbState.get (α := α) (assign st c).2).invariantsOk = true :=
   Table.invariantsOk_valid _
 
-/-- `WF` is preserved when the meaning leaves the state unchanged.
-    Successful-write `idsOk`/`uniquesOk`/`fksOk`, cascade `WF`, and a
-    generic `empty_wf` are the remainder in `docs/typed-interface.md`.
-    `loadWF` is the runtime `checkWF` gate. -/
-theorem Txn.denote_wf {σ s ε α} [IsSchema s]
+/-- `WF` is preserved when the meaning leaves the state unchanged
+    (reads, `throw`, failed writes). The name `denote_wf` is reserved
+    for the whole-program law without an equality hypothesis; that law
+    needs every write's preservation lemma. `insert_wf` is proved;
+    `update`/`set`/`patch`/`append`/`delete` and the generic program
+    theorem are the remainder in `docs/typed-interface.md`. -/
+theorem Txn.denote_wf_of_unchanged {σ s ε α} [IsSchema s]
     (p : Txn σ s ε α) (st : DbState s) (hwf : st.WF)
     (heq : (Txn.denote p st).2 = st) :
     (Txn.denote p st).2.WF := by
@@ -797,7 +799,7 @@ theorem Txn.denote_wf {σ s ε α} [IsSchema s]
 theorem Txn.denote_readOnly_wf {σ s ε α} [IsSchema s]
     {p : Txn σ s ε α} (h : Txn.ReadOnly p) (st : DbState s) (hwf : st.WF) :
     (Txn.denote p st).2.WF :=
-  Txn.denote_wf p st hwf (Txn.denote_readOnly h st)
+  Txn.denote_wf_of_unchanged p st hwf (Txn.denote_readOnly h st)
 
 theorem Txn.denote_throw_wf {σ s ε α} [IsSchema s]
     (e : ε) (st : DbState s) (hwf : st.WF) :

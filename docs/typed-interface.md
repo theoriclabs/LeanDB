@@ -330,13 +330,28 @@ unwindowed admitted-row equality plus `wrap` agreement.
 ### Well-formedness
 
 ```lean
-Table.check_nil : empty table is locally WF
-Table.invariantsOk_valid : every Table of Valid rows has invariantsOk
-Txn.denote_wf : st.WF → (denote p st).2 = st → (denote p st).2.WF
+Table.nextOk : 1 ≤ next ∧ next ≤ natSqlMax + 1
+Table.check : nextOk && idsOk && refsOk && … && uniquesOk
+DbState.empty_wf : (DbState.empty).WF
+Txn.insert_wf [HasPack s α] [LawfulEntity α] :
+  st.WF → (denote (.insert α v) st).2.WF
+Txn.assign_wf : the successful-insert state is WF
+  (`nextOk` so `Int64.ofNat next` does not wrap; wrap at
+  `next = 0 ∨ natSqlMax < next` leaves the table unchanged)
+Txn.denote_wf_of_unchanged :
+  st.WF → (denote p st).2 = st → (denote p st).2.WF
 Txn.denote_readOnly_wf / denote_throw_wf / insert_wf_of_fail
 class LawfulEntity α : decode_encode and children_attach
+class IsSchema.HasPack s α : packed HasUnique / HasForeignKey
+  equal the instances in scope (`schema%` generates `rfl`)
 Txn.assign_invariantsOk : insert preserves invariantsOk
 ```
+
+`HasPack` is required so `Table.check` of `get` matches `checkPacked`
+of `id`. `insert_wf` uses `nextOk` (`1 ≤ next ≤ natSqlMax + 1`) so
+`idsOk` of `ofNat next` is in range; `uniquesOk` / `fksOk` from the
+clash walks being `none`; `decodesOk` / `childrenOk` from
+`LawfulEntity`.
 
 `DbState.load` checks the entity invariant on every decoded row
 (`Valid.ofStoredM`) but not unique indexes or foreign keys.
@@ -346,17 +361,26 @@ created and changed only by LeanDB is `WF`.
 
 **Not proved (strongest sound remainder):**
 
-- Generic `DbState.empty_wf` (`checkPacked` at an abstract `pack t`).
-  `Table.check_nil` and `Table.fksOk_nil` are the local facts.
-- Successful `insert`/`update`/`set`/`patch`/`append` preserve full
-  `checkWF` (`idsOk` of `ofNat next` needs `1 ≤ next ≤ natSqlMax`;
-  `uniquesOk`/`fksOk` from `firstDuplicate`/`firstMissingRef`;
-  `decodesOk`/`childrenOk` from `LawfulEntity`).
+- The whole-program law `Txn.denote_wf : st.WF → (denote p st).2.WF`
+  (no equality hypothesis). The name is reserved; part 1's version is
+  `denote_wf_of_unchanged`. A proof by induction needs a WF lemma for
+  every write, plus `LawfulEntity` / `HasPack` at the *written* type
+  (not the program's result type). `schema%` generates `HasPack`;
+  `LawfulEntity` instances are not generated (item 6).
+- Successful `update` / `set` / `patch` / `append` (`replaceRow` /
+  `replaceValid`). `uniquesOk` after an in-place replace needs
+  `(enc ≠ enc') → (enc' ≠ enc)` on `Array Col`; `Col.real` uses
+  `Float.beq` (`extern`), so commutativity is not a theorem.
 - Successful `delete` / cascade `WF` (restrict + cascade graph).
 - `get` after insert/delete as a `find?` lemma (append-right of a
-  fresh id; `removeRow` filter).
+  fresh id; `removeRow` filter). Ids not reused after delete (`next`
+  only grows).
+- Failure `iff` for `update` / `set` / `patch` / `append` / `delete`.
+- `Read.Scoped` induction and the frame for a delete that succeeds.
 - Structural `approx = pred` (denotational equality is proved).
 - `LawfulColCodec Nat` / `Float` (bounded / finite theorems instead).
+- `LawfulEntity` / `LawfulColCodec` instances for derived entities
+  and remaining built-in types.
 - `run p = denote p` — that is `ExecutesAsMeaning`, M15a, not this task.
 
 ## Remaining deviations
@@ -393,12 +417,17 @@ Relative to QUERIES.md §3 / §5. Not silently weakened.
 - **`Touching` / `Within` / `Restricting` are `if`/`Empty`, not
   generated inductives.** They reduce to `Empty` when nothing applies,
   which is what exhaustive match and `IsEmpty` need in Lean 4.33.
-- **WF preservation is proved for unchanged states.** `Txn.denote_wf`
-  when `(denote p st).2 = st` (reads, `throw`, failed writes). Empty
-  tables satisfy `Table.check_nil`. Successful-write `idsOk` /
-  `uniquesOk` / `fksOk` and cascade `WF` are the remainder below.
-  `ExecutesAsMeaning` is the named hypothesis for the SQLite half; it
-  is not an axiom. `DbState.loadWF` is the runtime `checkWF` gate.
+- **WF preservation is proved for `empty` and for `insert`.**
+  `DbState.empty_wf`. `Txn.insert_wf` (needs `HasPack` and
+  `LawfulEntity`): success uses `nextOk` so `ofNat next` does not wrap,
+  clash walks for `uniquesOk`/`fksOk`, and `LawfulEntity` for
+  `decodesOk`/`childrenOk`; failure leaves the state unchanged.
+  `Txn.denote_wf_of_unchanged` when `(denote p st).2 = st`. The name
+  `denote_wf` is reserved for the whole-program law without an equality
+  hypothesis. Successful `update`/`set`/`patch`/`append`/`delete` and
+  that program theorem are the remainder above. `ExecutesAsMeaning` is
+  the named hypothesis for the SQLite half; it is not an axiom.
+  `DbState.loadWF` is the runtime `checkWF` gate.
 - **`Ref` inside a child-list record is refused at `schema%` / `typed%`.**
   SQLite would enforce those FKs; the typed `ForeignKey` layer would
   not. Put the reference on a schema table.

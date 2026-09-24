@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **M15b2.** `Table.nextOk` (`1 ≤ next ≤ natSqlMax + 1`) is in `Table.check`.
+  `assign` does not wrap `Int64.ofNat`. `DbState.empty_wf`.
+  `Txn.insert_wf`: on a `WF` state, `insert` yields a `WF` state
+  whether it succeeds or fails (`HasPack`, `LawfulEntity`). Part 1's
+  `Txn.denote_wf` is renamed `denote_wf_of_unchanged`; the name
+  `denote_wf` is reserved for the whole-program law (remainder).
 - **M15b.** Laws LeanAPI theorems need, in `LeanDb/Typed/Laws.lean`.
   Exact plans are denotational (`approx.denote = pred.denote` when there
   is no opaque leaf). Aggregates are `count = size ∘ rows`,
@@ -10,11 +16,8 @@
   bounded to `natSqlMax`. Reads do not write (`Txn.ReadOnly`). Failure
   exactness is `iff` against `firstDuplicate` / `firstMissingRef` in
   declaration order. Table frames (`get_set_other` lifted to each write)
-  and query frames (`denote_eq_of_admitted`, including joins). `WF` is
-  preserved when the meaning leaves the state unchanged; `loadWF` is
-  the runtime `checkWF` gate. Remainder (successful-write `idsOk`/
-  `fksOk`, cascade `WF`, `empty_wf`) is listed in
-  `docs/typed-interface.md`.
+  and query frames (`denote_eq_of_admitted`, including joins). Remainder
+  is listed in `docs/typed-interface.md`.
 - **M15a.** Meaning agrees with SQLite on the M14 review findings D1–D10.
   Child lists are in `DbState.snapshot`; two-level cascade already
   agreed (`deleteAt`); `Option (Ref)` is a typed FK and child-list
