@@ -26,3 +26,4 @@ import LeanDb.Typed.State
 import LeanDb.Typed.Query
 import LeanDb.Typed.Fault
 import LeanDb.Typed.Read
+import LeanDb.Typed.Write
