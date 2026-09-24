@@ -74,6 +74,34 @@ example (e : InsertError Account) : Nat :=
   match e with
   | .duplicate .byName _ => 0
 
+inductive RegisterError where
+  | invalid
+  | nameTaken
+  deriving Repr, DecidableEq
+
+/-- QUERIES.md §3.6 register: a clash on the name is a typed domain failure. -/
+def register {σ} (u : Account) : Txn σ Unit RegisterError (Current σ Account) := do
+  let c ← Entity.check Account u |>.orAbort fun _ => .invalid
+  Txn.insert (α := Account) c |>.orAbort fun
+    | .duplicate .byName _ => .nameTaken
+
+inductive NoteError where
+  | notFound
+  | hasUsers (k : Nat)
+  deriving Repr, DecidableEq
+
+/-- QUERIES.md §3.6 delete: who blocks it is in the type. -/
+def deleteTeam {σ} (id : _root_.LeanDb.Id Team) : Txn σ App NoteError Unit := do
+  let _ ← Txn.delete (α := Team) id |>.orAbort fun
+    | .gone => .notFound
+    | .restricted .user_team k => .hasUsers k
+  return ()
+
+/-- `insertNew` is available for `Team` (no unique, no `Ref`). -/
+def addTeam {σ} (t : Team) : Txn σ App Empty (_root_.LeanDb.Id Team) := do
+  let row ← Txn.insertNew (Checked.of t (by unfold Invariant; trivial))
+  return row.id
+
 /-- `User` has unique indexes, so `IsEmpty (InsertError User)` is not found.
     This would fail to elaborate: `insertNewOk (α := User) …`. -/
 example (e : InsertError User) : Nat :=
