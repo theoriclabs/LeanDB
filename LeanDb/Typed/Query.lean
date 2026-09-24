@@ -91,13 +91,30 @@ def andSort (a b : SortBy ρ) : SortBy ρ :=
   | .preserve => b
   | _ => .andThen a b
 
+/-- Whether an order key's encoding is SQLite's order, so `ORDER BY` is
+    sound. Closed enums have `Ord` (constructor order) but store as
+    names, so they are sorted in Lean. -/
+class PushOrder (α : Type) where
+  push : Bool
+
+instance (priority := 100) {α : Type} [SqlOrd α] : PushOrder α where
+  push := true
+
+instance (priority := 50) {α : Type} : PushOrder α where
+  push := false
+
 /-- One typed order key, composed after any already set. The id tiebreak
-    is added by `finishRows` / SQL `, id ASC`. The field must have `Ord`. -/
+    is added by `finishRows` / SQL `, id ASC`. The field must have `Ord`.
+    A pushed `ORDER BY` needs `SqlOrd`; other keys are sorted in Lean. -/
 def orderBy {s α} [Entity α] (q : Query s [α] (Stored α)) (k : OrderKey α)
-    [Ord (Entity.fieldTy k.field)] : Query s [α] (Stored α) :=
+    [Ord (Entity.fieldTy k.field)] [po : PushOrder (Entity.fieldTy k.field)] :
+    Query s [α] (Stored α) :=
   { q with
     sortBy := andSort q.sortBy (keySort k)
-    order := q.order.push { column := Entity.fieldName k.field, dir := k.dir } }
+    order :=
+      if po.push then
+        q.order.push { column := Entity.fieldName k.field, dir := k.dir }
+      else q.order }
 
 def withWindow {s ts ρ} (q : Query s ts ρ) (w : Window)
     (_h : q.exact = true := by exact_plan) : Query s ts ρ :=
@@ -163,10 +180,17 @@ def denote {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ)
   let rows := @finishRows ts q.rowsOf gathered (q.pred.denote snap) q.sortBy
   q.window.apply (rows.map q.toRow)
 
-/-- Compilation: `selectP` pushes LIMIT/OFFSET only when the plan is exact.
-    Non-exact plans apply the window in Lean after the residual filter. -/
+/-- Compilation: `selectP` pushes LIMIT/OFFSET only when the plan is exact
+    *and* every order key was pushed (`SqlOrd`). A Lean-only sort (closed
+    enum) fetches without a SQL window, sorts, then applies the window. -/
+def leanSorted {s ts ρ} (q : Query s ts ρ) : Bool :=
+  q.order.isEmpty &&
+    match q.sortBy with
+    | .preserve => false
+    | _ => true
+
 def exec {s ts ρ} (q : Query s ts ρ) : Db (Array ρ) := do
-  if q.exact then
+  if q.exact && !leanSorted q then
     let rows ← @selectP ts q.rowsOf q.pred q.sortBy q.order q.window
     return rows.map q.toRow
   else

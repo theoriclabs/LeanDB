@@ -474,7 +474,7 @@ def run : IO Unit := do
   check d2 "D2 two-level cascade already agrees (M15-pre2 deleteAt)"
   check d3 "D3 Option Ref: missingRef / restricted in both"
   check d4 "D4 append: list CAS and parent unique/FK"
-  check (!d5) "D5 still reproduces (ClosedEnum orderBy all)"
+  check d5 "D5 ClosedEnum orderBy: Lean sort in both"
   check d6 "D6 forged Current: run equals denote (both skip CAS); constructor is still public"
   check (!d7) "D7 still reproduces (set of Nat 2^63 is a DbFault; patch clamps in both)"
   check (!d8) "D8 still reproduces (first after limit 0)"
