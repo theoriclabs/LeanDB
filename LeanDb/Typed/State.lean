@@ -303,11 +303,33 @@ def DbState.rows {s α : Type} [IsSchema s] [Entity α] [IsSchema.Has s α]
     (st : DbState s) : Array (Stored α) :=
   ((st.get (α := α)).rows.map Valid.toStored).toArray
 
-/-- A `Pred.Snapshot` of every table, for quantifier denotation. -/
+/-- Encoded child-table rows of one parent table, from the lists already
+    attached on each parent. One snapshot slot per child table, so
+    `any`/`all` over a list see the same rows SQL's `EXISTS` does. -/
+def Table.childSnapshot {α : Type} [Entity α] (t : Table α) (snap : Pred.Snapshot) :
+    Pred.Snapshot :=
+  (Entity.children (α := α)).foldl (init := snap) fun snap link =>
+    let raw : Array (Int64 × Array Col) := Id.run do
+      let mut out : Array (Int64 × Array Col) := #[]
+      let mut n : Nat := 1
+      for r in t.rows do
+        let recs := link.rows r.val
+        for hi : i in [0:recs.size] do
+          let cols := recs[i]
+          out := out.push
+            (Int64.ofNat n, #[.int r.id.toInt64, .int (Int64.ofNat i)] ++ cols)
+          n := n + 1
+      return out
+    Pred.Snapshot.addRaw snap link.table raw
+
+/-- A `Pred.Snapshot` of every schema table and every attached child list,
+    for quantifier denotation. -/
 def DbState.snapshot {s : Type} [i : IsSchema s] (st : DbState s) : Pred.Snapshot :=
   i.tables.foldl (init := Pred.Snapshot.empty) fun snap t =>
     let p := i.pack t
-    @Pred.Snapshot.add snap p.ty p.entity
-      ((@Table.rows p.ty p.entity (st.tables t)).map (@Valid.toStored p.ty p.entity)).toArray
+    let tbl := st.tables t
+    let snap := @Pred.Snapshot.add snap p.ty p.entity
+      ((@Table.rows p.ty p.entity tbl).map (@Valid.toStored p.ty p.entity)).toArray
+    @Table.childSnapshot p.ty p.entity tbl snap
 
 end LeanDb

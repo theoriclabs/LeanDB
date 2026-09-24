@@ -199,6 +199,9 @@ private def eqAppLabels :
 private def bagsWithX : Query S [Bag] (Stored Bag) :=
   (Query.from Bag).where' (fun b => b.val.items.any (fun i => i.label == "x"))
 
+private def bagsAllX : Query S [Bag] (Stored Bag) :=
+  (Query.from Bag).where' (fun b => b.val.items.all (fun i => i.label == "x"))
+
 private def namesOf (xs : List (Valid Bag)) : List String := xs.map (·.val.name)
 
 private def testD1 : IO Bool := do
@@ -206,10 +209,14 @@ private def testD1 : IO Bool := do
   expectOk (← withDb dbPath specs do
     let _ ← LeanDb.insert Bag ⟨"hasX", [⟨"x"⟩]⟩
     let _ ← LeanDb.insert Bag ⟨"noX", [⟨"y"⟩]⟩
+    check' bagsWithX.exact "D1 any should be exact"
+    check' bagsAllX.exact "D1 all should be exact"
     let a ← cmpRead (Read.all bagsWithX)
-      (fun x y => namesOf x == namesOf y) "D1 all"
+      (fun x y => namesOf x == namesOf y) "D1 any"
     let c ← cmpRead (Read.count bagsWithX) (· == ·) "D1 count"
-    return a && c
+    let al ← cmpRead (Read.all bagsAllX)
+      (fun x y => namesOf x == namesOf y) "D1 forall"
+    return a && c && al
   ) "D1"
 
 /-! ## D2: cascades more than one level -/
@@ -363,6 +370,8 @@ private def crewsX : Query S [Crew] (Stored Crew) :=
 private def crewsXJoin : Query S [Crew, Team] (Stored Crew × Stored Team) :=
   crewsX.join Crew.ForeignKey.team
 
+/-- Join after a child-list filter: `true` only when run equals denote
+    *and* the matching crew is present (both sides used to drop it). -/
 private def testD9 : IO Bool := do
   fresh dbPath
   expectOk (← withDb dbPath specs do
@@ -372,10 +381,18 @@ private def testD9 : IO Bool := do
     check' crewsX.exact "D9 crewsX should be exact (quantifier is a plan leaf)"
     let a ← cmpRead (Read.all crewsX)
       (fun x y => (x.map (·.val.name)) == (y.map (·.val.name))) "D9 crewsX"
-    let j ← cmpRead (Read.all crewsXJoin)
-      (fun x y => (x.map (·.1.val.name)) == (y.map (·.1.val.name))) "D9 join"
-    IO.println s!"  D9 exact(after join)={crewsXJoin.exact}"
-    return a && j
+    let st ← DbState.load (s := S)
+    let wantJoin := (Read.denote (s := S) (Read.all crewsXJoin) st).map (·.1.val.name)
+    let gotJoin ← match ← Read.run (s := S) (Read.all crewsXJoin) with
+      | .error f =>
+          IO.println s!"  D9 join: DISAGREE run=DbFault {f}"
+          pure ([] : List String)
+      | .ok got => pure (got.map (·.1.val.name))
+    let jAgree := gotJoin == wantJoin
+    let jKept := wantJoin == ["cx"] && gotJoin == ["cx"]
+    IO.println s!"  D9 join: agree={jAgree} kept={jKept} exact={crewsXJoin.exact} denote={wantJoin} run={gotJoin}"
+    -- D9 itself is the join keeping the quantifier; crewsX is D1.
+    return jKept && jAgree && a
   ) "D9"
 
 /-! ## D10: patch that breaks a mixed invariant -/
@@ -436,7 +453,7 @@ def run : IO Unit := do
   -- Pinned against `79cfbcc` (M15-pre2). `true` = run equals denote
   -- on answer, failure payload, and tables. Flipped to `true` as each
   -- finding is fixed.
-  check (!d1) "D1 still reproduces (child-list any/all)"
+  check d1 "D1 child-list any/all: run equals denote"
   check d2 "D2 two-level cascade already agrees (M15-pre2 deleteAt)"
   check (!d3) "D3 still reproduces (Option Ref)"
   check (!d4) "D4 still reproduces (append)"
@@ -444,7 +461,7 @@ def run : IO Unit := do
   check d6 "D6 forged Current: run equals denote (both skip CAS); constructor is still public"
   check (!d7) "D7 still reproduces (set of Nat 2^63 is a DbFault; patch clamps in both)"
   check (!d8) "D8 still reproduces (first after limit 0)"
-  check (!d9) "D9 still reproduces (quantifier then join; crewsX disagrees, join both drop the filter)"
+  check (!d9) "D9 still reproduces (quantifier on the left of join is dropped)"
   check (!d10) "D10 still reproduces (mixed-invariant patch is DbFault vs .gone)"
   IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10}"
 
