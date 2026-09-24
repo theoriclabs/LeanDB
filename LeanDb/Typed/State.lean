@@ -190,6 +190,14 @@ theorem DbState.get_set_other {s α β : Type} [i : IsSchema s]
   unfold DbState.get DbState.set
   simp [dif_neg (Ne.symm hneq)]
 
+/-- `set` is function update: every packed slot except `α`'s is unchanged. -/
+theorem DbState.set_tables_other {s α : Type} [i : IsSchema s] [Entity α]
+    [h : IsSchema.Has s α] (st : DbState s) (tbl : Table α)
+    (t : Fin i.nTables) (hne : t ≠ h.id) :
+    (st.set (α := α) tbl).tables t = st.tables t := by
+  unfold DbState.set
+  simp [dif_neg hne]
+
 theorem DbState.empty_rows {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] :
     (DbState.get (α := α) (DbState.empty (s := s))).rows = [] := by
@@ -290,6 +298,16 @@ def DbState.checkWF {s : Type} [i : IsSchema s] (st : DbState s) : Bool :=
 /-- Every row decodes and is `Checked`, and every constraint holds. -/
 def DbState.WF {s : Type} [i : IsSchema s] (st : DbState s) : Prop :=
   DbState.checkWF st = true
+
+/-- `load` plus a `checkWF` gate. `load` itself checks the entity
+    invariant on every decoded row (`Valid.ofStoredM`) but not unique
+    indexes or foreign keys; this wrapper refuses a state that is not
+    `WF`. LeanDB writes preserve `WF` (see `LeanDb.Typed.Laws`). -/
+def DbState.loadWF {s : Type} [i : IsSchema s] : Db (DbState s) := do
+  let st ← DbState.load
+  unless st.checkWF do
+    throw (.invariant "schema" "checkWF")
+  return st
 
 /-- Total number of rows across every schema table. Bounds `deleteCascading`. -/
 def DbState.rowCount {s : Type} [i : IsSchema s] (st : DbState s) : Nat :=

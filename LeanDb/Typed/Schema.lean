@@ -415,6 +415,21 @@ def Valid.ofStored? {α : Type} [Entity α] (r : Stored α) : Option (Valid α) 
 def Valid.ofChecked {α : Type} [Entity α] (id : Id α) (c : Checked α) : Valid α :=
   ⟨⟨id, c.val⟩, c.property⟩
 
+/-- Parent `encode`/`decode` round-trips and child lists re-attach. Derived
+    entities satisfy this by construction; a custom `Entity` may omit the
+    instance and still typecheck, but cannot be used where a proof needs
+    `decodesOk` / `childrenOk` of a written row (the `LawfulColCodec`
+    pattern, for entities). -/
+class LawfulEntity (α : Type) [Entity α] : Prop where
+  decode_encode : ∀ v : α,
+    match Entity.decode (Entity.encode v) with
+    | .ok w => Entity.encode (α := α) w == Entity.encode (α := α) v
+    | .error _ => False
+  children_attach : ∀ v : α,
+    (Entity.children (α := α)).all fun link =>
+      let pairs := (link.rows v).zipIdx.map fun (cols, i) => (i, cols)
+      (link.attach pairs v).isOk
+
 /-! ## `unique` / `schema` commands -/
 
 structure UniqueEntry where
