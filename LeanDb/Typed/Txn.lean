@@ -634,6 +634,25 @@ def run {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) :
 
 end Txn
 
+/-- When `Read.run` / `Txn.run` complete without a `DbFault` on a
+    well-formed loaded state, the answer (including the typed failure
+    constructor and its payload) and the final tables (`load` / `get`)
+    equal `denote`, and `checkWF` holds afterwards.
+
+    This is a named `Prop` for LeanAPI to take as a hypothesis (LAPI-06).
+    It is **not** an `axiom` and is **not** proved: it is a statement
+    about SQLite. The evidence is the M15a harness (`TestsM15a.lean`):
+    572 fixed-seed cases over a schema with child lists, a nullable
+    `Ref`, a closed enum used in `orderBy`, a two-level cascade, a
+    restrict key, unique indexes and foreign keys; random
+    `insert` / `update` / `set` / `patch` / `append` / `delete` /
+    `orElse` / `throw` and reads inside a `Txn` after writes; states of
+    up to about 30 rows per table. Each case compares answer, failure
+    payload, and tables, and asserts `checkWF` before and after.
+
+    There is no instance: a client assumes `ExecutesAsMeaning s`. -/
+class ExecutesAsMeaning (s : Type) [IsSchema s] : Prop
+
 /-- Run a `Txn` on the writer connection under `BEGIN IMMEDIATE`. -/
 def Runtime.Service.runTxn {s ε α} [IsSchema s] (svc : Runtime.Service)
     (p : {σ : Type} → Txn σ s ε α) : IO (Except DbFault (Except ε α)) := do
