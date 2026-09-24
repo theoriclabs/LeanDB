@@ -211,6 +211,26 @@ def patchEmailOnly {σ} (id : _root_.LeanDb.Id User) (new : Checked User) :
       | .error e => return .error e
       | .ok row => return .ok row.toStored
 
+/-- Changing email keeps the name, so `row.property` proves the new row. -/
+private theorem User.email_preserves (u : User) (email : String)
+    (h : Invariant User u) : Invariant User { u with email } := by
+  unfold Invariant at h ⊢
+  have heq : Entity.invariant (α := User) = some ("TestsM14c.User.invariant", User.invariant) := rfl
+  rw [heq] at h ⊢
+  simpa [User.invariant] using h
+
+/-- LeanAPI `writeStep`: `Read.first` on a filtered query, then
+    `Txn.update` with `Checked.of` from `row.property`. No
+    `if … invariant … then … else`. -/
+def writeEmail {σ} (want : String) (newEmail : String) :
+    Txn σ App Empty (Option (Except (UpdateError User) (Stored User))) := do
+  let q := (Query.from (s := App) User).where' fun u => u.val.name == want
+  match ← Txn.liftRead (Read.first q) with
+  | none => return none
+  | some row =>
+      let new : User := { row.val with email := newEmail }
+      some <$> Txn.update (α := User) row (Checked.of new (User.email_preserves row.val newEmail row.property))
+
 /-- Meaning: a non-written field in `new` does not replace the stored one. -/
 private def testPatchMergeDenote : IO Unit := do
   let st0 := DbState.empty (s := App)
@@ -430,11 +450,125 @@ private def testDeleteCascade : IO Unit := do
   ) "delete cascade"
   IO.println s!"M14c delete harness cases: {n}"
 
+private def eqInsUser :
+    Except Empty (Except (InsertError User) (Stored User)) →
+    Except Empty (Except (InsertError User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x y && h1 == h2
+    | .error (.missingRef x), .error (.missingRef y) => fkUserEq x y
+    | _, _ => false
+
+private def eqUpdUser :
+    Except Empty (Except (UpdateError User) (Stored User)) →
+    Except Empty (Except (UpdateError User) (Stored User)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => storedEq a b
+    | .error .gone, .error .gone => true
+    | .error (.stale a), .error (.stale b) => storedEq a b
+    | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x y && h1 == h2
+    | .error (.missingRef x), .error (.missingRef y) => fkUserEq x y
+    | _, _ => false
+
+private def eqWriteEmail :
+    Except Empty (Option (Except (UpdateError User) (Stored User))) →
+    Except Empty (Option (Except (UpdateError User) (Stored User))) → Bool :=
+  eqEmpty fun
+    | none, none => true
+    | some a, some b =>
+        match a, b with
+        | .ok x, .ok y => storedEq x y
+        | .error .gone, .error .gone => true
+        | .error (.stale x), .error (.stale y) => storedEq x y
+        | .error (.duplicate x h1), .error (.duplicate y h2) => uniqueUserEq x y && h1 == h2
+        | .error (.missingRef x), .error (.missingRef y) => fkUserEq x y
+        | _, _ => false
+    | _, _ => false
+
+private def eqJoinList :
+    Except Empty (List (Valid User × Valid Team)) →
+    Except Empty (List (Valid User × Valid Team)) → Bool :=
+  eqEmpty fun as bs =>
+    as.length == bs.length &&
+      (as.zip bs).all fun (a, b) => validEq a.1 b.1 && validEq a.2 b.2
+
+/-- Random M14c programs: field-subset patch, exact join, cascade delete,
+    and `writeEmail` (`Read.first` then `Txn.update` from `row.property`).
+    Each case compares `run` to `denote` and `load` to `denote` through `get`. -/
+private def harnessRandom (seed : Nat) : DbM Nat := do
+  let mut rng := Rng.ofNat seed
+  let mut n := 0
+  eqTxn (fun {_} => do
+      let row ← Txn.insertNew
+        (Checked.of (⟨s!"eng{seed}"⟩ : Team) (by unfold Invariant; trivial))
+      return row.toStored)
+    (eqEmpty storedEq) s!"H{seed} team"
+  n := n + 1
+  let st ← DbState.load (s := App)
+  let team ← match (DbState.get (α := Team) st).rows.head? with
+    | some t => pure t
+    | none => throw (.sqlite "FAIL: team missing")
+  for i in [0:4] do
+    let name := if i == 0 then "ada" else s!"u{seed}_{i}"
+    let email := s!"e{seed}_{i}@x"
+    let c ← match mustCheck ⟨name, email, team.id, [⟨"t"⟩]⟩ with
+      | .ok c => pure c
+      | .error e => throw (.sqlite e)
+    eqTxn (fun {_} => do
+        let r ← Txn.insert (α := User) c
+        return r.map Current.toStored)
+      eqInsUser s!"H{seed} user {i}"
+    n := n + 1
+  let st ← DbState.load (s := App)
+  let users := (DbState.get (α := User) st).rows
+  for u in users do
+    let note := Checked.of (⟨s!"n{u.val.name}", u.id⟩ : Note)
+      (by unfold Invariant; trivial)
+    eqTxn (fun {_} => do
+        let r ← Txn.insert (α := Note) note
+        return r.map Current.toStored)
+      eqInsNote s!"H{seed} note {u.val.name}"
+    n := n + 1
+  for u in users do
+    let (r1, k) := rng.nat 0 99
+    rng := r1
+    let bogus ← match mustCheck ⟨"zzz", s!"p{seed}_{k}@x", team.id, [⟨"gone"⟩]⟩ with
+      | .ok c => pure c
+      | .error e => throw (.sqlite e)
+    eqTxn (patchEmailOnly u.id bogus)
+      (eqSet (Fields.singleton User.Field.email))
+      s!"H{seed} patch {u.val.name}"
+    n := n + 1
+  for u in users do
+    eqTxn (Txn.ofRead (Read.get User u.id)) (eqEmpty optValidEq)
+      s!"H{seed} get {u.val.name}"
+    n := n + 1
+  eqTxn (Txn.ofRead (Read.all usersJoin)) eqJoinList
+    s!"H{seed} join"
+  n := n + 1
+  eqTxn (writeEmail "ada" s!"w{seed}@x") eqWriteEmail s!"H{seed} writeEmail"
+  n := n + 1
+  match users[0]? with
+  | none => pure ()
+  | some u =>
+      eqTxn (Txn.delete (α := User) u.id) eqDelUser s!"H{seed} cascade"
+      n := n + 1
+  return n
+
+private def testM14cRandom : IO Unit := do
+  let mut n := 0
+  for seed in [0:5] do
+    fresh dbPath
+    n := n + (← expectOk (← withDb dbPath specs (harnessRandom seed))
+      s!"M14c random {seed}")
+  IO.println s!"M14c random harness cases: {n}"
+
 def run : IO Unit := do
   testPatchMergeDenote
   testCheckWF
   testPatchSurvivesHarness
   testDeleteCascade
+  testM14cRandom
   testRunRead
   check (!ForeignKey.anyWithin (α := User) (Fields.singleton User.Field.email))
     "email patch does not touch a Ref"
