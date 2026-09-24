@@ -424,6 +424,13 @@ failed: {re.message}"
   let r ← try (act conn).run catch e => pure (.error (.sqlite (toString e)))
   finish r
 
+/-- A consistent deferred read snapshot (`BEGIN DEFERRED … COMMIT`).
+    Nested calls join the open transaction. Multi-statement reads that
+    must see one WAL snapshot use this; the engine's own `get` /
+    `fetchAll` / `selectP` already do. Public so adapters need not
+    rebuild it (LDB-24). -/
+def readSnapshot (act : DbM α) : DbM α := transaction act
+
 /-- How many parent ids one child fetch names: SQLite's default parameter
     limit is far above this, and the statement text stays small. -/
 private def childChunk : Nat := 500

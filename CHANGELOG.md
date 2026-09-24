@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **LDB-24.** `readSnapshot` is public: a deferred `BEGIN DEFERRED`
+  snapshot for multi-statement reads, so adapters need not rebuild one.
 - **LDB-23.** `Pred.Snapshot.rows` fails on an undecodable row instead of
   dropping it (which made `forall` vacuously true over corrupt data).
 - **LDB-22.** `count` / `exists?` apply the lambda, not only the plan, so
