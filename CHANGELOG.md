@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **M15a.** Meaning agrees with SQLite on the M14 review findings D1–D10.
+  Child lists are in `DbState.snapshot`; two-level cascade already
+  agreed (`deleteAt`); `Option (Ref)` is a typed FK and child-list
+  `Ref`s are refused at `schema%`; `append` CAS compares list contents
+  and checks parent unique/FK; `orderBy` pushes SQL only for `SqlOrd`
+  (closed enums sort in Lean); `Current` has a private constructor;
+  `Nat` above `Int64.max` is not `Checked`; `first` after `limit := 0`
+  is `none` and huge windows apply in Lean; a join keeps a left-side
+  quantifier; mixed-invariant `patch` is `SetError.invalid`;
+  `UpdateError.stale` `BEq` compares payloads; issued ids are positive
+  (`Id.toNat`, `Table.refsOk`). `LeanDb.ExecutesAsMeaning s` is the
+  named hypothesis for LeanAPI (not an axiom). Harness: 572 fixed-seed
+  cases. Docs: `docs/typed-interface.md`.
 - **M15-pre.** `DbState` is a lawful `(t : Fin nTables) → Table (pack t).ty`
   with no `unsafe` / `implemented_by` in `LeanDb/Typed`. `get` / `set` /
   `load` are the executed definitions; `get_set_same`, `get_set_other`,

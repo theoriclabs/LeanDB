@@ -1,4 +1,4 @@
-# Typed interface (M14 / M15-pre)
+# Typed interface (M14 / M15-pre / M15a)
 
 LeanDB programs as values: a read has a pure meaning over `DbState`, and
 execution is one deferred snapshot. Writes and transaction programs have
@@ -168,9 +168,9 @@ Gaps against QUERIES.md §3 / §5, closed on this branch.
 pass a `Checked α` of a full row rather than a `{ f := v, … }` literal:
 the merged row is then `Checked` whenever the invariant does not mix a
 written field with an unwritten one (the usual case, e.g. `User.invariant`
-is `name ≠ ""` and a patch of `email` keeps `name`). A `Patch α fs`
-value plus a post-merge `check` would re-introduce an invariant failure
-on the write, which QUERIES.md forbids. Callers typically write
+is `name ≠ ""` and a patch of `email` keeps `name`). If the merge *does*
+break the invariant, both meaning and execution return
+`SetError.invalid` (never a `DbFault`). Callers typically write
 `{old with f := v}`, so merge equals `new`.
 
 **Filtered constraint types.** `Unique.Touching fs` and
@@ -226,6 +226,22 @@ read. Point reads *and* `Read.first` / `all` / `page` carry the proof:
   `Current.toValid`) and use `s.property` in `GameRow.checkedStep`.
   `TestsM14c.writeEmail` is the compiling pattern.
 
+## M15a
+
+Meaning and execution agree on the findings a review listed as D1–D10
+(and on stale `BEq` payloads and issued-id positivity). Each fix has a
+regression in `TestsM15a.lean`. `LeanDb.ExecutesAsMeaning s` is the
+named `Prop` LeanAPI takes as a hypothesis (LAPI-06): for every program
+and every well-formed loaded state, a `run` that completes without a
+`DbFault` has the same answer, typed-failure payload, and tables as
+`denote`. It is **not** an `axiom` and is **not** proved (it is about
+SQLite). The evidence is the M15a harness: 572 fixed-seed cases over a
+schema with child lists, a nullable `Ref`, a closed enum in `orderBy`,
+a two-level cascade, a restrict key, unique indexes and foreign keys;
+random `insert` / `update` / `set` / `patch` / `append` / `delete` /
+`orElse` / `throw` and reads inside a `Txn` after writes; states of up
+to about 30 rows per table; `checkWF` before and after.
+
 ## Remaining deviations
 
 Relative to QUERIES.md §3 / §5. Not silently weakened.
@@ -261,7 +277,25 @@ Relative to QUERIES.md §3 / §5. Not silently weakened.
   generated inductives.** They reduce to `Empty` when nothing applies,
   which is what exhaustive match and `IsEmpty` need in Lean 4.33.
 - **WF preservation is unproved.** `checkWF` holds in the harness after
-  every successful write and program; the proofs are M15 (QUERIES.md
-  §3.10).
+  every successful write and program; the proofs are later (QUERIES.md
+  §3.10). `ExecutesAsMeaning` is the named hypothesis for the SQLite
+  half; it is not an axiom.
+- **`Ref` inside a child-list record is refused at `schema%` / `typed%`.**
+  SQLite would enforce those FKs; the typed `ForeignKey` layer would
+  not. Put the reference on a schema table.
+- **`Id α` / `Ref α` still admit any `Int64`.** Issued ids are ≥ 1
+  (`Table.idsOk`, `Table.refsOk`, AUTOINCREMENT). Use `Id.toNat` for
+  the `Nat` of an issued id (`Id.toNat_one`); apps no longer need a
+  non-negativity hypothesis under `checkWF`.
+- **`Entity.rangeOk` (folded into `Invariant` / `Checked`) is generated
+  for `Nat` / `Option Nat` columns.** Other codecs that override
+  `toSql?` to refuse values, and `Nat`s only in child-list records, are
+  not in that conjunction. Custom refusing codecs should be listed as
+  `canRefuse` in the derive walk if they appear.
+- **A quantifier nested three joins deep becomes `.tt` under
+  `Pred.extendUnder3`.** Child lists are one level, so D9 (quantifier
+  then one `join`) keeps its body. A three-table join after a nested
+  `exists`/`forall` would drop that inner filter in the meaning; refuse
+  that shape or extend the walk if a schema needs it.
 - Command names keep the `%` suffix (`unique%`, `schema%`, `cascade%`)
   so they do not collide with existing identifiers.
