@@ -122,7 +122,8 @@ private def stateEqS (a b : DbState S) : Bool :=
     produced a typed result (no `DbFault`) with equal payload and equal
     tables. -/
 private def cmpTxn {ε α} (p : {σ : Type} → Txn σ S ε α)
-    (eq : Except ε α → Except ε α → Bool) (msg : String) :
+    (eq : Except ε α → Except ε α → Bool) (msg : String)
+    (verbose : Bool := true) :
     DbM Bool := do
   let st0 ← DbState.load (s := S)
   requireWF st0 s!"{msg} (load)"
@@ -142,7 +143,7 @@ private def cmpTxn {ε α} (p : {σ : Type} → Txn σ S ε α)
       unless wfD do
         IO.println s!"  {msg}: denote checkWF=false"
       if ans && stOk then
-        IO.println s!"  {msg}: AGREE"
+        if verbose then IO.println s!"  {msg}: AGREE"
         return true
       else
         IO.println s!"  {msg}: DISAGREE ans={ans} state={stOk}"
@@ -477,6 +478,170 @@ private def testStaleBEq : IO Bool := do
   IO.println s!"  Id.toNat 1 = {Id.toNat id1} positive={Id.positive id1}"
   return !sameIdDiffVal && same && natOk
 
+private def eqNat : Except Empty Nat → Except Empty Nat → Bool :=
+  eqEmpty fun a b => a == b
+
+private def bump (seed n : Nat) (ok : Bool) : DbM Nat := do
+  unless ok do throw (.sqlite s!"FAIL: M15a harness seed {seed} case {n}")
+  return n + 1
+
+/-- One seeded program: child lists, Option (Ref), ClosedEnum orderBy,
+    two-level cascade, restrict, unique/FK, insert/update/set/patch/append/
+    delete/orElse/throw, and a read inside the Txn after a write. -/
+private def harnessSeed (seed : Nat) : DbM Nat := do
+  let mut rng := Rng.ofNat (seed * 1664525 + 1013904223)
+  let mut n := 0
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (ck (⟨s!"o{seed}"⟩ : Org))
+      return r.id.toNat) eqNat s!"H{seed} org" false)
+  let st ← DbState.load (s := S)
+  let org ← match (DbState.get (α := Org) st).rows.head? with
+    | some o => pure o
+    | none => throw (.sqlite "FAIL: org")
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Team) (ck (⟨s!"t{seed}", org.id⟩ : Team))
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} team" false)
+  let st ← DbState.load (s := S)
+  let team ← match (DbState.get (α := Team) st).rows.head? with
+    | some t => pure t
+    | none => throw (.sqlite "FAIL: team")
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Member) (ck (⟨s!"m{seed}", team.id⟩ : Member))
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} member" false)
+  let st ← DbState.load (s := S)
+  let mem ← match (DbState.get (α := Member) st).rows.head? with
+    | some m => pure m
+    | none => throw (.sqlite "FAIL: member")
+  let (r0, k) := rng.nat 0 2
+  rng := r0
+  let owner : Option (Ref Member) := if k == 0 then none else some mem.id
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Doc) (ck ⟨s!"d{seed}", owner⟩)
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error (.missingRef _) => "missing"
+        | .error _ => "dup") eqStr s!"H{seed} doc" false)
+  let stt : Status := match k with | 0 => .backlog | 1 => .inProgress | _ => .done
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (ck (⟨s!"j{seed}", stt⟩ : Job))
+      return r.id.toNat) eqNat s!"H{seed} job" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Bag) (ck ⟨s!"b{seed}", [⟨"x"⟩]⟩)
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} bag" false)
+  let st ← DbState.load (s := S)
+  match (DbState.get (α := Bag) st).rows.head? with
+  | none => pure ()
+  | some b =>
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          let r ← Txn.append (α := Bag) b (ck ⟨b.val.name, b.val.items ++ [⟨"y"⟩]⟩)
+          return match r with
+            | .ok s => s.val.items.map fun (it : Item) => it.label
+            | .error _ => ["err"]) (eqEmpty fun a b => a == b) s!"H{seed} append" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (match Entity.check Counter ⟨seed % 8⟩ with
+        | .ok c => c
+        | .error _ => ck (⟨0⟩ : Counter))
+      return r.id.toNat) eqNat s!"H{seed} counter" false)
+  let st ← DbState.load (s := S)
+  match (DbState.get (α := Counter) st).rows.head? with
+  | none => pure ()
+  | some c =>
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          match ← Txn.get Counter c.id with
+          | none => return "none"
+          | some row =>
+              let cNew ← match Entity.check Counter ⟨(c.val.n + 1) % 8⟩ with
+                | .ok x => pure x
+                | .error _ => pure (ck (⟨0⟩ : Counter))
+              let r ← Txn.set (α := Counter) row cNew
+              return match r with
+                | .ok s => s!"ok {s.val.n}"
+                | .error _ => "err") eqStr s!"H{seed} set" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Crew) (ck (⟨s!"c{seed}", team.id, [⟨"x"⟩]⟩ : Crew))
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} crew" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (ck (⟨"aa", "aa"⟩ : Pair))
+      return r.id.toNat) eqNat s!"H{seed} pair" false)
+  let st ← DbState.load (s := S)
+  match (DbState.get (α := Pair) st).rows.head? with
+  | none => pure ()
+  | some p =>
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          match ← Txn.get Pair p.id with
+          | none => return "none"
+          | some row =>
+              let r ← Txn.set (α := Pair) row (ck ⟨"bb", "bb"⟩)
+              return match r with
+                | .ok s => s!"ok {s.val.a}/{s.val.b}"
+                | .error (.invalid _) => "invalid"
+                | .error .gone => "gone"
+                | .error _ => "err") eqStr s!"H{seed} set pair" false)
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          match ← Txn.get Pair p.id with
+          | none => return "none"
+          | some row =>
+              let r ← Txn.patch (α := Pair) row (Fields.singleton Pair.Field.a)
+                (ck ⟨"zz", "zz"⟩)
+              return match r with
+                | .ok s => s!"ok {s.val.a}/{s.val.b}"
+                | .error (.invalid _) => "invalid"
+                | .error .gone => "gone"
+                | .error _ => "err") eqStr s!"H{seed} patch mix" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let titles ← Txn.liftRead (Read.all jobsByStatus)
+      return titles.map (·.val.title)) (eqEmpty fun a b => a == b)
+    s!"H{seed} orderBy enum" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let _ ← Txn.insertNew (ck (⟨s!"j2{seed}", .done⟩ : Job))
+      let first ← Txn.liftRead (Read.first jobsByStatus jobsByStatus_exact)
+      return first.map (·.val.title)) (eqEmpty fun a b => a == b)
+    s!"H{seed} read after write" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      match ← Txn.delete (α := Member) mem.id with
+      | .ok _ => return "deleted"
+      | .error (.restricted _ _) => return "restricted"
+      | .error .gone => return "gone") eqStr s!"H{seed} delete member" false)
+  n ← bump seed n (← cmpTxn (fun {_} =>
+      Txn.orElse (pure (Except.error "nope" : Except String Nat)) (fun _ => pure 7))
+    eqNat s!"H{seed} orElse throw" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let _ ← Txn.insertNew (ck (⟨s!"tmp{seed}"⟩ : Org))
+      Txn.throw (α := Nat) "rollback")
+    (fun
+      | .error a, .error b => a == b
+      | .ok x, .ok y => x == y
+      | _, _ => false) s!"H{seed} throw abort" false)
+  -- extra jobs so orderBy/count see several rows (still ≪ 30)
+  for i in [0:3] do
+    let (r1, k) := rng.nat 0 2
+    rng := r1
+    let stt : Status := match k with | 0 => .backlog | 1 => .inProgress | _ => .done
+    n ← bump seed n (← cmpTxn (fun {_} => do
+        let r ← Txn.insertNew (ck (⟨s!"jx{seed}_{i}", stt⟩ : Job))
+        return r.id.toNat) eqNat s!"H{seed} job extra {i}" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      Txn.liftRead (Read.count jobsByStatus jobsByStatus_exact))
+    eqNat s!"H{seed} count" false)
+  return n
+
+private def testHarness : IO Nat := do
+  let mut n := 0
+  for seed in [0:26] do
+    fresh dbPath
+    n := n + (← expectOk (← withDb dbPath specs (harnessSeed seed))
+      s!"M15a harness {seed}")
+  IO.println s!"M15a random harness cases: {n}"
+  return n
+
 def run : IO Unit := do
   let d1 ← testD1
   let d2 ← testD2
@@ -504,5 +669,7 @@ def run : IO Unit := do
   check d9 "D9 join keeps the left-side quantifier"
   check d10 "D10 mixed-invariant patch is SetError.invalid in both"
   IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10}"
+  let n ← testHarness
+  check (decide (n ≥ 500)) s!"M15a harness has ≥ 500 cases, got {n}"
 
 end TestsM15a
