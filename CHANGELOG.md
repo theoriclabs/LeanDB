@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **LDB-21.** `patch` refuses a guard that contains an opaque leaf.
+  Opaque used to render as true, so a residual false guard still wrote.
 - **LDB-20.** Multi-statement verbs that join an outer transaction run
   under a SAVEPOINT, so catching their error and committing cannot keep
   partial effects.

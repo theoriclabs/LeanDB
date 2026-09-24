@@ -1318,6 +1318,8 @@ inductive PatchResult where
 def patch [Entity α] (id : Id α) (p : Patch α) (guard : Pred [α] := .tt) :
     DbM PatchResult := withLog "patch" (Entity.tableName α) (fun _ => 1) do
   requireWritable "patch"
+  if guard.hasOpaque then
+    throw (.sqlite "patch guard must not contain an opaque leaf")
   let run : DbM PatchResult := do
     let spec := Entity.spec α
     if p.sets.isEmpty then
