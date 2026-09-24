@@ -128,6 +128,89 @@ def Col.extend {α β : Type} {τ : Type} {i : ColCodec τ} :
   | .via c f h => .via (Col.extend c) f h
   | .there c => (Pred.Col.nil_elim c).elim
 
+/-- Same extension one table under a quantifier (`child :: [α]` → `child :: [α, β]`). -/
+def Col.extendUnder {γ α β : Type} {τ : Type} {i : ColCodec τ} :
+    Pred.Col (γ :: [α]) τ i → Pred.Col (γ :: [α, β]) τ i
+  | .here (ent := e) (fo := fo) f => .here (ent := e) (fo := fo) f
+  | .id (ent := e) => .id (ent := e)
+  | .there c => .there (Col.extend c)
+  | .via c f h => .via (Col.extendUnder c) f h
+
+/-- Two tables under a nested quantifier. -/
+def Col.extendUnder2 {δ γ α β : Type} {τ : Type} {i : ColCodec τ} :
+    Pred.Col (δ :: γ :: [α]) τ i → Pred.Col (δ :: γ :: [α, β]) τ i
+  | .here (ent := e) (fo := fo) f => .here (ent := e) (fo := fo) f
+  | .id (ent := e) => .id (ent := e)
+  | .there c => .there (Col.extendUnder c)
+  | .via c f h => .via (Col.extendUnder2 c) f h
+
+/-- Three tables under a nested quantifier (structural leaves). A further
+    nested quantifier is re-issued with the same parent/fk; its body is
+    `.tt` only at this depth — child lists are one level, so join-left
+    `any`/`all` never reach here. -/
+def Col.extendUnder3 {ε δ γ α β : Type} {τ : Type} {i : ColCodec τ} :
+    Pred.Col (ε :: δ :: γ :: [α]) τ i → Pred.Col (ε :: δ :: γ :: [α, β]) τ i
+  | .here (ent := e) (fo := fo) f => .here (ent := e) (fo := fo) f
+  | .id (ent := e) => .id (ent := e)
+  | .there c => .there (Col.extendUnder2 c)
+  | .via c f h => .via (Col.extendUnder3 c) f h
+
+def Pred.extendUnder3 {ε δ γ α β : Type} : Pred (ε :: δ :: γ :: [α]) → Pred (ε :: δ :: γ :: [α, β])
+  | .tt => .tt
+  | .ff => .ff
+  | .eq c op v => .eq (Col.extendUnder3 c) op v
+  | .ord (so := so) c op v => .ord (so := so) (Col.extendUnder3 c) op v
+  | .eq2 a op b => .eq2 (Col.extendUnder3 a) op (Col.extendUnder3 b)
+  | .ord2 (so := so) a op b => .ord2 (so := so) (Col.extendUnder3 a) op (Col.extendUnder3 b)
+  | .isNull c => .isNull (Col.extendUnder3 c)
+  | .isNotNull c => .isNotNull (Col.extendUnder3 c)
+  | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extendUnder3 c) a set
+  | .and a b => .and (Pred.extendUnder3 a) (Pred.extendUnder3 b)
+  | .or a b => .or (Pred.extendUnder3 a) (Pred.extendUnder3 b)
+  | .opaque f => .opaque fun r => f (r.1, (r.2.1, (r.2.2.1, r.2.2.2.1)))
+  | .«exists» (ent := ent) parent fk _body =>
+      .«exists» (ent := ent) (Col.extendUnder3 parent) fk .tt
+  | .«forall» (ent := ent) parent fk _body =>
+      .«forall» (ent := ent) (Col.extendUnder3 parent) fk .tt
+
+/-- Plan under a nested quantifier. -/
+def Pred.extendUnder2 {δ γ α β : Type} : Pred (δ :: γ :: [α]) → Pred (δ :: γ :: [α, β])
+  | .tt => .tt
+  | .ff => .ff
+  | .eq c op v => .eq (Col.extendUnder2 c) op v
+  | .ord (so := so) c op v => .ord (so := so) (Col.extendUnder2 c) op v
+  | .eq2 a op b => .eq2 (Col.extendUnder2 a) op (Col.extendUnder2 b)
+  | .ord2 (so := so) a op b => .ord2 (so := so) (Col.extendUnder2 a) op (Col.extendUnder2 b)
+  | .isNull c => .isNull (Col.extendUnder2 c)
+  | .isNotNull c => .isNotNull (Col.extendUnder2 c)
+  | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extendUnder2 c) a set
+  | .and a b => .and (Pred.extendUnder2 a) (Pred.extendUnder2 b)
+  | .or a b => .or (Pred.extendUnder2 a) (Pred.extendUnder2 b)
+  | .opaque f => .opaque fun r => f (r.1, (r.2.1, r.2.2.1))
+  | .«exists» (ent := ent) parent fk body =>
+      .«exists» (ent := ent) (Col.extendUnder2 parent) fk (Pred.extendUnder3 body)
+  | .«forall» (ent := ent) parent fk body =>
+      .«forall» (ent := ent) (Col.extendUnder2 parent) fk (Pred.extendUnder3 body)
+
+/-- Plan under a quantifier of a single-table query, after a join adds `β`. -/
+def Pred.extendUnder {γ α β : Type} : Pred (γ :: [α]) → Pred (γ :: [α, β])
+  | .tt => .tt
+  | .ff => .ff
+  | .eq c op v => .eq (Col.extendUnder c) op v
+  | .ord (so := so) c op v => .ord (so := so) (Col.extendUnder c) op v
+  | .eq2 a op b => .eq2 (Col.extendUnder a) op (Col.extendUnder b)
+  | .ord2 (so := so) a op b => .ord2 (so := so) (Col.extendUnder a) op (Col.extendUnder b)
+  | .isNull c => .isNull (Col.extendUnder c)
+  | .isNotNull c => .isNotNull (Col.extendUnder c)
+  | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extendUnder c) a set
+  | .and a b => .and (Pred.extendUnder a) (Pred.extendUnder b)
+  | .or a b => .or (Pred.extendUnder a) (Pred.extendUnder b)
+  | .opaque f => .opaque fun r => f (r.1, r.2.1)
+  | .«exists» (ent := ent) parent fk body =>
+      .«exists» (ent := ent) (Col.extendUnder parent) fk (Pred.extendUnder2 body)
+  | .«forall» (ent := ent) parent fk body =>
+      .«forall» (ent := ent) (Col.extendUnder parent) fk (Pred.extendUnder2 body)
+
 /-- Extend a single-table plan with a second table (the join target). -/
 def Pred.extend {α β : Type} : Pred [α] → Pred [α, β]
   | .tt => .tt
@@ -142,10 +225,10 @@ def Pred.extend {α β : Type} : Pred [α] → Pred [α, β]
   | .and a b => .and (Pred.extend a) (Pred.extend b)
   | .or a b => .or (Pred.extend a) (Pred.extend b)
   | .opaque f => .opaque fun r => f r.1
-  | .«exists» (ent := _) parent fk body =>
-      .opaque fun r => (Pred.«exists» parent fk body).denote .empty r.1
-  | .«forall» (ent := _) parent fk body =>
-      .opaque fun r => (Pred.«forall» parent fk body).denote .empty r.1
+  | .«exists» (ent := ent) parent fk body =>
+      .«exists» (ent := ent) (Col.extend parent) fk (Pred.extendUnder body)
+  | .«forall» (ent := ent) parent fk body =>
+      .«forall» (ent := ent) (Col.extend parent) fk (Pred.extendUnder body)
 
 /-- `eq2` of the foreign-key column with the target's `id`. -/
 def joinPred (α β : Type) [Entity α] [Entity β] [j : JoinCol α β] : Pred [α, β] :=
