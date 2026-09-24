@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **LDB-20.** Multi-statement verbs that join an outer transaction run
+  under a SAVEPOINT, so catching their error and committing cannot keep
+  partial effects.
 - **LDB-19.** `Runtime.Service.withReader` locks each pooled connection
   and never hands out the writer. `readers := 0` still opens one
   dedicated read-only slot, so a reader cannot write and two callbacks

@@ -373,10 +373,10 @@ Reads cost one engine-internal statement per child table per fetch —
 `WHERE parent IN (…)` over the fetched parents, chunked — never one per
 row. Writes run inside a transaction. -/
 
-/-- Run `act` inside `BEGIN DEFERRED … COMMIT`; any failure rolls back and
-    re-raises the typed error. Reentrant: a nested call (a read burst
-    inside a write, or `selectP` snapshotting via `fetchAll`) joins the
-    open transaction instead of issuing a second `BEGIN`. -/
+/-- Run `act` inside `BEGIN DEFERRED … COMMIT` (or `begin` when given).
+    Reentrant: a nested call joins the open transaction under a SAVEPOINT
+    so a multi-statement verb that fails is atomic and does not leave
+    partial effects for an outer commit to keep (LDB-20). -/
 private def transaction (act : DbM α) (begin : String := "BEGIN DEFERRED") : DbM α :=
     fun conn => ExceptT.mk do
   let exec (sql : String) : IO (Except DbError Unit) :=
@@ -385,30 +385,44 @@ private def transaction (act : DbM α) (begin : String := "BEGIN DEFERRED") : Db
   | some why => return .error (.poisoned why)
   | none =>
   let depth ← conn.txDepth.get
-  if depth > 0 then
-    return ← (act conn).run
+  let savepoint := s!"_leandb_op_{depth}"
+  match ← (if depth == 0 then exec begin else exec s!"SAVEPOINT {savepoint}") with
+  | .error e => return .error e
+  | .ok () =>
   conn.txDepth.set (depth + 1)
-  -- A ROLLBACK that itself fails leaves the transaction state unknown:
-  -- the connection is poisoned and refuses every later verb (#72).
-  let rollback (e : DbError) : IO (Except DbError α) := do
-    match ← exec "ROLLBACK" with
-    | .ok () => return .error e
+  let undo : IO (Option DbError) := do
+    let r ←
+      if depth == 0 then exec "ROLLBACK"
+      else
+        match ← exec s!"ROLLBACK TO SAVEPOINT {savepoint}" with
+        | .error e => pure (.error e)
+        | .ok () => exec s!"RELEASE SAVEPOINT {savepoint}"
+    match r with
+    | .ok () => return none
     | .error re =>
-        conn.poison s!"ROLLBACK failed after {e.code}: {re.message}"
-        return .error (.poisoned s!"ROLLBACK failed after {e.code}: {re.message}")
+        let why := s!"rollback of {if depth == 0 then "transaction" else savepoint} \
+failed: {re.message}"
+        conn.poison why
+        return some (.poisoned why)
   let finish (r : Except DbError α) : IO (Except DbError α) := do
     conn.txDepth.set depth
     match r with
     | .ok a =>
-        match ← exec "COMMIT" with
+        let sealed' ←
+          if depth == 0 then exec "COMMIT"
+          else exec s!"RELEASE SAVEPOINT {savepoint}"
+        match sealed' with
         | .ok () => return .ok a
-        | .error e => rollback e
-    | .error e => rollback e
-  match ← exec begin with
-  | .error e => conn.txDepth.set depth; return .error e
-  | .ok () =>
-    let r ← try (act conn).run catch e => pure (.error (.sqlite (toString e)))
-    finish r
+        | .error e =>
+            match ← undo with
+            | some pe => return .error pe
+            | none => return .error e
+    | .error e =>
+        match ← undo with
+        | some pe => return .error pe
+        | none => return .error e
+  let r ← try (act conn).run catch e => pure (.error (.sqlite (toString e)))
+  finish r
 
 /-- How many parent ids one child fetch names: SQLite's default parameter
     limit is far above this, and the statement text stays small. -/
