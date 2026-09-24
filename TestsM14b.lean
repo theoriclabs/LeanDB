@@ -1,7 +1,7 @@
 import LeanDb
 
-/-! M14 part B: schema-derived write failure types. `Txn`, meaning, and
-    the execution harness land in later commits on this file. -/
+/-! M14 part B: schema-derived write failure types, `Txn`, meaning, and
+    `Txn.run`. The execution-equals-meaning harness lands next. -/
 
 namespace TestsM14b
 
@@ -196,8 +196,44 @@ private def testDenote : IO Unit := do
   check ((DbState.get (α := Team) stA).rows.length ==
       (DbState.get (α := Team) st1).rows.length) "abort keeps original state"
 
+private def specs : List TableSpec := IsSchema.specs App
+
+private def dbPath : System.FilePath := ".lake" / "leandb_test_m14b.sqlite"
+
+private def fresh (p : System.FilePath) : IO Unit := do
+  if ← p.pathExists then IO.FS.removeFile p
+  for suffix in ["-wal", "-shm"] do
+    let side : System.FilePath := p.toString ++ suffix
+    if ← side.pathExists then IO.FS.removeFile side
+
+private def expectOk (r : Except DbError α) (context : String) : IO α :=
+  match r with
+  | .ok a => pure a
+  | .error e => throw <| IO.userError s!"FAIL: {context}: {e}"
+
+private def testRun : IO Unit := do
+  fresh dbPath
+  let r ← withDb dbPath specs do
+    match ← Txn.run (s := App) (addTeam ⟨"eng"⟩) with
+    | .error e => throw (.sqlite s!"FAIL: run addTeam fault {e}")
+    | .ok (.error e) => nomatch e
+    | .ok (.ok id) =>
+        let st ← DbState.load (s := App)
+        let (want, stD) := Txn.denote (σ := Unit) (s := App) (addTeam ⟨"eng"⟩)
+          (DbState.empty (s := App))
+        match want with
+        | .error e => nomatch e
+        | .ok idD =>
+            unless id.toInt64 == idD.toInt64 do
+              throw (.sqlite "FAIL: run id ≠ denote id")
+            unless (DbState.get (α := Team) st).next ==
+                (DbState.get (α := Team) stD).next do
+              throw (.sqlite "FAIL: run next ≠ denote next")
+  discard <| expectOk r "run addTeam"
+
 def run : IO Unit := do
   testSymbols
   testDenote
+  testRun
 
 end TestsM14b

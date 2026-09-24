@@ -259,6 +259,197 @@ def denote {σ s ε α : Type} [IsSchema s] (p : Txn σ s ε α) (st : DbState s
     Except ε α × DbState s :=
   denote.go (σ := σ) (s := s) (ε := ε) st p st
 
+/-! ## Execution -/
+
+def firstDuplicateDb {α} [Entity α] [HasUnique α]
+    (v : α) (except : Option (Id α)) : Db (Option (Unique α × Id α)) :=
+  Unique.all α |>.foldlM (m := Db) (init := none) fun acc ix => do
+    match acc with
+    | some _ => return acc
+    | none =>
+        let rows ← selectP (ts := [α]) (Unique.predOf ix (Unique.keyOf ix v))
+        match rows.find? (fun r => !(except == some r.id)) with
+        | none => return none
+        | some r => return some (ix, r.id)
+
+def fkExistsDb {α} [Entity α] [hf : HasForeignKey α] (fk : hf.ForeignKey) (v : α) : Db Bool := do
+  let tgt := hf.get fk v
+  let inst := hf.targetEntity fk
+  let row ← @LeanDb.get (hf.Target fk) inst tgt
+  return row.isSome
+
+def firstMissingRefDb {α} [Entity α] [HasForeignKey α] (v : α) :
+    Db (Option (ForeignKey α)) :=
+  ForeignKey.all α |>.foldlM (m := Db) (init := none) fun acc fk => do
+    match acc with
+    | some _ => return acc
+    | none =>
+        if ← fkExistsDb fk v then return none else return some fk
+
+def firstDuplicateTouchingDb {α} [Entity α] [HasUnique α]
+    (fs : Fields α) (v : α) (except : Option (Id α)) :
+    Db (Option (Unique.Touching fs × Id α)) :=
+  Unique.all α |>.foldlM (m := Db) (init := none) fun acc ix => do
+    match acc with
+    | some _ => return acc
+    | none =>
+        if h : Unique.touches ix fs then
+          let rows ← selectP (ts := [α]) (Unique.predOf ix (Unique.keyOf ix v))
+          match rows.find? (fun r => !(except == some r.id)) with
+          | none => return none
+          | some r => return some (Unique.toTouching ix h, r.id)
+        else
+          return none
+
+def firstMissingWithinDb {α} [Entity α] [HasForeignKey α]
+    (fs : Fields α) (v : α) : Db (Option (ForeignKey.Within fs)) :=
+  ForeignKey.all α |>.foldlM (m := Db) (init := none) fun acc fk => do
+    match acc with
+    | some _ => return acc
+    | none =>
+        if h : ForeignKey.within fk fs then
+          if ← fkExistsDb fk v then return none
+          else return some (ForeignKey.toWithin fk h)
+        else
+          return none
+
+def countRefsDb {s α} [HasReferencedBy s α] (r : ReferencedBy s α) (id : Id α) : Db Nat :=
+  untrackedSqlite fun db => do
+    let sql :=
+      s!"SELECT COUNT(*) FROM {quoteIdent (ReferencedBy.sourceName r)} WHERE {quoteIdent (ReferencedBy.columnName r)} = ?"
+    let stmt ← db.prepare sql
+    stmt.bindInt64 1 id.toInt64
+    if ← stmt.step then
+      return (← stmt.columnInt64 0).toNatClampNeg
+    else return 0
+
+def firstRestrictedDb {s α} [HasReferencedBy s α] (id : Id α) :
+    Db (Option (ReferencedBy s α × Nat)) :=
+  ReferencedBy.all s α |>.foldlM (m := Db) (init := none) fun acc r => do
+    match acc with
+    | some _ => return acc
+    | none =>
+        let n ← countRefsDb r id
+        if n == 0 then return none else return some (r, n)
+
+def insertExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
+    (v : Checked α) : Db (Except (InsertError α) (Current σ α)) :=
+  withTransaction do
+    match ← firstDuplicateDb v.val none with
+    | some (ix, holder) => return .error (.duplicate ix holder)
+    | none =>
+        match ← firstMissingRefDb v.val with
+        | some fk => return .error (.missingRef fk)
+        | none =>
+            let row ← LeanDb.insert α v.val
+            return .ok ⟨row⟩
+
+def updateExec {α} [Entity α] [HasUnique α] [HasForeignKey α]
+    (old : Stored α) (new : Checked α) : Db (Except (UpdateError α) (Stored α)) :=
+  withTransaction do
+    match ← LeanDb.get old.id with
+    | none => return .error .gone
+    | some cur =>
+        if !parentEq cur.val old.val then
+          return .error (.stale cur)
+        match ← firstDuplicateDb new.val (some old.id) with
+        | some (ix, holder) => return .error (.duplicate ix holder)
+        | none =>
+            match ← firstMissingRefDb new.val with
+            | some fk => return .error (.missingRef fk)
+            | none =>
+                let row ← LeanDb.update old new.val
+                return .ok row
+
+def setExec {σ α} [Entity α] [HasUnique α] [HasForeignKey α]
+    (row : Current σ α) (fs : Fields α) (new : Checked α) :
+    Db (Except (SetError α fs) (Current σ α)) :=
+  withTransaction do
+    match ← LeanDb.get row.id with
+    | none => return .error .gone
+    | some cur =>
+        match ← firstDuplicateTouchingDb fs new.val (some row.id) with
+        | some (ix, holder) => return .error (.duplicate ix holder)
+        | none =>
+            match ← firstMissingWithinDb fs new.val with
+            | some fk => return .error (.missingRef fk)
+            | none =>
+                let written ← LeanDb.update cur new.val
+                return .ok ⟨written⟩
+
+def appendExec {α} [Entity α] [HasListField α]
+    (old : Stored α) (new : Checked α) : Db (Except (AppendError α) (Stored α)) :=
+  withTransaction do
+    match ← LeanDb.get old.id with
+    | none => return .error .gone
+    | some cur =>
+        if !parentEq cur.val old.val || listsMoved cur.val old.val then
+          return .error (.stale cur)
+        match firstNotAppend old.val new.val with
+        | some lf => return .error (.notAppend lf)
+        | none =>
+            let row ← LeanDb.append old new.val
+            return .ok row
+
+def deleteExec {s α} [Entity α] [HasReferencedBy s α] (id : Id α) :
+    Db (Except (DeleteError s α) (Stored α)) :=
+  withTransaction do
+    match ← LeanDb.get id with
+    | none => return .error .gone
+    | some row =>
+        match ← firstRestrictedDb (s := s) id with
+        | some (who, n) => return .error (.restricted who n)
+        | none =>
+            LeanDb.delete id
+            return .ok row
+
+def exec.go {σ s ε : Type} [IsSchema s] :
+    {α : Type} → Txn σ s ε α → Db (Except ε α)
+  | _, .pure a => (Pure.pure (f := Db) (Except.ok a))
+  | _, .bind m f => do
+      match ← exec.go m with
+      | .error e => return Except.error e
+      | .ok a => exec.go (f a)
+  | _, .liftRead r => Except.ok <$> Read.exec (s := s) r
+  | _, @Txn.get _ _ _ α _ id => do
+      let found ← LeanDb.get id
+      return Except.ok (found.map fun row => ⟨row⟩)
+  | _, @Txn.lookup _ _ _ α instE instU ix key => do
+      let rows ← selectP (ts := [α]) (@Unique.predOf α instE instU ix key)
+      return Except.ok (rows[0]?.map fun row => ⟨row⟩)
+  | _, .throw e => (Pure.pure (f := Db) (Except.error e))
+  | _, .orAbort m f => do
+      match ← exec.go m with
+      | .error e => return Except.error e
+      | .ok (.error err) => return Except.error (f err)
+      | .ok (.ok a) => return Except.ok a
+  | _, .orElse m g => do
+      match ← exec.go m with
+      | .error e => return Except.error e
+      | .ok (.error err) => exec.go (g err)
+      | .ok (.ok a) => return Except.ok a
+  | _, @Txn.insert _ _ _ α _ _ _ v => Except.ok <$> insertExec (σ := σ) v
+  | _, @Txn.update _ _ _ α _ _ _ old new => Except.ok <$> updateExec old new
+  | _, @Txn.set _ _ _ α _ _ _ row new =>
+      Except.ok <$> setExec (σ := σ) row (Fields.all α) new
+  | _, @Txn.patch _ _ _ α _ _ _ row fs new =>
+      Except.ok <$> setExec (σ := σ) row fs new
+  | _, @Txn.append _ _ _ α _ _ old new => Except.ok <$> appendExec old new
+  | _, @Txn.delete _ _ _ α _ _ id => Except.ok <$> deleteExec (s := s) id
+
+/-- `BEGIN IMMEDIATE`; a SAVEPOINT around each write. Domain abort rolls
+    back. Infrastructure problems are `DbFault`, not `ε`. -/
+def run {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) :
+    Db (Except DbFault (Except ε α)) :=
+  fun conn => ExceptT.mk do
+    let body : DbM (Tx ε α) := do
+      match ← exec.go (σ := Unit) (s := s) (ε := ε) (p (σ := Unit)) with
+      | .ok a => return Tx.commit a
+      | .error e => return Tx.abort e
+    match ← (LeanDb.transaction body conn).run with
+    | .ok r => return .ok (.ok r)
+    | .error e => return .ok (.error (DbFault.ofDbError e))
+
 end Txn
 
 end LeanDb
