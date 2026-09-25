@@ -21,3 +21,12 @@ import LeanDb.Mcp
 import LeanDb.Host
 import LeanDb.Import
 import LeanDb.Scaffold
+import LeanDb.Typed.Schema
+import LeanDb.Typed.State
+import LeanDb.Typed.Query
+import LeanDb.Typed.Fault
+import LeanDb.Typed.Read
+import LeanDb.Typed.Write
+import LeanDb.Typed.Txn
+import LeanDb.Typed.Harness
+import LeanDb.Typed.Laws

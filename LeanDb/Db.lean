@@ -373,10 +373,10 @@ Reads cost one engine-internal statement per child table per fetch —
 `WHERE parent IN (…)` over the fetched parents, chunked — never one per
 row. Writes run inside a transaction. -/
 
-/-- Run `act` inside `BEGIN DEFERRED … COMMIT`; any failure rolls back and
-    re-raises the typed error. Reentrant: a nested call (a read burst
-    inside a write, or `selectP` snapshotting via `fetchAll`) joins the
-    open transaction instead of issuing a second `BEGIN`. -/
+/-- Run `act` inside `BEGIN DEFERRED … COMMIT` (or `begin` when given).
+    Reentrant: a nested call joins the open transaction under a SAVEPOINT
+    so a multi-statement verb that fails is atomic and does not leave
+    partial effects for an outer commit to keep (LDB-20). -/
 private def transaction (act : DbM α) (begin : String := "BEGIN DEFERRED") : DbM α :=
     fun conn => ExceptT.mk do
   let exec (sql : String) : IO (Except DbError Unit) :=
@@ -385,30 +385,51 @@ private def transaction (act : DbM α) (begin : String := "BEGIN DEFERRED") : Db
   | some why => return .error (.poisoned why)
   | none =>
   let depth ← conn.txDepth.get
-  if depth > 0 then
-    return ← (act conn).run
+  let savepoint := s!"_leandb_op_{depth}"
+  match ← (if depth == 0 then exec begin else exec s!"SAVEPOINT {savepoint}") with
+  | .error e => return .error e
+  | .ok () =>
   conn.txDepth.set (depth + 1)
-  -- A ROLLBACK that itself fails leaves the transaction state unknown:
-  -- the connection is poisoned and refuses every later verb (#72).
-  let rollback (e : DbError) : IO (Except DbError α) := do
-    match ← exec "ROLLBACK" with
-    | .ok () => return .error e
+  let undo : IO (Option DbError) := do
+    let r ←
+      if depth == 0 then exec "ROLLBACK"
+      else
+        match ← exec s!"ROLLBACK TO SAVEPOINT {savepoint}" with
+        | .error e => pure (.error e)
+        | .ok () => exec s!"RELEASE SAVEPOINT {savepoint}"
+    match r with
+    | .ok () => return none
     | .error re =>
-        conn.poison s!"ROLLBACK failed after {e.code}: {re.message}"
-        return .error (.poisoned s!"ROLLBACK failed after {e.code}: {re.message}")
+        let why := s!"rollback of {if depth == 0 then "transaction" else savepoint} \
+failed: {re.message}"
+        conn.poison why
+        return some (.poisoned why)
   let finish (r : Except DbError α) : IO (Except DbError α) := do
     conn.txDepth.set depth
     match r with
     | .ok a =>
-        match ← exec "COMMIT" with
+        let sealed' ←
+          if depth == 0 then exec "COMMIT"
+          else exec s!"RELEASE SAVEPOINT {savepoint}"
+        match sealed' with
         | .ok () => return .ok a
-        | .error e => rollback e
-    | .error e => rollback e
-  match ← exec begin with
-  | .error e => conn.txDepth.set depth; return .error e
-  | .ok () =>
-    let r ← try (act conn).run catch e => pure (.error (.sqlite (toString e)))
-    finish r
+        | .error e =>
+            match ← undo with
+            | some pe => return .error pe
+            | none => return .error e
+    | .error e =>
+        match ← undo with
+        | some pe => return .error pe
+        | none => return .error e
+  let r ← try (act conn).run catch e => pure (.error (.sqlite (toString e)))
+  finish r
+
+/-- A consistent deferred read snapshot (`BEGIN DEFERRED … COMMIT`).
+    Nested calls join the open transaction. Multi-statement reads that
+    must see one WAL snapshot use this; the engine's own `get` /
+    `fetchAll` / `selectP` already do. Public so adapters need not
+    rebuild it (LDB-24). -/
+def readSnapshot (act : DbM α) : DbM α := transaction act
 
 /-- How many parent ids one child fetch names: SQLite's default parameter
     limit is far above this, and the statement text stays small. -/
@@ -466,6 +487,15 @@ private def checkInvariant [Entity α] (a : α) : DbM Unit :=
       if holds a then pure () else throw (.invariant (Entity.tableName α) name)
   | none => pure ()
 
+/-- Every field must fit in its SQLite column (LDB-18). A `Nat` above
+    `Int64.maxValue` is refused rather than wrapping. -/
+private def checkSqlRange [Entity α] (a : α) : DbM Unit :=
+  (Entity.fields (α := α)).forM fun f =>
+    match (Entity.codec f).toSql? (Entity.get f a) with
+    | some _ => pure ()
+    | none => throw (.decode (Entity.tableName α) (Entity.fieldName f)
+        "value is outside the range SQLite INTEGER can store")
+
 /-- Every typed read ends here: the child lists attached (`attachLists`),
     then the entity's invariant checked on each whole value (LDB-16). A row
     that fails is refused with `.invariant`, never returned. -/
@@ -502,6 +532,7 @@ private def insertChildren [Entity α] (link : ChildLink α) (id : Int64) (a : �
 def insert (α : Type) [Entity α] (a : α) : DbM (Stored α) := withLog "insert" (Entity.tableName α) (fun _ => 1) do
   requireWritable "insert"
   checkInvariant a
+  checkSqlRange a
   let spec := Entity.spec α
   let links := Entity.children (α := α)
   let names := String.intercalate ", " (spec.columns.toList.map (quoteId ·.name))
@@ -556,6 +587,7 @@ def fetchAll (α : Type) [Entity α] : DbM (Array (Stored α)) := transaction do
 def update [Entity α] (old : Stored α) (new : α) : DbM (Stored α) := withLog "update" (Entity.tableName α) (fun _ => 1) do
   requireWritable "update"
   checkInvariant new
+  checkSqlRange new
   let spec := Entity.spec α
   let links := Entity.children (α := α)
   let cas : DbM Unit := do
@@ -620,6 +652,7 @@ def append [Entity α] (old : Stored α) (new : α) : DbM (Stored α) :=
       throw (.notAppend link.table "the list does not continue the stored one")
     added := added.push (link, before.size, after.extract before.size after.size)
   checkInvariant new
+  checkSqlRange new
   transaction (begin := "BEGIN IMMEDIATE") do
     -- the parent: `update`'s compare-and-swap against `old`
     let pins := spec.columns.toList.map fun c => s!"{quoteId c.name} IS ?"
@@ -719,21 +752,54 @@ def plannedSource {ts : List Type} (pushed : Pred ts)
     if i == 0 then fetchFiltered α (pushed.forTable i) none order window
     else fetchFiltered α (pushed.forTable i)⟩
 
-/-- Joined execution: one SQL statement over all involved tables with the
-    whole pushed predicate (join conditions included) as `WHERE`. Used
-    when the plan relates tables — the pushed joins cut the product in
-    SQL instead of materializing it client-side. `pushed` is opaque-free
-    (`Pred.approx`). -/
-def selectJoined (ts : List Type) [RowsOf ts] (pushed : Pred ts)
-    (where' : Rows ts → Bool) (sortBy : SortBy (Rows ts)) : DbM (Array (Rows ts)) := do
+/-- ON clause for joining table `i`: cross-table conjuncts that mention
+    `i` and only earlier tables. `1` if none (a remaining cartesian). -/
+private def joinOnSql {ts : List Type} (p : Pred ts) (i : Nat) : String :=
+  let ons := p.conjuncts.filter fun c =>
+    c.hasJoin && c.tables.contains i && c.tables.all (fun t => t <= i)
+  if ons.isEmpty then "1"
+  else String.intercalate " AND " (ons.map fun c => (c.render Pred.tAlias).1)
+
+/-- `FROM t0 JOIN t1 ON <fk> JOIN t2 ON …` — join conditions are the
+    plan's cross-table conjuncts. -/
+private def joinedFromSql (ts : List Type) [RowsOf ts] (p : Pred ts) : String :=
   let specs := RowsOf.specs ts
-  let froms := specs.zipIdx.map fun (spec, i) => s!"{quoteId spec.name} AS t{i}"
+  match specs.zipIdx with
+  | [] => ""
+  | (s0, _) :: rest =>
+      rest.foldl (init := s!"{quoteId s0.name} AS t0") fun acc (spec, i) =>
+        acc ++ s!" JOIN {quoteId spec.name} AS t{i} ON {joinOnSql p i}"
+
+/-- Joined execution: one SQL statement, `JOIN` on the plan's cross-table
+    conjuncts (the foreign-key column for a typed `join`). Used when the
+    plan relates tables — the pushed joins cut the product in SQL instead
+    of materializing it client-side. `pushed` is opaque-free
+    (`Pred.approx`). An exact plan may also push `order`/`window`. -/
+def selectJoined (ts : List Type) [RowsOf ts] (pushed : Pred ts)
+    (where' : Rows ts → Bool) (sortBy : SortBy (Rows ts))
+    (order : Array (Order ts) := #[]) (window : Window := {}) :
+    DbM (Array (Rows ts)) := do
+  let specs := RowsOf.specs ts
   let sel := specs.zipIdx.map fun (spec, i) =>
     String.intercalate ", " (s!"t{i}.id" :: spec.columns.toList.map fun c => s!"t{i}.{quoteId c.name}")
-  let order := specs.zipIdx.map fun (_, i) => s!"t{i}.id"
+  let idOrder := specs.zipIdx.map fun (_, i) => s!"t{i}.id"
+  let orderSql :=
+    if order.isEmpty then
+      s!" ORDER BY {String.intercalate ", " idOrder}"
+    else
+      let keys := order.toList.map fun o => s!"t0.{quoteId o.column} {o.dir.sql}"
+      s!" ORDER BY {String.intercalate ", " (keys ++ idOrder)}"
   let (whereSql, binds) := pushed.renderT
-  let sql := s!"SELECT {String.intercalate ", " sel} FROM {String.intercalate ", " froms} " ++
-    s!"WHERE {whereSql} ORDER BY {String.intercalate ", " order}"
+  let mut tail := ""
+  let mut extra : Array LeanDb.Col := #[]
+  if let some n := window.limit then
+    tail := tail ++ " LIMIT ?"
+    extra := extra.push (.int (Int64.ofNat n))
+  if window.offset != 0 then
+    tail := tail ++ " OFFSET ?"
+    extra := extra.push (.int (Int64.ofNat window.offset))
+  let sql := s!"SELECT {String.intercalate ", " sel} FROM {joinedFromSql ts pushed} " ++
+    s!"WHERE {whereSql}{orderSql}{tail}"
   -- One label per selected column, in the same order as `sel` above, so a
   -- bad value names the table and field it actually came from.
   let labels : Array (String × String) := specs.foldl (init := #[]) fun acc spec =>
@@ -741,6 +807,7 @@ def selectJoined (ts : List Type) [RowsOf ts] (pushed : Pred ts)
   let raw ← sqlite fun db => do
     let stmt ← db.prepare sql
     bindCols stmt 1 binds
+    bindCols stmt (binds.size + 1) extra
     let mut out : Array (Except DbError (Array Col)) := #[]
     repeat
       if ← stmt.step then
@@ -756,15 +823,24 @@ def selectJoined (ts : List Type) [RowsOf ts] (pushed : Pred ts)
 /-- Run a pushed plan and a decider: the opaque-free `pushed` ships to
     SQL — the joined executor when it relates tables, per-table fetches
     otherwise — and `where'` is applied to what comes back. The one path
-    under both `select` and `selectP`, so they cannot diverge. -/
+    under both `select` and `selectP`, so they cannot diverge.
+
+    `order`/`window` are pushed into SQL when `exact` (no residual),
+    including foreign-key joins (`JOIN` + `LIMIT`/`OFFSET`). Otherwise
+    the window is applied in Lean after `where'`, so a `LIMIT 1` cannot
+    miss a later row that only the residual accepts (LDB-17). -/
 private def runPlanned (ts : List Type) [RowsOf ts] (pushed : Pred ts)
     (where' : Rows ts → Bool) (sortBy : SortBy (Rows ts))
-    (order : Array (Order ts) := #[]) (window : Window := {}) : DbM (Array (Rows ts)) :=
-  if pushed.hasJoin then
-    selectJoined ts pushed where' sortBy
-  else
-    selectSpec ts (plannedSource pushed order window)
-      where' (if order.isEmpty then sortBy else .preserve)
+    (order : Array (Order ts) := #[]) (window : Window := {})
+    (exact : Bool := false) : DbM (Array (Rows ts)) := do
+  let pushWindow := exact
+  let rows ←
+    if pushed.hasJoin then
+      selectJoined ts pushed where' sortBy order (if pushWindow then window else {})
+    else
+      selectSpec ts (plannedSource pushed order (if pushWindow then window else {}))
+        where' (if order.isEmpty then sortBy else .preserve)
+  if pushWindow then return rows else return window.apply rows
 
 private def selectDetail (ts : List Type) [RowsOf ts] (p : Pred ts) : String :=
   s!"{String.intercalate "×" ((RowsOf.specs ts).map (·.name))} | {p.describe}"
@@ -873,6 +949,7 @@ def selectP (ts : List Type) [RowsOf ts] (p : Pred ts)
         | _ => throw (.sqlite "limit requires a pushed order")
       let snap ← p.snapshot
       runPlanned ts p.approx (p.denote snap) sortBy order window
+        (exact := !p.hasOpaque)
 
 /-- `select` with pushdown disabled — the executable reference, for
     differential testing against the planned path. -/
@@ -1232,36 +1309,44 @@ def countP [RowsOf ts] (p : Pred ts) : DbM Nat :=
     if p.hasOpaque then
       return (← selectP ts p).size
     let specs := RowsOf.specs ts
-    let spec ← match specs with
-      | [spec] => pure spec
-      | _ => return (← selectP ts p).size
-    let (whereSql, binds) := p.approx.render fun _ => "t0"
+    let (fromSql, whereSql, binds) ← match specs with
+      | [spec] =>
+          let (w, b) := p.approx.render fun _ => "t0"
+          pure (s!"{quoteId spec.name} AS t0", w, b)
+      | _ =>
+          let (w, b) := p.approx.renderT
+          pure (joinedFromSql ts p.approx, w, b)
     sqlite fun db => do
-      let stmt ← db.prepare
-        s!"SELECT COUNT(*) FROM {quoteId spec.name} AS t0 WHERE {whereSql}"
+      let stmt ← db.prepare s!"SELECT COUNT(*) FROM {fromSql} WHERE {whereSql}"
       bindCols stmt 1 binds
       if ← stmt.step then return (← stmt.columnInt64 0).toNatClampNeg else return 0
 
 def count [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_plan) : DbM Nat :=
-  countP plan.plan
+  withLog "count" (selectDetail ts plan.plan) (fun _ => 1) (plan := some (planJson ts plan.plan)) do
+    return (← runPlanned ts plan.plan.approx p .preserve).size
+
+def exists? [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_plan) : DbM Bool :=
+  withLog "exists" (selectDetail ts plan.plan) (fun _ => 1) (plan := some (planJson ts plan.plan)) do
+    let rows ← runPlanned ts plan.plan.approx p .preserve #[] { limit := some 1 } (exact := false)
+    return !rows.isEmpty
 
 def existsP [RowsOf ts] (p : Pred ts) : DbM Bool :=
   withLog "exists" (selectDetail ts p) (fun _ => 1) (plan := some (planJson ts p)) do
     if p.hasOpaque then
       return !(← selectP ts p (window := { limit := some 1 })).isEmpty
     let specs := RowsOf.specs ts
-    let spec ← match specs with
-      | [spec] => pure spec
-      | _ => return !(← selectP ts p (window := { limit := some 1 })).isEmpty
-    let (whereSql, binds) := p.approx.render fun _ => "t0"
+    let (fromSql, whereSql, binds) ← match specs with
+      | [spec] =>
+          let (w, b) := p.approx.render fun _ => "t0"
+          pure (s!"{quoteId spec.name} AS t0", w, b)
+      | _ =>
+          let (w, b) := p.approx.renderT
+          pure (joinedFromSql ts p.approx, w, b)
     sqlite fun db => do
       let stmt ← db.prepare
-        s!"SELECT EXISTS(SELECT 1 FROM {quoteId spec.name} AS t0 WHERE {whereSql})"
+        s!"SELECT EXISTS(SELECT 1 FROM {fromSql} WHERE {whereSql})"
       bindCols stmt 1 binds
       if ← stmt.step then return (← stmt.columnInt64 0) != 0 else return false
-
-def exists? [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_plan) : DbM Bool :=
-  existsP plan.plan
 
 /-! ## LDB-07: field-level `patch` -/
 
@@ -1282,6 +1367,8 @@ inductive PatchResult where
 def patch [Entity α] (id : Id α) (p : Patch α) (guard : Pred [α] := .tt) :
     DbM PatchResult := withLog "patch" (Entity.tableName α) (fun _ => 1) do
   requireWritable "patch"
+  if guard.hasOpaque then
+    throw (.sqlite "patch guard must not contain an opaque leaf")
   let run : DbM PatchResult := do
     let spec := Entity.spec α
     if p.sets.isEmpty then
@@ -1317,6 +1404,7 @@ def insertMany (α : Type) [Entity α] (rows : Array α) : DbM (Array (Stored α
   withLog "insertMany" (Entity.tableName α) (·.size) do
     requireWritable "insertMany"
     rows.forM checkInvariant
+    rows.forM checkSqlRange
     if rows.isEmpty then return #[]
     let spec := Entity.spec α
     let links := Entity.children (α := α)

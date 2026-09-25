@@ -2,6 +2,96 @@
 
 ## Unreleased
 
+- **M15b2.** `Table.nextOk` (`1 ≤ next ≤ natSqlMax + 1`) is in `Table.check`.
+  `assign` does not wrap `Int64.ofNat`. `DbState.empty_wf`.
+  `Txn.insert_wf`: on a `WF` state, `insert` yields a `WF` state
+  whether it succeeds or fails (`HasPack`, `LawfulEntity`). Part 1's
+  `Txn.denote_wf` is renamed `denote_wf_of_unchanged`; the name
+  `denote_wf` is reserved for the whole-program law (remainder).
+- **M15b.** Laws LeanAPI theorems need, in `LeanDb/Typed/Laws.lean`.
+  Exact plans are denotational (`approx.denote = pred.denote` when there
+  is no opaque leaf). Aggregates are `count = size ∘ rows`,
+  `exists = !isEmpty ∘ rows`, `first = head? ∘ rows`. Codecs carry
+  `LawfulColCodec.roundTrip` and `LawfulSqlOrd.order_toCol`; `Nat` is
+  bounded to `natSqlMax`. Reads do not write (`Txn.ReadOnly`). Failure
+  exactness is `iff` against `firstDuplicate` / `firstMissingRef` in
+  declaration order. Table frames (`get_set_other` lifted to each write)
+  and query frames (`denote_eq_of_admitted`, including joins). Remainder
+  is listed in `docs/typed-interface.md`.
+- **M15a.** Meaning agrees with SQLite on the M14 review findings D1–D10.
+  Child lists are in `DbState.snapshot`; two-level cascade already
+  agreed (`deleteAt`); `Option (Ref)` is a typed FK and child-list
+  `Ref`s are refused at `schema%`; `append` CAS compares list contents
+  and checks parent unique/FK; `orderBy` pushes SQL only for `SqlOrd`
+  (closed enums sort in Lean); `Current` has a private constructor;
+  `Nat` above `Int64.max` is not `Checked`; `first` after `limit := 0`
+  is `none` and huge windows apply in Lean; a join keeps a left-side
+  quantifier; mixed-invariant `patch` is `SetError.invalid`;
+  `UpdateError.stale` `BEq` compares payloads; issued ids are positive
+  (`Id.toNat`, `Table.refsOk`). `LeanDb.ExecutesAsMeaning s` is the
+  named hypothesis for LeanAPI (not an axiom). Harness: 572 fixed-seed
+  cases. Docs: `docs/typed-interface.md`.
+- **M15-pre.** `DbState` is a lawful `(t : Fin nTables) → Table (pack t).ty`
+  with no `unsafe` / `implemented_by` in `LeanDb/Typed`. `get` / `set` /
+  `load` are the executed definitions; `get_set_same`, `get_set_other`,
+  `empty_rows`, and `insert_team_on_empty` are proved. `Read.get` /
+  `lookup` return `Valid α` (invariant proof; coerces to `Stored`);
+  `Txn.update` / `append` take that proof plus `Checked` so callers need
+  not re-check. `deleteAt` is fueled by `rowCount` (no `partial`).
+  `exact_plan` is kernel-reducible (`decide`, not `native_decide`).
+  `scripts/CheckAxioms.lean` allowlists `propext` / `Classical.choice` /
+  `Quot.sound`. Harness compares production `load` to `denote` through
+  lawful `get`.
+- **M15-pre (part 2).** `Table.rows : List (Valid α)` so read evidence
+  is by construction (`Has.entity_eq` / `Table.cast`). `Read.first` /
+  `all` / `page` answer `Valid α` (joins `Valid α × Valid β`);
+  `Query.from` stays `Stored`. Decode-time invariant failure is
+  `DbFault.corruption`. `deleteAt` erases before walking (fuel =
+  `rowCount` suffices on a finite cascade graph). LeanAPI `writeStep`'s
+  invariant `if` can be deleted: `Read.first` on a filtered query
+  already returns `Valid`. `TestsM14c.lean` random harness: 100 cases
+  covering field-subset `patch`, cascade delete, and exact joins.
+- **M14c.** Close remaining QUERIES.md §3 / §5 gaps: `patch` writes only
+  the named fields (meaning merge and SQL `UPDATE`); `SetError` lists
+  only constraints over written fields (`Unique.Touching` /
+  `ForeignKey.Within` reduce to `Empty`); window/`first`/`count`/`exists`
+  refuse a non-exact plan at elaboration; FK `join` is a SQL `JOIN`;
+  decidable `DbState.checkWF` (harness after every successful write);
+  `Runtime.Service.runRead` on a reader snapshot and `runTxn` on the
+  writer; per-FK `ON DELETE` RESTRICT or CASCADE (`cascade%`), mirrored
+  in SQLite, meaning, and `DeleteError.Restricting`. Tests in
+  `TestsM14c.lean`. Remaining deviations are listed in
+  `docs/typed-interface.md`.
+- **M14b.** Typed writes and transaction programs: schema-derived
+  `InsertError` / `UpdateError` / `SetError` / `AppendError` /
+  `DeleteError`, `Txn σ s ε α` with ST-style `Current σ α`, `Txn.denote`
+  and `Txn.run` (`BEGIN IMMEDIATE`, SAVEPOINT per write, constraints
+  checked in declaration order), and an execution-equals-meaning harness
+  (`LeanDb/Typed/Harness.lean`, `TestsM14b.lean`).
+- **LDB-24.** `readSnapshot` is public: a deferred `BEGIN DEFERRED`
+  snapshot for multi-statement reads, so adapters need not rebuild one.
+- **LDB-23.** `Pred.Snapshot.rows` fails on an undecodable row instead of
+  dropping it (which made `forall` vacuously true over corrupt data).
+- **LDB-22.** `count` / `exists?` apply the lambda, not only the plan, so
+  a residual (or a hand-written `.tt` plan) cannot overcount. `countP` /
+  `existsP` still push `COUNT(*)` / `EXISTS` for exact plans.
+- **LDB-21.** `patch` refuses a guard that contains an opaque leaf.
+  Opaque used to render as true, so a residual false guard still wrote.
+- **LDB-20.** Multi-statement verbs that join an outer transaction run
+  under a SAVEPOINT, so catching their error and committing cannot keep
+  partial effects.
+- **LDB-19.** `Runtime.Service.withReader` locks each pooled connection
+  and never hands out the writer. `readers := 0` still opens one
+  dedicated read-only slot, so a reader cannot write and two callbacks
+  cannot share one SQLite handle.
+- **LDB-18.** `Nat` columns are bounded to `0 … Int64.maxValue`. Writes
+  of a larger `Nat` are `.decode`; a comparison bound outside that range
+  renders as a tautology or contradiction instead of wrapping, so
+  `select (·.n < 2^64)` agrees with its meaning. `SqlOrd Nat` stays.
+- **LDB-17.** `selectP` / `existsP` apply `LIMIT`/`OFFSET` after the
+  residual Lean filter unless the plan is exact (and not a join). A
+  pushed window on the `approx` superset can no longer hide a later
+  matching row (`existsP` false negatives, short pages).
 - **LDB-15 (#129).** `append old new`: grow an entity's child lists against
   the value that was read. Only the added child rows are written, at the
   positions after the stored ones; the parent's columns are written under

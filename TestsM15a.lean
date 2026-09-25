@@ -1,0 +1,757 @@
+import LeanDb
+
+/-! M15a: meaning vs SQLite. One regression case per D1–D10.
+
+Each case compares `run` and `denote` on the answer (including a typed
+failure with payload), and on the final tables via `load`/`get`. A
+`DbFault` is recorded on the execution side (meaning never produces one).
+-/
+
+namespace TestsM15a
+
+open LeanDb
+open LeanDb.Harness
+
+private def check (condition : Bool) (message : String) : IO Unit :=
+  unless condition do throw <| IO.userError s!"FAIL: {message}"
+
+private def check' (condition : Bool) (message : String) : DbM Unit :=
+  unless condition do throw (.sqlite s!"FAIL: {message}")
+
+private def expectOk (r : Except DbError α) (context : String) : IO α :=
+  match r with
+  | .ok a => pure a
+  | .error e => throw <| IO.userError s!"FAIL: {context}: {e}"
+
+inductive Status where
+  | backlog | inProgress | done
+  deriving Repr, DecidableEq, Ord, BEq, LeanDb.ClosedEnum
+
+structure Org where
+  name : String
+  deriving Repr, BEq, LeanDb.Entity
+
+structure Team where
+  name : String
+  org : Ref Org
+  deriving Repr, BEq
+
+cascade% Team.org
+deriving instance LeanDb.Entity for Team
+
+structure Member where
+  name : String
+  team : Ref Team
+  deriving Repr, BEq
+
+cascade% Member.team
+deriving instance LeanDb.Entity for Member
+
+structure Doc where
+  title : String
+  owner : Option (Ref Member)
+  deriving Repr, BEq, LeanDb.Entity
+
+structure Job where
+  title : String
+  status : Status
+  deriving Repr, BEq, LeanDb.Entity
+
+structure Item where
+  label : String
+  deriving Repr, BEq, LeanDb.Inline
+
+structure Bag where
+  name : String
+  items : List Item
+  deriving Repr, BEq, LeanDb.Entity
+
+unique% Bag.byName := name
+
+structure Counter where
+  n : Nat
+  deriving Repr, BEq, LeanDb.Entity
+
+structure Badge where
+  label : String
+  deriving Repr, BEq, LeanDb.Inline
+
+structure Crew where
+  name : String
+  team : Ref Team
+  badges : List Badge
+  deriving Repr, BEq, LeanDb.Entity
+
+/-- Invariant that mixes two columns, for D10. -/
+structure Pair where
+  a : String
+  b : String
+  deriving Repr, BEq
+
+@[leandb_invariant]
+def Pair.invariant (p : Pair) : Bool := p.a == p.b
+
+deriving instance LeanDb.Entity for Pair
+
+schema% S := Org, Team, Member, Doc, Job, Bag, Counter, Crew, Pair
+
+private def specs : List TableSpec := IsSchema.specs S
+
+private def dbPath : System.FilePath := ".lake" / "leandb_test_m15a.sqlite"
+
+private def fresh (p : System.FilePath) : IO Unit := do
+  if ← p.pathExists then IO.FS.removeFile p
+  for suffix in ["-wal", "-shm"] do
+    let side : System.FilePath := p.toString ++ suffix
+    if ← side.pathExists then IO.FS.removeFile side
+
+private def ck {α} [Entity α] (v : α)
+    (h : Invariant α v := by
+      unfold Invariant
+      simp only [sqlRangeOk]
+      first | trivial | (refine ⟨trivial, ?_⟩; decide) | decide) :
+    Checked α :=
+  Checked.of v h
+
+private def stateEqS (a b : DbState S) : Bool :=
+  getEq (α := Org) a b && getEq (α := Team) a b && getEq (α := Member) a b &&
+    getEq (α := Doc) a b && getEq (α := Job) a b && getEq (α := Bag) a b &&
+    getEq (α := Counter) a b && getEq (α := Crew) a b && getEq (α := Pair) a b
+
+/-- One comparison: `run` vs `denote`. `agree` is true only when both
+    produced a typed result (no `DbFault`) with equal payload and equal
+    tables. -/
+private def cmpTxn {ε α} (p : {σ : Type} → Txn σ S ε α)
+    (eq : Except ε α → Except ε α → Bool) (msg : String)
+    (verbose : Bool := true) :
+    DbM Bool := do
+  let st0 ← DbState.load (s := S)
+  requireWF st0 s!"{msg} (load)"
+  let (want, stD) := Txn.denote (σ := Unit) (s := S) (p (σ := Unit)) st0
+  match ← Txn.run (s := S) p with
+  | .error f =>
+      let st1 ← DbState.load (s := S)
+      requireWF st1 s!"{msg} (load after fault)"
+      IO.println s!"  {msg}: DISAGREE run=DbFault {f} stateEq={stateEqS st1 stD}"
+      return false
+  | .ok got =>
+      let st1 ← DbState.load (s := S)
+      requireWF st1 s!"{msg} (load after)"
+      let ans := eq got want
+      let stOk := stateEqS st1 stD
+      let wfD := DbState.checkWF stD
+      unless wfD do
+        IO.println s!"  {msg}: denote checkWF=false"
+      if ans && stOk then
+        if verbose then IO.println s!"  {msg}: AGREE"
+        return true
+      else
+        IO.println s!"  {msg}: DISAGREE ans={ans} state={stOk}"
+        return false
+
+private def cmpRead {α} (r : Read S α) (eq : α → α → Bool) (msg : String) :
+    DbM Bool := do
+  let st0 ← DbState.load (s := S)
+  requireWF st0 s!"{msg} (load)"
+  let want := Read.denote (s := S) r st0
+  match ← Read.run (s := S) r with
+  | .error f =>
+      IO.println s!"  {msg}: DISAGREE run=DbFault {f}"
+      return false
+  | .ok got =>
+      let st1 ← DbState.load (s := S)
+      requireWF st1 s!"{msg} (after)"
+      if eq got want then
+        IO.println s!"  {msg}: AGREE"
+        return true
+      else
+        IO.println s!"  {msg}: DISAGREE run≠denote"
+        return false
+
+private def eqEmpty {α} (eq : α → α → Bool) :
+    Except Empty α → Except Empty α → Bool
+  | .ok a, .ok b => eq a b
+  | .error e, _ => nomatch e
+  | _, .error e => nomatch e
+
+private def eqOptNat : Except Empty (Option Int64) → Except Empty (Option Int64) → Bool :=
+  eqEmpty fun a b => a == b
+
+private def eqStr : Except Empty String → Except Empty String → Bool :=
+  eqEmpty fun a b => a == b
+
+private def eqInsDoc :
+    Except Empty (Except (InsertError Doc) Int64) →
+    Except Empty (Except (InsertError Doc) Int64) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => a == b
+    | .error (.missingRef _), .error (.missingRef _) => true
+    | .error (.duplicate ..), .error (.duplicate ..) => true
+    | _, _ => false
+
+private def eqAppLabels :
+    Except Empty (Except (AppendError Bag) (List String)) →
+    Except Empty (Except (AppendError Bag) (List String)) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => a == b
+    | .error .gone, .error .gone => true
+    | .error (.stale a), .error (.stale b) => a.id == b.id && a.val == b.val
+    | .error (.notAppend _), .error (.notAppend _) => true
+    | .error (.duplicate ..), .error (.duplicate ..) => true
+    | .error (.missingRef _), .error (.missingRef _) => true
+    | _, _ => false
+
+/-! ## D1: filters on child-list contents -/
+
+private def bagsWithX : Query S [Bag] (Stored Bag) :=
+  (Query.from Bag).where' (fun b => b.val.items.any (fun i => i.label == "x"))
+
+private def bagsAllX : Query S [Bag] (Stored Bag) :=
+  (Query.from Bag).where' (fun b => b.val.items.all (fun i => i.label == "x"))
+
+private def namesOf (xs : List (Valid Bag)) : List String := xs.map (·.val.name)
+
+private def testD1 : IO Bool := do
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let _ ← LeanDb.insert Bag ⟨"hasX", [⟨"x"⟩]⟩
+    let _ ← LeanDb.insert Bag ⟨"noX", [⟨"y"⟩]⟩
+    check' bagsWithX.exact "D1 any should be exact"
+    check' bagsAllX.exact "D1 all should be exact"
+    let a ← cmpRead (Read.all bagsWithX)
+      (fun x y => namesOf x == namesOf y) "D1 any"
+    let c ← cmpRead (Read.count bagsWithX) (· == ·) "D1 count"
+    let al ← cmpRead (Read.all bagsAllX)
+      (fun x y => namesOf x == namesOf y) "D1 forall"
+    return a && c && al
+  ) "D1"
+
+/-! ## D2: cascades more than one level -/
+
+private def testD2 : IO Bool := do
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let o ← LeanDb.insert Org ⟨"o"⟩
+    let t ← LeanDb.insert Team ⟨"t", o.id⟩
+    let _ ← LeanDb.insert Member ⟨"m", t.id⟩
+    cmpTxn (fun {_} => do
+        let r ← Txn.delete (α := Org) o.id
+        return r.toOption.map (·.id.toInt64))
+      eqOptNat "D2 cascade Org→Team→Member"
+  ) "D2"
+
+/-! ## D3: Option (Ref) invisible to the typed layer -/
+
+private def testD3 : IO Bool := do
+  fresh dbPath
+  let a ← expectOk (← withDb dbPath specs do
+    cmpTxn (fun {_} => do
+        let r ← Txn.insert (α := Doc) (ck ⟨"d", some ⟨99⟩⟩)
+        return r.map (fun c => c.id.toInt64))
+      eqInsDoc "D3 insert dangling Option Ref"
+  ) "D3 insert"
+  fresh dbPath
+  let b ← expectOk (← withDb dbPath specs do
+    let o ← LeanDb.insert Org ⟨"o2"⟩
+    let t ← LeanDb.insert Team ⟨"t2", o.id⟩
+    let m ← LeanDb.insert Member ⟨"m2", t.id⟩
+    let _ ← LeanDb.insert Doc ⟨"d2", some m.id⟩
+    cmpTxn (fun {_} => do
+        let r ← Txn.delete (α := Member) m.id
+        return (match r with
+          | .ok _ => "ok"
+          | .error .gone => "gone"
+          | .error (.restricted _ _) => "restricted"))
+      eqStr "D3 delete Member referenced by Option Ref"
+  ) "D3 delete"
+  return a && b
+
+/-! ## D4: append staleness and parent constraints -/
+
+private def testD4 : IO Bool := do
+  fresh dbPath
+  let a ← expectOk (← withDb dbPath specs do
+    let b ← LeanDb.insert Bag ⟨"ap", [⟨"a"⟩]⟩
+    let _ ← LeanDb.update b ⟨"ap", [⟨"b"⟩]⟩
+    let bv ← match Valid.ofStored? b with
+      | some v => pure v
+      | none => throw (.sqlite "D4 bag not Valid")
+    -- `b` still has items=[a] in the handle; stored list is [b] (same length).
+    cmpTxn (fun {_} => do
+        let r ← Txn.append (α := Bag) bv (ck ⟨"ap", [⟨"a"⟩, ⟨"c"⟩]⟩)
+        return r.map (fun s => s.val.items.map Item.label))
+      eqAppLabels "D4 append same-length changed list"
+  ) "D4 lists"
+  fresh dbPath
+  let b ← expectOk (← withDb dbPath specs do
+    let _ ← LeanDb.insert Bag ⟨"taken", []⟩
+    let mine ← LeanDb.insert Bag ⟨"mine", []⟩
+    let mv ← match Valid.ofStored? mine with
+      | some v => pure v
+      | none => throw (.sqlite "D4 mine not Valid")
+    cmpTxn (fun {_} => do
+        let r ← Txn.append (α := Bag) mv (ck ⟨"taken", [⟨"z"⟩]⟩)
+        return (match r with | .ok _ => "ok" | .error _ => "appendError"))
+      eqStr "D4 append onto taken unique key"
+  ) "D4 unique"
+  return a && b
+
+/-! ## D5: ClosedEnum orderBy -/
+
+private def jobsByStatus : Query S [Job] (Stored Job) :=
+  (Query.from Job).orderBy (.asc (Job.Field.status : Entity.Field Job))
+
+private theorem jobsByStatus_exact : jobsByStatus.exact = true := by
+  unfold jobsByStatus Query.orderBy Query.exact Query.from
+  rfl
+
+private def testD5 : IO Bool := do
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let _ ← LeanDb.insert Job ⟨"a", .done⟩
+    let _ ← LeanDb.insert Job ⟨"b", .backlog⟩
+    let _ ← LeanDb.insert Job ⟨"c", .inProgress⟩
+    let a ← cmpRead (Read.all jobsByStatus)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D5 all"
+    let f ← cmpRead (Read.first jobsByStatus jobsByStatus_exact)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D5 first"
+    return a && f
+  ) "D5"
+
+/-! ## D6: forged Current is unrepresentable; schema membership is compile-time -/
+
+/--
+error: Invalid `⟨...⟩` notation: Constructor for `LeanDb.Current` is marked as private
+-/
+#guard_msgs in
+example {σ} (s : Stored Org) : Current σ Org :=
+  ⟨s, by decide⟩
+
+private def testD6 : IO Bool := pure true
+
+/-! ## D7: Nat above Int64.max is not `Checked` -/
+
+/--
+error: Tactic `decide` proved that the proposition
+  Invariant Counter { n := 2 ^ 63 }
+is false
+-/
+#guard_msgs in
+example : Checked Counter := Checked.of ⟨2^63⟩ (by decide)
+
+private def testD7 : IO Bool := do
+  match Entity.check Counter ⟨2^63⟩ with
+  | .ok _ =>
+      IO.println "  D7: DISAGREE Entity.check accepted Nat 2^63"
+      return false
+  | .error names =>
+      IO.println s!"  D7 Entity.check 2^63: AGREE refused {names.names}"
+  match Entity.check Counter ⟨1⟩ with
+  | .error _ =>
+      IO.println "  D7: DISAGREE Entity.check refused Nat 1"
+      return false
+  | .ok _ => pure ()
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let c ← LeanDb.insert Counter ⟨1⟩
+    cmpTxn (fun {_} => do
+        match ← Txn.get Counter c.id with
+        | none => return "none"
+        | some row =>
+            let r ← Txn.set (α := Counter) row (ck ⟨2⟩)
+            return (match r with | .ok s => s!"ok {s.val.n}" | .error _ => "setError"))
+      eqStr "D7 set Nat 2 (in range)"
+  ) "D7 set"
+
+/-! ## D8: first after limit 0 -/
+
+private def testD8 : IO Bool := do
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let _ ← LeanDb.insert Job ⟨"a", .done⟩
+    let q0 := (Query.from Job).withWindow { limit := some 0 }
+    let z ← cmpRead (Read.first q0)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D8 first limit 0"
+    let qHuge := (Query.from Job).withWindow
+      { offset := Int64.maxValue.toNatClampNeg }
+    let h ← cmpRead (Read.all qHuge)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D8 offset Int64.max"
+    let qLim := (Query.from Job).withWindow
+      { limit := some Int64.maxValue.toNatClampNeg }
+    let l ← cmpRead (Read.all qLim)
+      (fun x y => (x.map (·.val.title)) == (y.map (·.val.title))) "D8 limit Int64.max"
+    return z && h && l
+  ) "D8"
+
+/-! ## D9: quantifier then join -/
+
+private def crewsX : Query S [Crew] (Stored Crew) :=
+  (Query.from Crew).where' (fun c => c.val.badges.any (fun b => b.label == "x"))
+
+private def crewsXJoin : Query S [Crew, Team] (Stored Crew × Stored Team) :=
+  crewsX.join Crew.ForeignKey.team
+
+/-- Join after a child-list filter: `true` only when run equals denote
+    *and* the matching crew is present (both sides used to drop it). -/
+private def testD9 : IO Bool := do
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let o ← LeanDb.insert Org ⟨"o"⟩
+    let t ← LeanDb.insert Team ⟨"t", o.id⟩
+    let _ ← LeanDb.insert Crew ⟨"cx", t.id, [⟨"x"⟩]⟩
+    check' crewsX.exact "D9 crewsX should be exact (quantifier is a plan leaf)"
+    let a ← cmpRead (Read.all crewsX)
+      (fun x y => (x.map (·.val.name)) == (y.map (·.val.name))) "D9 crewsX"
+    let st ← DbState.load (s := S)
+    let wantJoin := (Read.denote (s := S) (Read.all crewsXJoin) st).map (·.1.val.name)
+    let gotJoin ← match ← Read.run (s := S) (Read.all crewsXJoin) with
+      | .error f =>
+          IO.println s!"  D9 join: DISAGREE run=DbFault {f}"
+          pure ([] : List String)
+      | .ok got => pure (got.map (·.1.val.name))
+    let jAgree := gotJoin == wantJoin
+    let jKept := wantJoin == ["cx"] && gotJoin == ["cx"]
+    IO.println s!"  D9 join: agree={jAgree} kept={jKept} exact={crewsXJoin.exact} denote={wantJoin} run={gotJoin}"
+    -- D9 itself is the join keeping the quantifier; crewsX is D1.
+    return jKept && jAgree && a
+  ) "D9"
+
+/-! ## D10: patch that breaks a mixed invariant -/
+
+private def testD10 : IO Bool := do
+  fresh dbPath
+  expectOk (← withDb dbPath specs do
+    let p ← LeanDb.insert Pair ⟨"xx", "xx"⟩
+    cmpTxn (fun {_} => do
+        match ← Txn.get Pair p.id with
+        | none => return "none"
+        | some row =>
+            -- `new` is Checked (a=b=yy) but merge of `a` only yields a=yy, b=xx.
+            let r ← Txn.patch (α := Pair) row (Fields.singleton Pair.Field.a) (ck ⟨"yy", "yy"⟩)
+            return (match r with
+              | .ok s => s!"ok {s.val.a}/{s.val.b}"
+              | .error .gone => "gone"
+              | .error (.invalid _) => "invalid"
+              | .error _ => "err"))
+      eqStr "D10 patch mixed invariant"
+  ) "D10"
+
+/-- A program over `S` cannot mention an entity that is not a table of `S`. -/
+structure Ghost where
+  name : String
+  deriving Repr, BEq, LeanDb.Entity
+
+/--
+error: failed to synthesize instance of type class
+  IsSchema.Has S Ghost
+
+Hint: Type class instance resolution failures can be inspected with the `set_option trace.Meta.synthInstance true` command.
+-/
+#guard_msgs in
+example : Read S (Option (Valid Ghost)) := Read.get Ghost ⟨1⟩
+
+structure ChildWithRef where
+  who : Ref Member
+  deriving Repr, BEq, LeanDb.Inline
+
+structure ParentWithChildRef where
+  name : String
+  kids : List ChildWithRef
+  deriving Repr, BEq, LeanDb.Entity
+
+/--
+error: schema: TestsM15a.ParentWithChildRef field 'kids' is a child list of TestsM15a.ChildWithRef, which has a Ref field 'who'; foreign keys inside child-list records are not typed (SQLite would enforce them, the meaning would not). Put the reference on a schema table.
+-/
+#guard_msgs in
+schema% BadChildRef := ParentWithChildRef
+
+/-! ## Float unique key: IEEE and SQLite both equate `-0.0` with `0.0`. -/
+
+structure Measure where
+  x : Float
+  deriving Repr, BEq, LeanDb.Entity
+
+unique% Measure.byX := x
+
+schema% Measures := Measure
+
+private def measureSpecs : List TableSpec := IsSchema.specs Measures
+private def measurePath : System.FilePath := ".lake" / "leandb_test_m15a_measure.sqlite"
+
+private def ckM (v : Measure)
+    (h : Invariant Measure v := by
+      unfold Invariant
+      simp only [sqlRangeOk]
+      trivial) :
+    Checked Measure :=
+  Checked.of v h
+
+private def eqInsM :
+    Except Empty (Except (InsertError Measure) Int64) →
+    Except Empty (Except (InsertError Measure) Int64) → Bool :=
+  eqEmpty fun
+    | .ok a, .ok b => a == b
+    | .error (.duplicate ..), .error (.duplicate ..) => true
+    | .error (.missingRef _), .error (.missingRef _) => true
+    | _, _ => false
+
+private def cmpTxnM {ε α} (p : {σ : Type} → Txn σ Measures ε α)
+    (eq : Except ε α → Except ε α → Bool) (msg : String) : DbM Bool := do
+  let st0 ← DbState.load (s := Measures)
+  requireWF st0 s!"{msg} (load)"
+  let (want, stD) := Txn.denote (σ := Unit) (s := Measures) (p (σ := Unit)) st0
+  match ← Txn.run (s := Measures) p with
+  | .error f =>
+      IO.println s!"  {msg}: DISAGREE run=DbFault {f}"
+      return false
+  | .ok got =>
+      let st1 ← DbState.load (s := Measures)
+      requireWF st1 s!"{msg} (load after)"
+      let ans := eq got want
+      let stOk := getEq (α := Measure) st1 stD
+      if ans && stOk then
+        IO.println s!"  {msg}: AGREE"
+        return true
+      else
+        IO.println s!"  {msg}: DISAGREE ans={ans} state={stOk}"
+        return false
+
+/-- Insert `0.0`, then `-0.0` (duplicate: IEEE and SQLite), then `1.5` twice. -/
+private def testFloatUnique : IO Bool := do
+  fresh measurePath
+  expectOk (← withDb measurePath measureSpecs do
+    let z ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(0.0 : Float)⟩)
+        return r.map (fun c => c.id.toInt64))
+      eqInsM "float unique insert 0.0"
+    let nz ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(-0.0 : Float)⟩)
+        return match r with
+          | .ok _ => "ok"
+          | .error (.duplicate ..) => "dup"
+          | .error (.missingRef _) => "missing")
+      eqStr "float unique insert -0.0 clashes with 0.0"
+    let a ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(1.5 : Float)⟩)
+        return r.map (fun c => c.id.toInt64))
+      eqInsM "float unique insert 1.5"
+    let b ← cmpTxnM (fun {_} => do
+        let r ← Txn.insert (α := Measure) (ckM ⟨(1.5 : Float)⟩)
+        return match r with
+          | .ok _ => "ok"
+          | .error (.duplicate ..) => "dup"
+          | .error (.missingRef _) => "missing")
+      eqStr "float unique insert 1.5 again"
+    return z && nz && a && b
+  ) "float unique"
+
+private def testStaleBEq : IO Bool := do
+  let a : Stored Bag := ⟨⟨1⟩, ⟨"a", [⟨"x"⟩]⟩⟩
+  let b : Stored Bag := ⟨⟨1⟩, ⟨"a", [⟨"y"⟩]⟩⟩
+  let e1 : UpdateError Bag := .stale a
+  let e2 : UpdateError Bag := .stale b
+  let sameIdDiffVal := e1 == e2
+  let same := (e1 == e1)
+  IO.println s!"  stale BEq same-id different-val = {sameIdDiffVal} (want false); reflexive = {same}"
+  let id1 : LeanDb.Id Bag := ⟨1⟩
+  let natOk := Id.toNat id1 == 1 && Id.positive id1
+  IO.println s!"  Id.toNat 1 = {Id.toNat id1} positive={Id.positive id1}"
+  return !sameIdDiffVal && same && natOk
+
+private def eqNat : Except Empty Nat → Except Empty Nat → Bool :=
+  eqEmpty fun a b => a == b
+
+private def bump (seed n : Nat) (ok : Bool) : DbM Nat := do
+  unless ok do throw (.sqlite s!"FAIL: M15a harness seed {seed} case {n}")
+  return n + 1
+
+/-- One seeded program: child lists, Option (Ref), ClosedEnum orderBy,
+    two-level cascade, restrict, unique/FK, insert/update/set/patch/append/
+    delete/orElse/throw, and a read inside the Txn after a write. -/
+private def harnessSeed (seed : Nat) : DbM Nat := do
+  let mut rng := Rng.ofNat (seed * 1664525 + 1013904223)
+  let mut n := 0
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (ck (⟨s!"o{seed}"⟩ : Org))
+      return r.id.toNat) eqNat s!"H{seed} org" false)
+  let st ← DbState.load (s := S)
+  let org ← match (DbState.get (α := Org) st).rows.head? with
+    | some o => pure o
+    | none => throw (.sqlite "FAIL: org")
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Team) (ck (⟨s!"t{seed}", org.id⟩ : Team))
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} team" false)
+  let st ← DbState.load (s := S)
+  let team ← match (DbState.get (α := Team) st).rows.head? with
+    | some t => pure t
+    | none => throw (.sqlite "FAIL: team")
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Member) (ck (⟨s!"m{seed}", team.id⟩ : Member))
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} member" false)
+  let st ← DbState.load (s := S)
+  let mem ← match (DbState.get (α := Member) st).rows.head? with
+    | some m => pure m
+    | none => throw (.sqlite "FAIL: member")
+  let (r0, k) := rng.nat 0 2
+  rng := r0
+  let owner : Option (Ref Member) := if k == 0 then none else some mem.id
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Doc) (ck ⟨s!"d{seed}", owner⟩)
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error (.missingRef _) => "missing"
+        | .error _ => "dup") eqStr s!"H{seed} doc" false)
+  let stt : Status := match k with | 0 => .backlog | 1 => .inProgress | _ => .done
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (ck (⟨s!"j{seed}", stt⟩ : Job))
+      return r.id.toNat) eqNat s!"H{seed} job" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Bag) (ck ⟨s!"b{seed}", [⟨"x"⟩]⟩)
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} bag" false)
+  let st ← DbState.load (s := S)
+  match (DbState.get (α := Bag) st).rows.head? with
+  | none => pure ()
+  | some b =>
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          let r ← Txn.append (α := Bag) b (ck ⟨b.val.name, b.val.items ++ [⟨"y"⟩]⟩)
+          return match r with
+            | .ok s => s.val.items.map fun (it : Item) => it.label
+            | .error _ => ["err"]) (eqEmpty fun a b => a == b) s!"H{seed} append" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (match Entity.check Counter ⟨seed % 8⟩ with
+        | .ok c => c
+        | .error _ => ck (⟨0⟩ : Counter))
+      return r.id.toNat) eqNat s!"H{seed} counter" false)
+  let st ← DbState.load (s := S)
+  match (DbState.get (α := Counter) st).rows.head? with
+  | none => pure ()
+  | some c =>
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          match ← Txn.get Counter c.id with
+          | none => return "none"
+          | some row =>
+              let cNew ← match Entity.check Counter ⟨(c.val.n + 1) % 8⟩ with
+                | .ok x => pure x
+                | .error _ => pure (ck (⟨0⟩ : Counter))
+              let r ← Txn.set (α := Counter) row cNew
+              return match r with
+                | .ok s => s!"ok {s.val.n}"
+                | .error _ => "err") eqStr s!"H{seed} set" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insert (α := Crew) (ck (⟨s!"c{seed}", team.id, [⟨"x"⟩]⟩ : Crew))
+      return match r with
+        | .ok c => s!"ok {c.id.toNat}"
+        | .error _ => "err") eqStr s!"H{seed} crew" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let r ← Txn.insertNew (ck (⟨"aa", "aa"⟩ : Pair))
+      return r.id.toNat) eqNat s!"H{seed} pair" false)
+  let st ← DbState.load (s := S)
+  match (DbState.get (α := Pair) st).rows.head? with
+  | none => pure ()
+  | some p =>
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          match ← Txn.get Pair p.id with
+          | none => return "none"
+          | some row =>
+              let r ← Txn.set (α := Pair) row (ck ⟨"bb", "bb"⟩)
+              return match r with
+                | .ok s => s!"ok {s.val.a}/{s.val.b}"
+                | .error (.invalid _) => "invalid"
+                | .error .gone => "gone"
+                | .error _ => "err") eqStr s!"H{seed} set pair" false)
+      n ← bump seed n (← cmpTxn (fun {_} => do
+          match ← Txn.get Pair p.id with
+          | none => return "none"
+          | some row =>
+              let r ← Txn.patch (α := Pair) row (Fields.singleton Pair.Field.a)
+                (ck ⟨"zz", "zz"⟩)
+              return match r with
+                | .ok s => s!"ok {s.val.a}/{s.val.b}"
+                | .error (.invalid _) => "invalid"
+                | .error .gone => "gone"
+                | .error _ => "err") eqStr s!"H{seed} patch mix" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let titles ← Txn.liftRead (Read.all jobsByStatus)
+      return titles.map (·.val.title)) (eqEmpty fun a b => a == b)
+    s!"H{seed} orderBy enum" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let _ ← Txn.insertNew (ck (⟨s!"j2{seed}", .done⟩ : Job))
+      let first ← Txn.liftRead (Read.first jobsByStatus jobsByStatus_exact)
+      return first.map (·.val.title)) (eqEmpty fun a b => a == b)
+    s!"H{seed} read after write" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      match ← Txn.delete (α := Member) mem.id with
+      | .ok _ => return "deleted"
+      | .error (.restricted _ _) => return "restricted"
+      | .error .gone => return "gone") eqStr s!"H{seed} delete member" false)
+  n ← bump seed n (← cmpTxn (fun {_} =>
+      Txn.orElse (pure (Except.error "nope" : Except String Nat)) (fun _ => pure 7))
+    eqNat s!"H{seed} orElse throw" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      let _ ← Txn.insertNew (ck (⟨s!"tmp{seed}"⟩ : Org))
+      Txn.throw (α := Nat) "rollback")
+    (fun
+      | .error a, .error b => a == b
+      | .ok x, .ok y => x == y
+      | _, _ => false) s!"H{seed} throw abort" false)
+  -- extra jobs so orderBy/count see several rows (still ≪ 30)
+  for i in [0:3] do
+    let (r1, k) := rng.nat 0 2
+    rng := r1
+    let stt : Status := match k with | 0 => .backlog | 1 => .inProgress | _ => .done
+    n ← bump seed n (← cmpTxn (fun {_} => do
+        let r ← Txn.insertNew (ck (⟨s!"jx{seed}_{i}", stt⟩ : Job))
+        return r.id.toNat) eqNat s!"H{seed} job extra {i}" false)
+  n ← bump seed n (← cmpTxn (fun {_} => do
+      Txn.liftRead (Read.count jobsByStatus jobsByStatus_exact))
+    eqNat s!"H{seed} count" false)
+  return n
+
+private def testHarness : IO Nat := do
+  let mut n := 0
+  for seed in [0:26] do
+    fresh dbPath
+    n := n + (← expectOk (← withDb dbPath specs (harnessSeed seed))
+      s!"M15a harness {seed}")
+  IO.println s!"M15a random harness cases: {n}"
+  return n
+
+def run : IO Unit := do
+  let d1 ← testD1
+  let d2 ← testD2
+  let d3 ← testD3
+  let d4 ← testD4
+  let d5 ← testD5
+  let d6 ← testD6
+  let d7 ← testD7
+  let d8 ← testD8
+  let d9 ← testD9
+  let d10 ← testD10
+  let beq ← testStaleBEq
+  check beq "UpdateError.stale BEq compares payloads; issued ids are positive"
+  -- Pinned against `79cfbcc` (M15-pre2). `true` = run equals denote
+  -- on answer, failure payload, and tables. Flipped to `true` as each
+  -- finding is fixed.
+  check d1 "D1 child-list any/all: run equals denote"
+  check d2 "D2 two-level cascade already agrees (M15-pre2 deleteAt)"
+  check d3 "D3 Option Ref: missingRef / restricted in both"
+  check d4 "D4 append: list CAS and parent unique/FK"
+  check d5 "D5 ClosedEnum orderBy: Lean sort in both"
+  check d6 "D6 Current constructor is private; Has is required"
+  check d7 "D7 Nat above Int64.max is not Checked"
+  check d8 "D8 first after limit 0; huge window applied in Lean"
+  check d9 "D9 join keeps the left-side quantifier"
+  check d10 "D10 mixed-invariant patch is SetError.invalid in both"
+  let fu ← testFloatUnique
+  check fu "Float unique key: -0.0 = 0.0 in IEEE and SQLite; run equals denote"
+  IO.println s!"M15a reproduce: D1={d1} D2={d2} D3={d3} D4={d4} D5={d5} D6={d6} D7={d7} D8={d8} D9={d9} D10={d10} floatUnique={fu}"
+  let n ← testHarness
+  check (decide (n ≥ 500)) s!"M15a harness has ≥ 500 cases, got {n}"
+
+end TestsM15a

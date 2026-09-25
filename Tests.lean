@@ -3,6 +3,19 @@ import Std.Http.Test.Helpers
 import TestsLdb01
 import TestsLdb15
 import TestsLdb16
+import TestsLdb17
+import TestsLdb18
+import TestsLdb19
+import TestsLdb20
+import TestsLdb21
+import TestsLdb22
+import TestsLdb23
+import TestsLdb24
+import TestsM14a
+import TestsM14b
+import TestsM14c
+import TestsM15a
+import CheckAxioms
 
 /-! Engine tests: codecs, deriving, the dependent select against a real
 SQLite file, CAS staleness, FK restriction. Fixture types live here — the
@@ -3498,5 +3511,17 @@ def main : IO UInt32 := do
   TestsLdb01.run
   TestsLdb15.run
   TestsLdb16.run
+  TestsLdb17.run
+  TestsLdb18.run
+  TestsLdb19.run
+  TestsLdb20.run
+  TestsLdb21.run
+  TestsLdb22.run
+  TestsLdb23.run
+  TestsLdb24.run
+  TestsM14a.run
+  TestsM14b.run
+  TestsM14c.run
+  TestsM15a.run
   IO.println "all engine tests passed"
   return 0

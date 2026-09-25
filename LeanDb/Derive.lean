@@ -194,6 +194,10 @@ private structure ColGen where
   /-- Derived (entity only): the reified recompute function and the
       declared-field indices it is applied to. -/
   recompute : Option (Term × Array Nat) := none
+  /-- `true` when `toSql?` of this column can return `none` (`Nat`, or
+      `Option` of such). Other columns always encode, so `rangeOk` is
+      definitionally `true` and `decide` works on free rows. -/
+  canRefuse : Bool := false
   deriving Inhabited
 
 /-- How a declared field is encoded and decoded. -/
@@ -211,6 +215,13 @@ private inductive FieldEnc where
 private def FieldEnc.isChild : FieldEnc → Bool
   | .child .. => true
   | _ => false
+
+/-- `toSql?` can return `none` for `Nat` (and `Option` wrapping it). -/
+private partial def tyCanRefuse (ty : Expr) : Bool :=
+  let ty := ty.consumeMData
+  if ty.isConstOf ``Nat then true
+  else if ty.isAppOfArity ``Option 1 then tyCanRefuse (ty.getArg! 0)
+  else false
 
 /-- A declared field with the columns it contributes. -/
 private structure FieldGen where
@@ -279,7 +290,7 @@ private def inlineSubFields (who : String) (owner fname : Name) (τ : Expr) :
     `parent` — the parent's `Entity` instance does not exist yet when the
     child is derived, so `RefTarget` cannot name the table). -/
 private def walkFields (who : String) (declName : Name) (entity : Bool)
-    (cascade : Array (Name × String) := #[]) : TermElabM (Array FieldGen) := do
+    (cascade : Array (Name × String) := #[]) (declaredCascade : Array Name := #[]) : TermElabM (Array FieldGen) := do
   let env ← getEnv
   let ctorInfo ← getConstInfoCtor (← getConstInfoInduct declName).ctors.head!
   let fields := getStructureFields env declName
@@ -358,7 +369,8 @@ private def walkFields (who : String) (declName : Name) (entity : Bool)
             symName := Name.mkSimple colName, colName, tyStx := sub.tyStx, getStx
             codecStx := ← `((inferInstance : LeanDb.ColCodec $(sub.tyStx)))
             specStx
-            encStx := ← `(LeanDb.ColCodec.toCol $getStx) }
+            encStx := ← `(LeanDb.ColCodec.toCol $getStx)
+            canRefuse := tyCanRefuse sub.ty }
         gens := gens.push { fname, cols, enc := .inline tyStx nextCol subs.size }
         nextCol := nextCol + subs.size
         continue
@@ -404,11 +416,16 @@ private def walkFields (who : String) (declName : Name) (entity : Bool)
         | some (_, target) =>
             `({ LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx with
                 fkTable := some $(quote target), cascade := true })
-        | none => `(LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx)
+        | none =>
+            if declaredCascade.contains fname then
+              `({ LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx with
+                  cascade := true })
+            else
+              `(LeanDb.columnSpec $(quote fname.toString) $tyStx $dfltStx)
       let col : ColGen := {
         symName := fname, colName := fname.toString, tyStx, getStx
         codecStx := ← `((inferInstance : LeanDb.ColCodec $tyStx))
-        specStx, encStx, recompute }
+        specStx, encStx, recompute, canRefuse := tyCanRefuse ftype }
       gens := gens.push { fname, cols := #[col], enc := .plain fname.toString tyStx nextCol }
       nextCol := nextCol + 1
     -- flattened names must not collide with anything else
@@ -427,6 +444,8 @@ private structure Built where
   derivedFn : Term
   syms : Array Term
   encode : Term
+  /-- Conjunction of `toSql?.isSome` for each column (`true` if none). -/
+  rangeOk : Term
   /-- Number of columns. -/
   n : Nat
 
@@ -469,9 +488,25 @@ private def buildShared (declName : Name) (gens : Array FieldGen) : TermElabM Bu
   if pieces.isEmpty || !run.isEmpty then pieces := pieces.push (← `(#[$run,*]))
   let mut encode := pieces[0]!
   for p in pieces[1:] do encode ← `($encode ++ $p)
+  -- `rangeOk`: `true` when no column can refuse encoding; otherwise a
+  -- conjunction of `toSql?.isSome` so `Nat` above `Int64.maxValue` is
+  -- excluded from `Checked`. Always-encodable columns (String, Ref, …)
+  -- are omitted so `rangeOk` is definitionally `true` and `decide` works
+  -- on free rows.
+  let mut checks : Array Term := #[]
+  for c in cols do
+    if c.canRefuse then
+      checks := checks.push (← `((LeanDb.ColCodec.toSql? (α := $(c.tyStx)) $(c.getStx)).isSome))
+  let rangeOk ←
+    if checks.isEmpty then `(fun _ => true)
+    else
+      let mut body := checks[0]!
+      for c in checks[1:] do
+        body ← `($body && $c)
+      `(fun r => $body)
   return { fieldTyFn := ← bySym tyAlts, getFn, codecFn := ← bySym codecAlts
            specFn := ← bySym specAlts, derivedFn := ← bySym derivedAlts, syms
-           encode := ← `(fun r => $encode), n := cols.size }
+           encode := ← `(fun r => $encode), rangeOk, n := cols.size }
 
 /-- The decode body: a right fold of per-field binds ending in the
     constructor. `table = some t` is an entity (typed `DbError`s; with
@@ -716,6 +751,45 @@ initialize invariantAttr : TagAttribute ←
 not check {declName}. Declare the invariant first, then \
 `deriving instance LeanDb.Entity for {typeName}`."
 
+/-- `cascade% User.team` — this `Ref` is `ON DELETE CASCADE`. Must be
+    declared before `deriving LeanDb.Entity`. Default is RESTRICT. -/
+structure CascadeDecl where
+  typeName : Name
+  field : Name
+  deriving Repr, BEq
+
+initialize cascadeExt : EnvExtension (Array CascadeDecl) ←
+  registerEnvExtension (pure #[])
+
+syntax (name := cascadeCmd) "cascade% " ident : command
+
+@[command_elab cascadeCmd]
+def elabCascade : CommandElab := fun stx => do
+  let `(cascade% $id:ident) := stx | throwUnsupportedSyntax
+  let n := id.getId
+  let field := Name.mkSimple n.getString!
+  let rawType := n.getPrefix
+  if rawType.isAnonymous then
+    throwError "cascade%: expected `Type.field`, got {n}"
+  let env ← getEnv
+  let ns := (← getCurrNamespace)
+  let typeName :=
+    if isStructure env rawType then rawType
+    else if isStructure env (ns ++ rawType) then ns ++ rawType
+    else rawType
+  unless isStructure env typeName do
+    throwError "cascade%: {rawType} is not a structure"
+  unless (getStructureFields env typeName).any (· == field) do
+    throwError "cascade%: {typeName} has no field '{field}'"
+  let has ← liftTermElabM do
+    return (← Meta.synthInstance?
+      (mkApp (mkConst ``LeanDb.Entity) (mkConst typeName))).isSome
+  if has then
+    throwError "cascade%: LeanDb.Entity {typeName} already exists; declare `cascade%` first, then derive"
+  if (cascadeExt.getState env).any fun e => e.typeName == typeName && e.field == field then
+    throwError "cascade%: {n} is already declared"
+  modifyEnv (cascadeExt.modifyState · (·.push { typeName, field }))
+
 /-- `deriving LeanDb.Entity` for `declName`. `tableName?` overrides the
     table name (a generated child's `<parent>_<field>`); `cascade` names
     the `Ref` fields whose FK cascades and the table each references (a
@@ -734,7 +808,9 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
   let fieldTyName := declName ++ `Field
   -- 1. The walk, then the field symbols (one per column: an inline field
   --    contributes `field_sub` for each of its sub-fields; a child list none).
-  let gens ← liftTermElabM (walkFields who declName (entity := true) cascade)
+  let gens ← liftTermElabM (walkFields who declName (entity := true) cascade
+    ((cascadeExt.getState env).filterMap fun e =>
+      if e.typeName == declName then some e.field else none))
   liftTermElabM (checkSymNames who declName gens)
   declareSymbols who declName gens
   -- 2. The child entities, one per child list, each with its own symbols
@@ -780,7 +856,8 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
           else Except.error (LeanDb.DbError.decode $(quote tblName) "*"
                  s!"expected {$n} columns, found {row.size}")
         children := [$links,*]
-        invariant := $invariant)
+        invariant := $invariant
+        rangeOk := $(b.rangeOk))
     let fieldOfCmd : TSyntax `command ← `(@[reducible] instance :
         LeanDb.FieldOf $(mkCIdent fieldTyName) $(mkCIdent declName) := ⟨fun f => f⟩)
     return (entityCmd, fieldOfCmd)

@@ -1,4 +1,5 @@
 import Std.Sync.RecursiveMutex
+import Std.Sync.Mutex
 import LeanDb.Base
 import LeanDb.Transaction
 
@@ -80,7 +81,7 @@ private structure Slot where
   state : State
   depth : Nat := 0
   gate : Option DbError := none
-  readers : Array Conn := #[]
+  readers : Array (Std.Mutex Conn) := #[]
   readerIdx : Nat := 0
 
 structure Config where
@@ -113,13 +114,14 @@ def new (b : Base) (inst : Instance) (session : SessionMode) (verify : Bool := t
     | .error e => throw <| IO.userError e.message
   try applyAuxiliary conn.raw b.auxiliary catch e => throw e
   let gate ← if verify then gateOf b conn else pure (some (.schemaInvalid "unverified"))
-  let mut readers : Array Conn := #[]
-  for _ in [0:config.readers] do
+  let nReaders := max config.readers 1
+  let mut readers : Array (Std.Mutex Conn) := #[]
+  for _ in [0:nReaders] do
     let rc ← match ← openDbRaw inst.path b.log
         { b.openConfig with busyTimeoutMs := config.readerBusyTimeoutMs } (readOnly := true) with
       | .ok c => pure c
       | .error e => throw <| IO.userError e.message
-    readers := readers.push rc
+    readers := readers.push (← Std.Mutex.new rc)
   let slot ← Std.RecursiveMutex.new { conn, state := State.ready, gate, readers }
   return { base := b, inst, session, config, slot }
 
@@ -156,23 +158,27 @@ def withConnection (s : Service) (f : Conn → IO α) : IO (Except RuntimeError 
     finally
       modify fun st => { st with depth := st.depth - 1 }
 
-/-- A pooled read-only connection (LDB-09). Does not hold the writer
-    lock for the duration of `f`, so concurrent readers proceed. With
-    `readers := 0` this falls back to the writer connection. -/
+/-- A pooled read-only connection (LDB-09, LDB-19). Does not hold the
+    writer lock for the duration of `f`, so concurrent readers on
+    distinct pool slots proceed. Each slot is locked per connection.
+    `readers := 0` still opens one dedicated reader — the writer
+    connection is never handed out as a reader. -/
 def withReader (s : Service) (f : Conn → IO α) : IO (Except RuntimeError α) := do
-  let picked : Except State Conn ← s.slot.atomically do
+  let picked : Except State (Std.Mutex Conn) ← s.slot.atomically do
     let st ← getThe Slot
     if st.state != .ready then return Except.error st.state
-    if st.readers.isEmpty then return Except.ok st.conn
+    if st.readers.isEmpty then return Except.error st.state
     let i := st.readerIdx % st.readers.size
     set { st with readerIdx := st.readerIdx + 1 }
     match st.readers[i]? with
-    | some c => return Except.ok c
-    | none => return Except.ok st.conn
+    | some m => return Except.ok m
+    | none => return Except.error st.state
   match picked with
   | .error st => return Except.error (.notReady st)
-  | .ok conn =>
-      try Except.ok <$> f conn catch e => return Except.error (.host (toString e))
+  | .ok mtx =>
+      try
+        Except.ok <$> mtx.atomically fun ref => do f (← ref.get)
+      catch e => return Except.error (.host (toString e))
 
 /-- Stop admitting work and wait for the in-flight call to finish. -/
 def drain (s : Service) : IO Unit :=
