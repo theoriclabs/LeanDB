@@ -1066,19 +1066,22 @@ theorem Table.nextOk_succ {α} [Entity α] {t : Table α}
   have ⟨hge, _⟩ := Table.nextOk_iff.mp h
   exact Table.nextOk_iff.mpr ⟨Nat.le_succ_of_le hge, Nat.succ_le_succ hbound⟩
 
+theorem LawfulEntity.decode_encode_bool {α} [Entity α] [LawfulEntity α] (v : α) :
+    (match Entity.decode (α := α) (Entity.encode v) with
+      | .ok w => Entity.encode (α := α) w == Entity.encode v
+      | .error _ => false) = true := by
+  have hl := LawfulEntity.decode_encode (α := α) v
+  cases hde : Entity.decode (α := α) (Entity.encode v) with
+  | error _ => simp [hde] at hl
+  | ok w => simpa [hde] using hl
+
 theorem Table.decodesOk_snoc {α} [Entity α] [LawfulEntity α] {t : Table α} {r : Valid α}
     (h : t.decodesOk = true) :
     Table.decodesOk { t with rows := t.rows ++ [r] } = true := by
   unfold Table.decodesOk at *
   rw [List.all_append, List.all_cons, List.all_nil, Bool.and_true]
   rw [Bool.and_eq_true]
-  refine ⟨h, ?_⟩
-  have hl := LawfulEntity.decode_encode (α := α) r.val
-  cases hde : Entity.decode (α := α) (Entity.encode r.val) with
-  | error _ =>
-      simp [hde] at hl
-  | ok w =>
-      simpa [hde] using hl
+  refine ⟨h, LawfulEntity.decode_encode_bool (α := α) r.val⟩
 
 theorem Table.childrenOk_snoc {α} [Entity α] [LawfulEntity α] {t : Table α} {r : Valid α}
     (h : t.childrenOk = true) :
@@ -1470,6 +1473,413 @@ theorem Txn.insert_wf {σ s ε α} [IsSchema s] [Entity α] [HasUnique α]
       | some _ => exact hwf
       | none => exact Txn.assign_wf st v hwf hdup hfk
 
+/-! ## WF preservation of `update` (`replaceRow`) -/
+
+theorem List.all_map {α β} (as : List α) (f : α → β) (p : β → Bool) :
+    (as.map f).all p = as.all (fun a => p (f a)) := by
+  induction as with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.map_cons, List.all_cons, ih]
+
+theorem List.any_map {α β} (as : List α) (f : α → β) (p : β → Bool) :
+    (as.map f).any p = as.any (fun a => p (f a)) := by
+  induction as with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.map_cons, List.any_cons, ih]
+
+theorem Id.beq_eq_int {α} (a b : Id α) :
+    (a == b) = (a.toInt64 == b.toInt64) :=
+  rfl
+
+theorem Id.beq_comm {α} (a b : Id α) : (a == b) = (b == a) := by
+  simp only [Id.beq_eq_int]
+  by_cases h : a.toInt64 = b.toInt64
+  · simp [h]
+  · have h1 : (a.toInt64 == b.toInt64) = false :=
+      beq_eq_false_iff_ne.mpr h
+    have h2 : (b.toInt64 == a.toInt64) = false :=
+      beq_eq_false_iff_ne.mpr (Ne.symm h)
+    simp [h1, h2]
+
+theorem Int64.beq_eq_false_of_lt {a b : Int64} (h : a < b) : (a == b) = false := by
+  have hne : a ≠ b := by
+    intro heq
+    have : a.toInt ≠ b.toInt :=
+      Int.ne_of_lt (Int64.lt_iff_toInt_lt.mp h)
+    exact this (congrArg Int64.toInt heq)
+  exact beq_eq_false_iff_ne.mpr hne
+
+theorem Int64.lt_trans_of {a b c : Int64} (h1 : a < b) (h2 : b < c) : a < c :=
+  Int64.lt_iff_toInt_lt.mpr
+    (Int.lt_trans (Int64.lt_iff_toInt_lt.mp h1) (Int64.lt_iff_toInt_lt.mp h2))
+
+theorem Table.idsOk.go_gt_prev {α} [Entity α] {next : Nat} {p : Int64}
+    {rows : List (Valid α)} {o : Valid α}
+    (h : Table.idsOk.go next (some p) rows = true) (ho : o ∈ rows) :
+    p < o.id.toInt64 := by
+  induction rows generalizing p with
+  | nil => cases ho
+  | cons r rs ih =>
+      unfold Table.idsOk.go at h
+      rw [Bool.and_eq_true] at h
+      obtain ⟨h1, hrest⟩ := h
+      rw [Bool.and_eq_true] at h1
+      obtain ⟨hord, _⟩ := h1
+      have hlt : p < r.id.toInt64 := of_decide_eq_true hord
+      cases ho with
+      | head => exact hlt
+      | tail _ ho => exact Int64.lt_trans_of hlt (ih hrest ho)
+
+theorem Table.idsOk.go_head_lt {α} [Entity α] {next : Nat} {prev : Option Int64}
+    {r : Valid α} {rs : List (Valid α)} {o : Valid α}
+    (h : Table.idsOk.go next prev (r :: rs) = true) (ho : o ∈ rs) :
+    r.id.toInt64 < o.id.toInt64 := by
+  unfold Table.idsOk.go at h
+  rw [Bool.and_eq_true] at h
+  exact Table.idsOk.go_gt_prev h.2 ho
+
+
+theorem Table.idsOk.go_map {α} [Entity α] (next : Nat) (prev : Option Int64)
+    (rows : List (Valid α)) (f : Valid α → Valid α)
+    (hid : ∀ r, (f r).id.toInt64 = r.id.toInt64)
+    (h : Table.idsOk.go next prev rows = true) :
+    Table.idsOk.go next prev (rows.map f) = true := by
+  induction rows generalizing prev with
+  | nil => rfl
+  | cons r rs ih =>
+      unfold Table.idsOk.go at h ⊢
+      simp only [List.map_cons]
+      rw [hid r]
+      rw [Bool.and_eq_true] at h ⊢
+      exact ⟨h.1, ih _ h.2⟩
+
+theorem Table.replaceId_id {α} [Entity α] (id : Id α) (c : Checked α) (r : Valid α) :
+    ((if r.id == id then Valid.ofChecked id c else r) : Valid α).id.toInt64 =
+      r.id.toInt64 := by
+  split
+  · rename_i hbeq
+    change id.toInt64 = r.id.toInt64
+    have : (r.id.toInt64 == id.toInt64) = true := by
+      simpa [Id.beq_eq_int] using hbeq
+    exact (LawfulBEq.eq_of_beq this).symm
+  · rfl
+
+theorem Txn.firstDuplicate_none_key_except {s α} [IsSchema s] [Entity α] [HasUnique α]
+    [IsSchema.Has s α]
+    {v : α} {st : DbState s} {skip : Id α}
+    (h : Txn.firstDuplicate v st (some skip) = none) (ix : Unique α)
+    (hix : ix ∈ Unique.all α) (r : Valid α)
+    (hr : r ∈ (DbState.get (α := α) st).rows)
+    (hskip : (skip == r.id) = false) :
+    Unique.keyClash
+      (Unique.encodeKey ix (Unique.keyOf ix r.val))
+      (Unique.encodeKey ix (Unique.keyOf ix v)) = false := by
+  unfold Txn.firstDuplicate at h
+  rw [Array.findSome?_eq_none_iff] at h
+  have hixn := h ix hix
+  simp at hixn
+  have hf := hixn r hr
+  simp [hskip] at hf
+  cases hcl : Unique.keyClash
+      (Unique.encodeKey ix (Unique.keyOf ix r.val))
+      (Unique.encodeKey ix (Unique.keyOf ix v))
+  · rfl
+  · simp [hcl] at hf
+
+theorem Table.uniquesOk.distinct_replace {α} [Entity α] [HasUnique α]
+    (ix : Unique α) (id : Id α) (c : Checked α) (next : Nat) (prev : Option Int64)
+    (rows : List (Valid α))
+    (hids : Table.idsOk.go next prev rows = true)
+    (h : Table.uniquesOk.distinct ix rows = true)
+    (hnone : ∀ o ∈ rows, (id == o.id) = true ∨
+      Unique.keyClash
+        (Unique.encodeKey ix (Unique.keyOf ix o.val))
+        (Unique.encodeKey ix (Unique.keyOf ix c.val)) = false) :
+    Table.uniquesOk.distinct ix
+      (rows.map fun r => if r.id == id then Valid.ofChecked id c else r) = true := by
+  induction rows generalizing prev with
+  | nil => simp [Table.uniquesOk.distinct]
+  | cons r rs ih =>
+      simp only [List.map_cons, Table.uniquesOk.distinct, Bool.and_eq_true] at h ⊢
+      have hids_tail : Table.idsOk.go next (some r.id.toInt64) rs = true := by
+        unfold Table.idsOk.go at hids
+        exact (Eq.mp (Bool.and_eq_true _ _) hids).2
+      refine ⟨?_, ih (prev := some r.id.toInt64) hids_tail h.2
+        (fun o ho => hnone o (List.mem_cons_of_mem r ho))⟩
+      rw [List.all_map]
+      rw [List.all_eq_true] at h ⊢
+      intro o0 ho0
+      have hne : (r.id == o0.id) = false := by
+        have hlt := Table.idsOk.go_head_lt hids ho0
+        simpa [Id.beq_eq_int] using Int64.beq_eq_false_of_lt hlt
+      have hrall := h.1 o0 ho0
+      cases hr : (r.id == id) <;> cases ho : (o0.id == id)
+      · simpa [hr, ho] using hrall
+      · have hskip : (id == r.id) = false := by
+          rw [Id.beq_comm]; exact hr
+        have hcl := hnone r (List.mem_cons.mpr (Or.inl rfl))
+        simp [hskip] at hcl
+        simpa [hr, ho, Valid.ofChecked, Valid.val, Checked.val] using hcl
+      · have hskip : (id == o0.id) = false := by
+          rw [Id.beq_comm]; exact ho
+        have hcl := hnone o0 (List.mem_cons.mpr (Or.inr ho0))
+        simp [hskip] at hcl
+        have hcl' : Unique.keyClash
+            (Unique.encodeKey ix (Unique.keyOf ix (Valid.ofChecked id c).val))
+            (Unique.encodeKey ix (Unique.keyOf ix o0.val)) = false := by
+          simpa [Valid.ofChecked, Valid.val, Checked.val, Unique.keyClash_comm] using hcl
+        simpa [hr, ho] using hcl'
+      · have heq : (r.id == o0.id) = true := by
+          have h1 : r.id.toInt64 = id.toInt64 :=
+            LawfulBEq.eq_of_beq (by simpa [Id.beq_eq_int] using hr)
+          have h2 : o0.id.toInt64 = id.toInt64 :=
+            LawfulBEq.eq_of_beq (by simpa [Id.beq_eq_int] using ho)
+          simpa [Id.beq_eq_int, h1, h2]
+        simp [heq] at hne
+
+theorem Table.uniquesOk_replace {s α} [IsSchema s] [Entity α] [HasUnique α]
+    [IsSchema.Has s α]
+    {t : Table α} {id : Id α} {c : Checked α} {st : DbState s}
+    (ht : t = DbState.get (α := α) st)
+    (hids : t.idsOk = true)
+    (h : t.uniquesOk = true)
+    (hdup : Txn.firstDuplicate c.val st (some id) = none) :
+    Table.uniquesOk { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.uniquesOk at *
+  rw [Array.all_eq_true'] at h ⊢
+  intro ix hix
+  refine Table.uniquesOk.distinct_replace ix id c t.next none t.rows hids (h ix hix) ?_
+  intro o ho
+  by_cases hskip : (id == o.id) = true
+  · exact Or.inl hskip
+  · refine Or.inr ?_
+    have ho' : o ∈ (DbState.get (α := α) st).rows := by simpa [ht] using ho
+    have hf : (id == o.id) = false := Bool.eq_false_iff.mpr hskip
+    simpa [ht] using Txn.firstDuplicate_none_key_except hdup ix hix o ho' hf
+
+theorem Table.idsOk_replace {α} [Entity α] {t : Table α} {id : Id α} {c : Checked α}
+    (h : t.idsOk = true) :
+    Table.idsOk { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.idsOk at *
+  exact Table.idsOk.go_map t.next none t.rows
+    (fun r => if r.id == id then Valid.ofChecked id c else r)
+    (fun r => Table.replaceId_id id c r) h
+
+theorem Table.refsOk_replace {α} [Entity α] [HasForeignKey α] {t : Table α}
+    {id : Id α} {c : Checked α}
+    (h : t.refsOk = true)
+    (hrefs : (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk c.val with
+      | none => true
+      | some tgt => Id.positive tgt) = true) :
+    Table.refsOk { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.refsOk at *
+  rw [List.all_map]
+  rw [List.all_eq_true] at h ⊢
+  intro r hr
+  by_cases hb : r.id == id
+  · simp only [hb, Valid.ofChecked, Valid.val, Checked.val]
+    exact hrefs
+  · simp only [hb]
+    exact h r hr
+
+theorem Table.decodesOk_replace {α} [Entity α] [LawfulEntity α] {t : Table α}
+    {id : Id α} {c : Checked α} (h : t.decodesOk = true) :
+    Table.decodesOk { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.decodesOk at *
+  rw [List.all_map]
+  rw [List.all_eq_true] at h ⊢
+  intro r hr
+  by_cases hb : r.id == id
+  · simp only [hb, Valid.ofChecked, Valid.val, Checked.val]
+    exact LawfulEntity.decode_encode_bool (α := α) c.val
+  · simp only [hb]
+    exact h r hr
+
+theorem Table.checkedOk_replace {α} [Entity α] {t : Table α} {id : Id α} {c : Checked α}
+    (h : t.checkedOk = true) :
+    Table.checkedOk { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.checkedOk at *
+  rw [List.all_map]
+  rw [List.all_eq_true] at h ⊢
+  intro r hr
+  by_cases hb : r.id == id
+  · simp only [hb, Valid.ofChecked, Valid.val, Checked.val]
+    exact Entity.check_of_invariant (α := α) c.property
+  · simp only [hb]
+    exact h r hr
+
+theorem Table.childrenOk_replace {α} [Entity α] [LawfulEntity α] {t : Table α}
+    {id : Id α} {c : Checked α} (h : t.childrenOk = true) :
+    Table.childrenOk { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.childrenOk at *
+  rw [List.all_map]
+  rw [List.all_eq_true] at h ⊢
+  intro r hr
+  by_cases hb : r.id == id
+  · simp only [hb, Valid.ofChecked, Valid.val, Checked.val]
+    exact LawfulEntity.children_attach (α := α) c.val
+  · simp only [hb]
+    exact h r hr
+
+theorem Table.check_replace {s α} [IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [IsSchema.Has s α] [LawfulEntity α]
+    {st : DbState s} {t : Table α} {id : Id α} {c : Checked α}
+    (ht : t = DbState.get (α := α) st)
+    (h : t.check = true)
+    (hdup : Txn.firstDuplicate c.val st (some id) = none)
+    (hrefs : (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk c.val with
+      | none => true
+      | some tgt => Id.positive tgt) = true) :
+    Table.check { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  have hnext := Table.check_nextOk h
+  have hids := Table.check_idsOk h
+  have hrefs0 := Table.check_refsOk h
+  have hdec := Table.check_decodesOk h
+  have hchk := Table.check_checkedOk h
+  have hch := Table.check_childrenOk h
+  have hunq := Table.check_uniquesOk h
+  unfold Table.check
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.uniquesOk_replace (t := t) (id := id) (c := c) (st := st)
+    ht hids hunq hdup⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.childrenOk_replace (t := t) (id := id) (c := c) hch⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.checkedOk_replace (t := t) (id := id) (c := c) hchk⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.decodesOk_replace (t := t) (id := id) (c := c) hdec⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.invariantsOk_valid _⟩
+  rw [Bool.and_eq_true]
+  refine ⟨?_, Table.refsOk_replace (t := t) (id := id) (c := c) hrefs0 hrefs⟩
+  rw [Bool.and_eq_true]
+  exact ⟨hnext, Table.idsOk_replace (t := t) (id := id) (c := c) hids⟩
+
+theorem Table.fksOk_replace {s α} [IsSchema s] [Entity α] [HasForeignKey α]
+    {st : DbState s} {t : Table α} {id : Id α} {c : Checked α}
+    (h : Table.fksOk (α := α) st t = true)
+    (hr : (ForeignKey.all α).all (fun fk =>
+      match ForeignKey.get fk c.val with
+      | none => true
+      | some tgt =>
+          let inst := ForeignKey.targetEntity fk
+          let name := @Entity.tableName (ForeignKey.Target fk) inst
+          DbState.containsId st name tgt.toInt64) = true) :
+    Table.fksOk (α := α) st { t with rows := t.rows.map fun r =>
+      if r.id == id then Valid.ofChecked id c else r } = true := by
+  unfold Table.fksOk at *
+  rw [List.all_map]
+  rw [List.all_eq_true] at h ⊢
+  intro r hr'
+  by_cases hb : r.id == id
+  · simp only [hb, Valid.ofChecked, Valid.val, Checked.val]
+    exact hr
+  · simp only [hb]
+    exact h r hr'
+
+theorem DbState.containsId_replaceRow {s α} [i : IsSchema s] [ent : Entity α]
+    [h : IsSchema.Has s α]
+    (st : DbState s) (id : Id α) (c : Checked α) (name : String) (xid : Int64)
+    (hold : DbState.containsId st name xid = true) :
+    DbState.containsId (Txn.replaceRow (α := α) st id c) name xid = true := by
+  unfold Txn.replaceRow
+  unfold DbState.containsId at hold ⊢
+  rw [Array.any_eq_true'] at hold ⊢
+  obtain ⟨t, ht, hany⟩ := hold
+  refine ⟨t, ht, ?_⟩
+  by_cases hne : t = h.id
+  · subst hne
+    rw [Bool.and_eq_true] at hany ⊢
+    obtain ⟨hname, hrow⟩ := hany
+    refine ⟨hname, ?_⟩
+    rw [DbState.set_tables_same, Table.cast_any_id]
+    have hget : (DbState.get (α := α) st).rows.any
+        (fun row => row.id.toInt64 == xid) = true := by
+      unfold DbState.get
+      rw [Table.cast_any_id]
+      exact hrow
+    rw [List.any_map]
+    simpa [Table.replaceId_id] using hget
+  · rw [DbState.set_tables_other (hne := hne)]
+    exact hany
+
+set_option maxHeartbeats 400000 in
+theorem Txn.replaceRow_wf {s α} [i : IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [h : IsSchema.Has s α] [IsSchema.HasPack s α] [LawfulEntity α]
+    (st : DbState s) (id : Id α) (c : Checked α) (hwf : st.WF)
+    (hdup : Txn.firstDuplicate c.val st (some id) = none)
+    (hfk : Txn.firstMissingRef c.val st = none) :
+    (replaceRow (α := α) st id c).WF := by
+  let tbl := DbState.get (α := α) st
+  have hcheck := DbState.get_check_of_wf (α := α) hwf
+  have hfks0 := DbState.get_fksOk_of_wf (α := α) hwf
+  have hrefs := Table.refsOk_of_missingRef_none (c := c) hwf hfk
+  have hnew := Table.check_replace (st := st) (t := tbl) (id := id) (c := c)
+    rfl hcheck hdup hrefs
+  have heq : replaceRow (α := α) st id c =
+      st.set { tbl with rows := tbl.rows.map fun r =>
+        if r.id == id then Valid.ofChecked id c else r } := rfl
+  rw [heq]
+  refine DbState.wf_of_checkPacked ?_
+  intro t
+  by_cases hne : t = h.id
+  · subst hne
+    rw [DbState.checkPacked_eq_get, DbState.get_set_same]
+    rw [Bool.and_eq_true]
+    refine ⟨hnew, ?_⟩
+    have hmono : ∀ name xid, DbState.containsId st name xid = true →
+        DbState.containsId
+          (replaceRow (α := α) st id c) name xid = true :=
+      fun name xid hold => DbState.containsId_replaceRow (α := α) st id c name xid hold
+    have hfksR := Table.fksOk_replace (id := id) (c := c) hfks0
+      (Txn.firstMissingRef_none_contains (v := c.val) (st := st) hfk)
+    have hmono' : ∀ name xid, DbState.containsId st name xid = true →
+        DbState.containsId (st.set { tbl with rows := tbl.rows.map fun r =>
+          if (r.id == id) = true then Valid.ofChecked id c else r }) name xid = true := by
+      intro name xid hold
+      simpa [heq] using hmono name xid hold
+    exact Table.fksOk_of_containsId_mono hmono' hfksR
+  · exact DbState.checkPacked_set_other st
+      { tbl with rows := tbl.rows.map fun r =>
+        if (r.id == id) = true then Valid.ofChecked id c else r } t hne
+      (fun name xid hold => by
+        simpa [heq] using
+          DbState.containsId_replaceRow (α := α) st id c name xid hold)
+      (DbState.checkPacked_of_wf hwf t)
+
+/-- On a `WF` state, `update` yields a `WF` state whether it succeeds or fails.
+    Success is `replaceRow`: ids stay, `uniquesOk` from `firstDuplicate`
+    except this id (`Unique.keyClash` is symmetric), `fksOk` from
+    `firstMissingRef` none, and `decodesOk` / `childrenOk` from
+    `LawfulEntity`. -/
+theorem Txn.update_wf {σ s ε α} [IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [IsSchema.Has s α] [IsSchema.HasPack s α] [LawfulEntity α]
+    (old : Valid α) (new : Checked α) (st : DbState s) (hwf : st.WF) :
+    (Txn.denote (σ := σ) (s := s) (ε := ε) (.update α old new) st).2.WF := by
+  rw [Txn.denote_update]
+  cases hfind : (DbState.get (α := α) st).rows.find? (·.id == old.id) with
+  | none => exact hwf
+  | some cur =>
+      cases hpeq : parentEq cur.val old.val
+      · simp [hpeq]
+        exact hwf
+      · simp [hpeq]
+        cases hdup : Txn.firstDuplicate new.val st (some old.id) with
+        | some _ => exact hwf
+        | none =>
+            cases hfk : Txn.firstMissingRef new.val st with
+            | some _ => exact hwf
+            | none => exact Txn.replaceRow_wf st old.id new hwf hdup hfk
+
 end LeanDb
-
-
