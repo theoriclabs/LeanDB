@@ -2041,4 +2041,30 @@ theorem Txn.set_wf {σ s ε α} [IsSchema s] [Entity α] [HasUnique α]
                 (Txn.firstDuplicate_none_of_touching_all hdup)
                 (Txn.firstMissingRef_none_of_within_all hfk)
 
+/-- On a `WF` state, `append` yields a `WF` state whether it succeeds or
+    fails. Success is `replaceRow`, gated on the same `firstDuplicate`
+    / `firstMissingRef` `none`s as `update`. -/
+theorem Txn.append_wf {σ s ε α} [IsSchema s] [Entity α] [HasListField α]
+    [HasUnique α] [HasForeignKey α] [IsSchema.Has s α] [IsSchema.HasPack s α]
+    [LawfulEntity α]
+    (old : Valid α) (new : Checked α) (st : DbState s) (hwf : st.WF) :
+    (Txn.denote (σ := σ) (s := s) (ε := ε) (.append α old new) st).2.WF := by
+  rw [Txn.denote_append]
+  cases hfind : (DbState.get (α := α) st).rows.find? (·.id == old.id) with
+  | none => exact hwf
+  | some cur =>
+      cases hstale : (!parentEq cur.val old.val || listsMoved cur.val old.val)
+      · simp [hstale]
+        cases happ : firstNotAppend old.val new.val with
+        | some _ => exact hwf
+        | none =>
+            cases hdup : Txn.firstDuplicate new.val st (some old.id) with
+            | some _ => exact hwf
+            | none =>
+                cases hfk : Txn.firstMissingRef new.val st with
+                | some _ => exact hwf
+                | none => exact Txn.replaceRow_wf st old.id new hwf hdup hfk
+      · simp [hstale]
+        exact hwf
+
 end LeanDb
