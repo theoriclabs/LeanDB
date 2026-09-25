@@ -110,6 +110,9 @@ elab "#check_m15_axioms" : command => do
   -- M15b3: update preserves WF
   assertAxioms ``LeanDb.Txn.replaceRow_wf
   assertAxioms ``LeanDb.Txn.update_wf
+  -- M15b3: set preserves WF
+  assertAxioms ``LeanDb.Txn.set_wf
+  assertAxioms ``LeanDb.Unique.touches_all
   -- remaining M15b theorems
   assertAxioms ``LeanDb.Array.size_qsort
   assertAxioms ``LeanDb.finishRows_size

@@ -75,10 +75,15 @@ def Fields.toEnginePatch {α} [Entity α] (fs : Fields α) (v : α) : Patch α :
 
 /-! ## Constraints restricted to written fields -/
 
-/-- Whether unique index `ix` names a column in `fs`. -/
+/-- Whether unique index `ix` names a column in `fs`. An index with no
+    columns is a unique on the empty tuple: rewriting any row can
+    violate it, so it touches every `fs`. That makes `touches` on
+    `Fields.all` always true (`isEmpty || any (fun _ => true)`), which
+    `set` needs so `firstDuplicateTouching Fields.all` agrees with
+    `firstDuplicate`. -/
 @[reducible] def Unique.touches {α : Type} [Entity α] [HasUnique α]
     (ix : Unique α) (fs : Fields α) : Bool :=
-  (Unique.fieldSyms ix).toList.any fs.mem
+  (Unique.fieldSyms ix).isEmpty || (Unique.fieldSyms ix).toList.any fs.mem
 
 /-- Whether any unique index overlaps `fs`. Reduces on concrete `fs`, so
     `Unique.Touching fs` becomes `Empty` when none do. -/

@@ -1489,6 +1489,24 @@ theorem List.any_map {α β} (as : List α) (f : α → β) (p : β → Bool) :
   | cons a as ih =>
       simp only [List.map_cons, List.any_cons, ih]
 
+theorem List.findSome?_none_congr {α β γ} (as : List α)
+    (f : α → Option β) (g : α → Option γ)
+    (hfg : ∀ a ∈ as, f a = none ↔ g a = none)
+    (h : as.findSome? g = none) : as.findSome? f = none := by
+  induction as with
+  | nil => rfl
+  | cons a as ih =>
+      have ha := hfg a (List.mem_cons.mpr (Or.inl rfl))
+      cases hga : g a with
+      | none =>
+          have hfa : f a = none := ha.mpr hga
+          have htail : as.findSome? g = none := by
+            simpa [List.findSome?, hga] using h
+          simpa [List.findSome?, hfa] using
+            ih (fun b hb => hfg b (List.mem_cons.mpr (Or.inr hb))) htail
+      | some _ =>
+          simp [List.findSome?, hga] at h
+
 theorem Id.beq_eq_int {α} (a b : Id α) :
     (a == b) = (a.toInt64 == b.toInt64) :=
   rfl
@@ -1881,5 +1899,146 @@ theorem Txn.update_wf {σ s ε α} [IsSchema s] [Entity α] [HasUnique α]
             cases hfk : Txn.firstMissingRef new.val st with
             | some _ => exact hwf
             | none => exact Txn.replaceRow_wf st old.id new hwf hdup hfk
+
+/-! ## WF preservation of `set` (`replaceRow` via `Fields.all`) -/
+
+theorem Unique.touches_all {α} [Entity α] [HasUnique α] (ix : Unique α) :
+    Unique.touches ix (Fields.all α) = true := by
+  unfold Unique.touches Fields.all
+  cases hsym : (Unique.fieldSyms ix).toList with
+  | nil =>
+      simp only [List.any_nil, Bool.or_false]
+      have hsz : (Unique.fieldSyms ix).size = 0 := by
+        change (Unique.fieldSyms ix).toList.length = 0
+        simp [hsym]
+      simp [Array.isEmpty, hsz]
+  | cons _ _ =>
+      simp [hsym, List.any_cons]
+
+theorem Unique.anyTouch_all {α} [Entity α] [HasUnique α] :
+    Unique.anyTouch (α := α) (Fields.all α) = !(Unique.all α).toList.isEmpty := by
+  unfold Unique.anyTouch
+  induction (Unique.all α).toList with
+  | nil => rfl
+  | cons ix ixs ih =>
+      simp only [List.any_cons, Unique.touches_all, Bool.true_or, List.isEmpty_cons,
+        Bool.not_false]
+
+theorem ForeignKey.within_all {α} [Entity α] [HasForeignKey α] (fk : ForeignKey α) :
+    ForeignKey.within fk (Fields.all α) = true :=
+  rfl
+
+theorem ForeignKey.anyWithin_all {α} [Entity α] [HasForeignKey α] :
+    ForeignKey.anyWithin (α := α) (Fields.all α) =
+      !(ForeignKey.all α).toList.isEmpty := by
+  unfold ForeignKey.anyWithin
+  induction (ForeignKey.all α).toList with
+  | nil => rfl
+  | cons fk fks ih =>
+      simp only [List.any_cons, ForeignKey.within_all, Bool.true_or, List.isEmpty_cons,
+        Bool.not_false]
+
+theorem Array.eq_empty_of_toList_nil {α} {a : Array α} (h : a.toList = []) :
+    a = #[] := by
+  refine Array.ext ?_ (fun i hi hi' => ?_)
+  · change a.toList.length = 0
+    simp [h]
+  · have hsz : a.size = 0 := by
+      change a.toList.length = 0
+      simp [h]
+    simp [hsz] at hi
+
+theorem Txn.firstDuplicate_none_of_touching_all {s α} [IsSchema s] [Entity α]
+    [HasUnique α] [IsSchema.Has s α]
+    {v : α} {st : DbState s} {except : Option (Id α)}
+    (h : Txn.firstDuplicateTouching (Fields.all α) v st except = none) :
+    Txn.firstDuplicate v st except = none := by
+  unfold Txn.firstDuplicateTouching at h
+  unfold Txn.firstDuplicate
+  split at h
+  · rename_i hAny
+    rw [Array.findSome?_eq_none_iff] at h ⊢
+    intro ix hix
+    have hi := h ix hix
+    rw [dif_pos (Unique.touches_all ix)] at hi
+    refine List.findSome?_none_congr _ _ _ ?_ hi
+    intro r hr
+    constructor
+    · intro hf
+      by_cases hex : except == some r.id
+      · simp [hex]
+      · simp [hex] at hf ⊢
+        by_cases hcl : Unique.keyClash
+            (Unique.encodeKey ix (Unique.keyOf ix r.val))
+            (Unique.encodeKey ix (Unique.keyOf ix v))
+        · simp [hcl] at hf
+        · simp [hcl]
+    · intro hg
+      by_cases hex : except == some r.id
+      · simp [hex]
+      · simp [hex] at hg ⊢
+        by_cases hcl : Unique.keyClash
+            (Unique.encodeKey ix (Unique.keyOf ix r.val))
+            (Unique.encodeKey ix (Unique.keyOf ix v))
+        · simp [hcl] at hg
+        · simp [hcl]
+  · rename_i hAny
+    have hfalse : Unique.anyTouch (α := α) (Fields.all α) = false :=
+      Bool.eq_false_iff.mpr hAny
+    have hempty : (Unique.all α).toList = [] := by
+      rw [Unique.anyTouch_all] at hfalse
+      cases hl : (Unique.all α).toList with
+      | nil => rfl
+      | cons _ _ => simp [hl] at hfalse
+    simp [Array.eq_empty_of_toList_nil hempty]
+
+theorem Txn.firstMissingRef_none_of_within_all {s α} [IsSchema s] [Entity α]
+    [HasForeignKey α]
+    {v : α} {st : DbState s}
+    (h : Txn.firstMissingWithin (Fields.all α) v st = none) :
+    Txn.firstMissingRef v st = none := by
+  unfold Txn.firstMissingWithin at h
+  unfold Txn.firstMissingRef
+  split at h
+  · rename_i hAny
+    rw [Array.findSome?_eq_none_iff] at h
+    rw [Array.find?_eq_none]
+    intro fk hmem
+    have hi := h fk hmem
+    rw [dif_pos (ForeignKey.within_all fk)] at hi
+    by_cases hm : Txn.fkMissing fk v st = true
+    · simp [hm] at hi
+    · exact hm
+  · rename_i hAny
+    have hfalse : ForeignKey.anyWithin (α := α) (Fields.all α) = false :=
+      Bool.eq_false_iff.mpr hAny
+    have hempty : (ForeignKey.all α).toList = [] := by
+      rw [ForeignKey.anyWithin_all] at hfalse
+      cases hl : (ForeignKey.all α).toList with
+      | nil => rfl
+      | cons _ _ => simp [hl] at hfalse
+    simp [Array.eq_empty_of_toList_nil hempty]
+
+/-- On a `WF` state, `set` yields a `WF` state whether it succeeds or fails.
+    Success is `replaceRow`. `Fields.all` touches every unique (empty
+    `fieldSyms` included) and every foreign key, so the touching walks
+    are the same `none`s `replaceRow_wf` needs. -/
+theorem Txn.set_wf {σ s ε α} [IsSchema s] [Entity α] [HasUnique α]
+    [HasForeignKey α] [IsSchema.Has s α] [IsSchema.HasPack s α] [LawfulEntity α]
+    (row : Current σ α) (new : Checked α) (st : DbState s) (hwf : st.WF) :
+    (Txn.denote (σ := σ) (s := s) (ε := ε) (.set α row new) st).2.WF := by
+  rw [Txn.denote_set]
+  cases hfind : (DbState.get (α := α) st).rows.find? (·.id == row.id) with
+  | none => exact hwf
+  | some _ =>
+      cases hdup : Txn.firstDuplicateTouching (Fields.all α) new.val st (some row.id) with
+      | some _ => exact hwf
+      | none =>
+          cases hfk : Txn.firstMissingWithin (Fields.all α) new.val st with
+          | some _ => exact hwf
+          | none =>
+              exact Txn.replaceRow_wf st row.id new hwf
+                (Txn.firstDuplicate_none_of_touching_all hdup)
+                (Txn.firstMissingRef_none_of_within_all hfk)
 
 end LeanDb
