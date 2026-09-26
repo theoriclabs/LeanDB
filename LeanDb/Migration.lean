@@ -28,7 +28,10 @@ open Lean (Json)
 inductive Step where
   | transform (table : String) (describe : String)
       (run : TableSpec → TableSpec → Array Col → Except String (Array Col))
-  /-- Raw SQL, journaled by its description: the escape hatch. -/
+  /-- Raw SQL, journaled by its description: the escape hatch. It runs
+      inside the migration's transaction: engine verbs and
+      `withTransaction` nest under a SAVEPOINT, and a step that COMMITs or
+      ROLLBACKs that transaction away is refused. -/
   | custom (describe : String) (run : Conn → IO Unit)
 
 def Step.describe : Step → String
@@ -295,12 +298,14 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
   if plan.isDestructive && !allowDestructive then
     return .error (.migrate "plan is destructive (drops tables or columns); pass --allow-destructive")
   let db := conn.raw
+  let depth ← conn.txDepth.get
   -- every exit from the guarded region restores the session PRAGMAs (#71):
   -- an exception between the first PRAGMA and the inner catch, or one
   -- thrown *by* the inner catch (a ROLLBACK that fails after a custom step
   -- committed the transaction away), used to leave the session connection
   -- with foreign_keys=OFF and legacy_alter_table=ON for its remaining
-  -- lifetime. One restore point runs on success and on every failure path.
+  -- lifetime. One restore point runs on success and on every failure path,
+  -- and it restores the transaction depth too.
   let guarded : IO (Except DbError MigrateReport) := do
     try
       -- A same-second collision (#74) is resolved by `backupToUniquified`,
@@ -321,6 +326,12 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
         try
           db.exec "BEGIN"
           began.set true
+          -- the engine's combinators see this span as an open transaction,
+          -- so a verb or `withTransaction` a custom step runs nests under a
+          -- SAVEPOINT instead of issuing a second BEGIN (#75 hazard a). Its
+          -- RELEASE leaves this transaction open, so the autocommit guard
+          -- below does not mistake it for a rogue COMMIT.
+          conn.txDepth.set (depth + 1)
           for step in plan.steps do
             match step with
             | .rebuildTable spec _ =>
@@ -391,6 +402,7 @@ VALUES (?, ?, 1, ?, ?, ?)"
     catch e =>
       return .error (.sqlite (toString e))
   let r ← guarded
+  conn.txDepth.set depth
   db.exec "PRAGMA legacy_alter_table = OFF"
   db.exec "PRAGMA foreign_keys = ON"
   return r

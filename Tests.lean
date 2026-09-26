@@ -3212,6 +3212,177 @@ private def testMigration : IO Unit := do
   db.exec "DELETE FROM \"order\" WHERE id = 1"
   check ((← childCount db 1) == 0 && (← childCount db 2) == 1) "the cascade still fires after the rebuild"
 
+/-! ## Custom steps nest with the engine's transaction (#75) -/
+
+private def customStepDbPath : System.FilePath := ".lake" / "leandb_test_custom_step.sqlite"
+
+/-- A migration whose snapshot is unchanged: only custom steps run. -/
+private def customStepMigration (specs : List TableSpec) (steps : List Step) : Migration := {
+  fromFingerprint := fingerprint specs
+  toFingerprint := fingerprint specs
+  snapshot := specs
+  steps := steps }
+
+/-- The nested verb's error, rethrown so `applyOn` sees it. -/
+private def viaVerb (α : Type) (act : DbM α) (conn : Conn) : IO α := do
+  match ← act.run conn with
+  | .ok a => pure a
+  | .error e => throw <| IO.userError (toString e)
+
+/-- A custom step inside `Migration.applyOn`'s transaction can use the
+    engine verbs: inserting a child-list entity opens the engine's
+    transaction, which nests as a savepoint instead of failing with
+    `cannot start a transaction within a transaction`. -/
+private def testCustomStepNestedVerb : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Author ⟨"Ada", 36⟩) "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let mig := customStepMigration childSchema
+    [Step.custom "insert order via verb" (fun conn =>
+      discard <| viaVerb _ (insert Order (order "nested" [item "p" 1, item "q" 2])) conn)]
+  match ← mig.applyOn conn childSchema 2 (allowDestructive := true) none with
+  | .error e => throw <| IO.userError s!"FAIL: custom step with a nested verb: {e}"
+  | .ok report =>
+      check (report.applied.contains "insert order via verb") s!"custom step journaled: {report.applied}"
+  let db ← SQLite.open customStepDbPath
+  check ((← childCount db 1) == 2) "the nested verb's child rows are present"
+  let st ← db.prepare "SELECT customer FROM \"order\" WHERE id = 1"
+  discard <| st.step
+  check ((← st.columnText 0) == "nested") "the nested verb's parent row is present"
+  -- top-level behavior is unchanged: a verb still opens its transaction
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Order (order "top" [])) "top-level verb after the migration"
+
+/-- A small child-list entity of the failure test: the child rows carry
+    a REAL column, so a NaN fails the nested verb at the write boundary
+    (`bindCol` refuses it) no matter what PRAGMAs the migration holds —
+    unlike an FK violation, which `applyOn` defers with
+    `foreign_keys = OFF`. -/
+structure Recipe.Step where
+  name : String
+  grams : Float := 1
+  deriving Repr, LeanDb.Inline
+structure Recipe where
+  title : String
+  steps : List Recipe.Step
+  deriving Repr, LeanDb.Entity
+
+private def recipeSchema : List TableSpec := Entity.specs Recipe
+
+/-- The failure path: a nested verb that fails (a NaN REAL in a child
+    row) rolls back its own savepoint — no orphan parent row — and the
+    migration's rollback dissolves the earlier custom step's rows too.
+    The failure is the verb's real error, not BEGIN-inside-BEGIN, and the
+    instance stays usable. -/
+private def testCustomStepNestedVerbFails : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath recipeSchema do
+    discard <| insert Recipe { title := "keeper", steps := [{ name := "mix", grams := 100 }] })
+    "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let good := Step.custom "insert recipe via verb" (fun conn =>
+    discard <| viaVerb _ (insert Recipe { title := "good", steps := [{ name := "stir", grams := 2 }] }) conn)
+  let bad := Step.custom "insert recipe with a NaN gram" (fun conn =>
+    discard <| viaVerb _ (insert Recipe { title := "bad", steps := [{ name := "x", grams := 0.0 / 0.0 }] }) conn)
+  match ← (customStepMigration recipeSchema [good, bad]).applyOn conn recipeSchema 2 (allowDestructive := true) none with
+  | .ok _ => throw <| IO.userError "FAIL: a failing nested verb must abort the migration"
+  | .error e =>
+      check ((e.message.splitOn "REAL value is NaN").length > 1)
+        s!"the failure is the verb's real error: {e}"
+      check ((e.message.splitOn "cannot start a transaction within a transaction").length == 1)
+        s!"no nested-BEGIN confusion: {e}"
+  -- everything is gone: the failed verb's work and the earlier step's rows
+  let db ← SQLite.open customStepDbPath
+  let st ← db.prepare "SELECT count(*) FROM recipe"
+  discard <| st.step
+  check ((← st.columnInt64 0) == 1) "only the seeded recipe survived the abort"
+  let st ← db.prepare "SELECT count(*) FROM recipe_steps"
+  discard <| st.step
+  check ((← st.columnInt64 0) == 1) "only the seeded recipe's step survived the abort"
+  -- the instance is usable: verbs work again
+  discard <| expectOk (← withDb customStepDbPath recipeSchema do
+    discard <| insert Recipe { title := "after", steps := [] }) "instance usable after the abort"
+
+/-- Rows of one table, on a fresh connection to the custom-step instance. -/
+private def customStepRows (table : String) : IO Int64 := do
+  let st ← (← SQLite.open customStepDbPath).prepare s!"SELECT count(*) FROM {quoteIdent table}"
+  discard <| st.step
+  st.columnInt64 0
+
+/-- A custom step whose verb already ran, then fails: the verb's savepoint
+    was released into the migration's transaction, so the migration's
+    rollback takes the verb's rows with it. The transaction depth is back
+    at the top level afterwards, on the rollback path and on the rogue
+    COMMIT guard's path (#126) alike. -/
+private def testCustomStepVerbThenFails : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Order (order "keeper" [item "k" 1])) "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let mig := customStepMigration childSchema
+    [Step.custom "insert order via verb, then fail" (fun conn => do
+      discard <| viaVerb _ (insert Order (order "doomed" [item "p" 1, item "q" 2])) conn
+      throw <| IO.userError "the step fails after its verb")]
+  match ← mig.applyOn conn childSchema 2 (allowDestructive := true) none with
+  | .ok _ => throw <| IO.userError "FAIL: a failing custom step must abort the migration"
+  | .error e =>
+      check ((e.message.splitOn "the step fails after its verb").length > 1)
+        s!"the failure is the step's own error: {e}"
+  check ((← customStepRows "order") == 1) "the verb's parent row rolled back with the migration"
+  check ((← customStepRows "order_items") == 1) "the verb's child rows rolled back with the migration"
+  check ((← conn.txDepth.get) == 0) "transaction depth restored after the rollback"
+  check ((← conn.poisoned.get).isNone) "connection not poisoned"
+  -- the same connection is back at the top level: `append` opens its own
+  -- BEGIN IMMEDIATE transaction and commits
+  discard <| expectOk (← DbM.run conn do
+    let kept := (← fetchAll Order)[0]!
+    append kept (order "keeper" [item "k" 1, item "k2" 2])) "append on the same connection"
+  check ((← customStepRows "order_items") == 2) "the top-level append committed"
+  -- a verb then a rogue COMMIT: the savepoint's RELEASE did not trip the
+  -- guard, the COMMIT does, and the depth is restored on that path too
+  let rogue := customStepMigration childSchema
+    [Step.custom "insert order via verb, then commit" (fun conn => do
+      discard <| viaVerb _ (insert Order (order "early" [item "e" 1])) conn
+      conn.raw.exec "COMMIT")]
+  match ← rogue.applyOn conn childSchema 2 (allowDestructive := true) none with
+  | .ok _ => throw <| IO.userError "FAIL: a rogue COMMIT after a verb must abort the migration"
+  | .error e =>
+      check ((e.message.splitOn "step 1 (\"insert order via verb, then commit\")").length == 2)
+        s!"the guard names the rogue step: {e}"
+  check ((← conn.txDepth.get) == 0) "transaction depth restored after the rogue COMMIT"
+  check ((← conn.poisoned.get).isNone) "connection not poisoned by the rogue COMMIT"
+
+/-- The public combinators nest the same way: inside a custom step,
+    `withTransaction` and `append` (`BEGIN IMMEDIATE` at the top level)
+    open a SAVEPOINT, and a nested `transaction` that aborts rolls back
+    only its own scope while the migration commits the rest. -/
+private def testCustomStepTransactions : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Order (order "keeper" [item "k" 1])) "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let mig := customStepMigration childSchema [
+    Step.custom "insert via withTransaction" (fun conn =>
+      discard <| viaVerb _ (withTransaction do insert Order (order "wt" [item "w" 1])) conn),
+    Step.custom "abort a nested transaction" (fun conn => do
+      let r ← viaVerb _ (transaction do
+        discard <| insert Order (order "aborted" [item "a" 1])
+        return (Tx.abort "no" : Tx String Unit)) conn
+      unless r matches .error "no" do
+        throw <| IO.userError "FAIL: the nested abort returns its value"),
+    Step.custom "append via verb" (fun conn =>
+      discard <| viaVerb _ (do
+        let kept := (← fetchAll Order)[0]!
+        append kept (order "keeper" [item "k" 1, item "k2" 2])) conn)]
+  let r ← expectOk (← mig.applyOn conn childSchema 2 (allowDestructive := true) none)
+    "custom steps running the public combinators"
+  check (r.applied.length == 3) s!"every step journaled: {r.applied}"
+  check ((← conn.txDepth.get) == 0) "transaction depth restored after the commit"
+  let rows ← expectOk (← DbM.run conn (fetchAll Order)) "read back"
+  check (customers rows == #["keeper", "wt"]) s!"the aborted scope alone rolled back: {customers rows}"
+  check (rows[0]!.val.items.length == 2) "the nested append committed with the migration"
+
 def run : IO Unit := do
   testDerived
   testJson
@@ -3219,6 +3390,10 @@ def run : IO Unit := do
   testEndToEnd
   testChunking
   testMigration
+  testCustomStepNestedVerb
+  testCustomStepNestedVerbFails
+  testCustomStepVerbThenFails
+  testCustomStepTransactions
 
 end ChildD
 
