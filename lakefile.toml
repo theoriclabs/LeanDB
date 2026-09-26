@@ -23,7 +23,7 @@ name = "FixturePortable"
 
 # R1: affinity conformance (`Migration.affinityOf` vs SQLite's behavior).
 [[lean_lib]]
-name = "TestsLdb15"
+name = "TestsAffinityConformance"
 
 [[lean_exe]]
 name = "leandb_tests"

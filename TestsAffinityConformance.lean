@@ -9,7 +9,7 @@ a real table with that type, inserts canonical values of every storage
 class, and compares the `typeof` SQLite reports with what the predicted
 affinity class implies. -/
 
-namespace TestsLdb15
+namespace TestsAffinityConformance
 
 open LeanDb
 
@@ -150,7 +150,7 @@ structure ProbeHost where
 
 private def specs : List TableSpec := [Entity.spec ProbeHost]
 
-private def probePath : System.FilePath := ".lake" / "leandb_test_ldb15.sqlite"
+private def probePath : System.FilePath := ".lake" / "leandb_test_affinity_conformance.sqlite"
 
 private def fresh (p : System.FilePath) : IO Unit := do
   if ← p.pathExists then IO.FS.removeFile p
@@ -214,4 +214,4 @@ def run : IO Unit := do
   testAffinityOfClassification
   testAffinityConformance
 
-end TestsLdb15
+end TestsAffinityConformance
