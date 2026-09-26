@@ -168,6 +168,41 @@ private def processRpc
   catch e =>
     return .error (.transport (toString e))
 
+/-- How long `leandb host` waits for a freshly spawned base to answer the
+    `version` handshake before it kills the child and names the failed spec
+    (#62 facet 2): a silent base — or one that stalls mid-banner-line —
+    would otherwise wedge the host pre-bind forever. -/
+def handshakeDeadlineMs : Nat := 10000
+
+/-- How often the bounded wait wakes to re-check the handshake task: short
+    sleeps, never a busy spin. -/
+def handshakePollMs : UInt32 := 10
+
+/-- Poll the handshake task until it finishes or the (monotonic-ms) deadline passes. -/
+private partial def Client.pollRpcUntil
+    (t : Task (Except IO.Error (Except DbError Json))) (deadline : Nat) :
+    IO (Option (Except DbError Json)) := do
+  if (← IO.hasFinished t) then
+    return some (match Task.get t with
+      | .ok r => r
+      | .error e => .error (.transport (toString e)))
+  if (← IO.monoMsNow) >= deadline then
+    return none
+  IO.sleep handshakePollMs
+  Client.pollRpcUntil t deadline
+
+/-- One rpc under a deadline. The blocking pipe read runs on a background
+    task; the caller wakes on `handshakePollMs` sleeps until the task
+    finishes or `deadlineMs` elapses, so a child that never writes a line
+    costs the caller at most `deadlineMs`. Returns `none` when the deadline
+    fired with the request still in flight — close the client to kill the
+    child behind it. -/
+def Client.rpcBounded (c : Client) (argv : List String)
+    (deadlineMs : Nat := handshakeDeadlineMs) : IO (Option (Except DbError Json)) := do
+  let t ← IO.asTask (c.rpc argv)
+  let now ← IO.monoMsNow
+  Client.pollRpcUntil t (now + deadlineMs)
+
 /-- Wrap an already-spawned `<base> serve` process. Most callers should use
     `Client.connect`; the host uses this before learning the child's fingerprint. -/
 def Client.ofProcess
