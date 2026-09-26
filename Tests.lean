@@ -3830,6 +3830,61 @@ private def testPortOf : IO Unit := do
   for s in ["0", "65536", "70000", "-1", "oops", ""] do
     check ((Cli.portOf s).toOption.isNone) s!"port outside 1..65535 is refused: {s}"
 
+/-! ## Seed guard: the seed verb refuses a non-empty catalog unless --force
+    (#87), and the seed runs inside one transaction so a partial seed
+    rolls back. -/
+
+private def seedDbPath : System.FilePath := ".lake" / "leandb_test_seed.sqlite"
+
+private def testSeedGuard : IO Unit := do
+  if ← seedDbPath.pathExists then IO.FS.removeFile seedDbPath
+  let seedRow : DbM Unit := do
+    let ada ← insert Author ⟨"Ada", 36⟩
+    discard <| insert Book ⟨"On Computable Numbers", ada.ref, none⟩
+  let b : Base :=
+    { name := "seed", tables := [CliTable.of Author, CliTable.of Book], seed := some seedRow }
+  let inst := Instance.ofPath seedDbPath
+  let sess ← expectOk (← Cli.Session.open b inst) "open the seed probe"
+  let code := fun (j : Lean.Json) => (j.getObjValAs? String "code").toOption.getD ""
+  let rowsOf := fun (sess : Cli.Session) (t : String) => do
+    let j ← b.handle inst sess ["rows", t]
+    check ((j.getObjValAs? Bool "ok").toOption == some true) s!"rows {t}: {j}"
+    return (j.getObjValAs? Nat "count").toOption.getD 0
+  -- the first seed on a fresh instance is admitted
+  let first ← b.handle inst sess ["seed"]
+  check ((first.getObjValAs? Bool "ok").toOption == some true) s!"fresh seed: {first}"
+  check ((← rowsOf sess "author") == 1 && (← rowsOf sess "book") == 1) "seed inserted its rows"
+  -- a second seed is refused and the catalog is unchanged
+  let refused ← b.handle inst sess ["seed"]
+  check (code refused == "migrate") s!"second seed refused: {refused}"
+  check (((refused.getObjValAs? String "message").toOption.getD "").contains "--force")
+    "the refusal says how to proceed"
+  check (Cli.exitCodeOf refused == 2) "the refusal is a typed error, exit 2"
+  check ((← rowsOf sess "author") == 1 && (← rowsOf sess "book") == 1)
+    "counts unchanged after the refusal"
+  -- the `query seed` spelling refuses the same way
+  check (code (← b.handle inst sess ["query", "seed"]) == "migrate") "query seed refuses too"
+  -- --force is admitted, and admitted again
+  let forced ← b.handle inst sess ["seed", "--force"]
+  check ((forced.getObjValAs? Bool "ok").toOption == some true) s!"seed --force: {forced}"
+  check ((← rowsOf sess "author") == 2 && (← rowsOf sess "book") == 2) "force inserted a second round"
+  discard <| b.handle inst sess ["query", "seed", "--force"]
+  check ((← rowsOf sess "author") == 3 && (← rowsOf sess "book") == 3) "force again admitted"
+  -- an unrecognized argument is still a usage error
+  check (Cli.exitCodeOf (← b.handle inst sess ["seed", "oops"]) == 3) "garbage seed argv is usage"
+  -- a seed that fails mid-way leaves nothing behind: it runs in one transaction
+  let partialPath : System.FilePath := ".lake" / "leandb_test_seed_partial.sqlite"
+  if ← partialPath.pathExists then IO.FS.removeFile partialPath
+  let failing : Base := { b with
+    seed := some (do
+      discard <| insert Author ⟨"Grace", 85⟩
+      throw (.sqlite "seed boom")) }
+  let inst2 := Instance.ofPath partialPath
+  let sess2 ← expectOk (← Cli.Session.open failing inst2) "open the partial-seed probe"
+  let r ← failing.handle inst2 sess2 ["seed"]
+  check (code r == "sqlite") s!"the failing seed reports its error: {r}"
+  check ((← rowsOf sess2 "author") == 0) "a partial seed rolls back"
+
 private def rowsDbPath : System.FilePath := ".lake" / "leandb_test_rows_limit.sqlite"
 
 private def testRowsLimitPushdown : IO Unit := do
@@ -4175,6 +4230,7 @@ def main : IO UInt32 := do
   testRowsLimitPushdown
   testFreezeNames
   testPortOf
+  testSeedGuard
   testModuleNameOk
   testStdioLineCap
   testStdioInvalidUtf8

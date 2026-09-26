@@ -1,6 +1,7 @@
 import LeanDb.Base
 import LeanDb.Migrate
 import LeanDb.Freeze
+import LeanDb.Transaction
 
 namespace LeanDb.Cli
 
@@ -98,7 +99,7 @@ private def usageJson (b : Base) (inst : Instance) : Json :=
       Json.str "rows <table> [--eq col=value]... [--limit n]",
       Json.str "version",
       Json.str "query <name> [args...]"] ++
-      (if b.seed.isSome then #[Json.str "seed"] else #[]) ++ #[
+      (if b.seed.isSome then #[Json.str "seed [--force]"] else #[]) ++ #[
       Json.str "log [limit]",
       Json.str "log prune <keep>  (delete older audit entries; 0 clears the log)",
       Json.str "migrate status | apply [--allow-destructive] [--no-backup] | rollback | history [limit] | freeze [--module M]",
@@ -181,6 +182,31 @@ private def parseRowFlags : List String → List (String × String) → Nat →
 private def queryNames (b : Base) : List String :=
   b.queries.map (·.name) ++ (if b.seed.isSome then ["seed"] else [])
 
+/-- Rows across the base's tables — the seed guard's probe (#87): one
+    `COUNT(*)` per table on the same connection the seed will use. -/
+private def catalogRows (b : Base) : DbM Nat :=
+  untrackedSqlite fun raw =>
+    b.tables.foldlM (init := 0) fun n t => do
+      let stmt ← raw.prepare s!"SELECT COUNT(*) FROM {quoteIdent t.name}"
+      if ← stmt.step then pure (n + (← stmt.columnInt64 0).toNatClampNeg) else pure n
+
+/-- The `seed` verb (#87). A base's seed is plain inserts, so running it
+    twice duplicates every row; the verb therefore refuses a non-empty
+    catalog unless `--force` is given, and guard plus seed run inside one
+    `BEGIN IMMEDIATE` transaction, so a partial seed rolls back whole. -/
+private def seedOf (b : Base) (force : Bool) (seed : Option (DbM Unit)) :
+    Except String (DbM Json) :=
+  match seed with
+  | none => .error s!"this base has no seed; queries: {queryNames b}"
+  | some s => .ok do
+      withTransaction do
+        unless force do
+          if 0 < (← catalogRows b) then
+            throw (.migrate "the catalog is not empty; running the seed again would duplicate \
+              every row: delete the instance or pass --force")
+        s
+      return seedJson
+
 /-- Resolve argv into one typed database action (or a usage error). -/
 private def command (b : Base) : List String → Except String (DbM Json)
   | ["insert", t, j] => do pure ((← table? b t).insertJson (← parseJson j))
@@ -202,10 +228,8 @@ private def command (b : Base) : List String → Except String (DbM Json)
       let tbl ← table? b t
       let (eqs, limit) ← parseRowFlags flags [] 100
       pure (tbl.rowsWhere eqs limit)
-  | ["seed"] | ["query", "seed"] =>
-      match b.seed with
-      | some s => .ok (do s; pure seedJson)
-      | none => .error s!"this base has no seed; queries: {queryNames b}"
+  | ["seed"] | ["query", "seed"] => seedOf b false b.seed
+  | ["seed", "--force"] | ["query", "seed", "--force"] => seedOf b true b.seed
   | "query" :: name :: qargs =>
       match b.queries.find? (·.name == name) with
       | some q => .ok (q.run qargs)
@@ -712,7 +736,7 @@ private def handleOpen (b : Base) (inst : Instance) (sess : Session) : List Stri
               -- which query recorded which plan
               let queryName? := match args with
                 | "query" :: name :: _ => some name
-                | ["seed"] => some "seed"
+                | ["seed"] | ["seed", "--force"] => some "seed"
                 | _ => none
               conn.queryName.set queryName?
               let r ← act.run conn
