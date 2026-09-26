@@ -1190,8 +1190,8 @@ private def migLeakDbPath : System.FilePath := ".lake" / "leandb_test_mig_leak.s
 
 private def testMigrationErrorPragmas : IO Unit := do
   if ← migLeakDbPath.pathExists then IO.FS.removeFile migLeakDbPath
-  let v1 : TableSpec := ⟨"author", #[col "name" .text], #[]⟩
-  let v2 : TableSpec := ⟨"author", #[col "name" .text, col "nick" .text (nullable := true)], #[]⟩
+  let v1 : TableSpec := ⟨"author", #[col "name" .text], #[], none⟩
+  let v2 : TableSpec := ⟨"author", #[col "name" .text, col "nick" .text (nullable := true)], #[], none⟩
   discard <| expectOk (← withDb migLeakDbPath [v1] (pure ())) "create v1"
   let conn ← expectOk (← openDbRaw migLeakDbPath) "reopen v1"
   let m : Migration :=
