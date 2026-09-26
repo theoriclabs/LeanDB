@@ -178,10 +178,43 @@ private def testPlansAreTheLambda : IO Unit := do
     runIs (names <$> Read.all byLowerPrefix) ["Hagrid", "ha1", "Harry"] "lowered startsWith"
   discard <| expectOk r "lowered startsWith"
 
+/-- The index DDL SQLite holds for `name`, if the index exists. -/
+private def indexSql (path : System.FilePath) (name : String) : IO (Option String) := do
+  let db ← SQLite.open path
+  let stmt ← db.prepare "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?"
+  stmt.bindText 1 name
+  if ← stmt.step then return some (← stmt.columnText 0) else return none
+
+/-- Declaring `collate` on an existing index keeps its name, so the
+    migration must drop the old index before creating the new one: the
+    other way round, `CREATE INDEX IF NOT EXISTS` is a no-op and the drop
+    then removes the index the schema says exists. -/
+private def testCollationChangeRebuildsIndex : IO Unit := do
+  let binary : TableSpec :=
+    { Entity.spec Muggle with indexes := #[{ columns := #["name"], name := some "ix_muggle_by_name" }] }
+  fresh dbPath
+  discard <| expectOk (← withDb dbPath [binary] (insert Muggle ⟨"Dursley"⟩)) "open with BINARY"
+  let some before ← indexSql dbPath "ix_muggle_by_name" |
+    throw <| IO.userError "FAIL: the BINARY index was not created"
+  if before.contains "NOCASE" then
+    throw <| IO.userError s!"FAIL: the BINARY index is NOCASE: {before}"
+  let (plan, _) ← expectOk (← migrate dbPath (Entity.specs Muggle) (apply := true)) "migrate"
+  unless (plan.map (·.steps.length)) == some 2 do
+    throw <| IO.userError s!"FAIL: expected a drop and an add, got {plan.map (·.steps.map (·.describe))}"
+  match ← indexSql dbPath "ix_muggle_by_name" with
+  | some after =>
+      unless after.contains "COLLATE NOCASE" do
+        throw <| IO.userError s!"FAIL: the migrated index is not NOCASE: {after}"
+  | none => throw <| IO.userError "FAIL: the migration dropped the index it declares"
+  let rows ← expectOk (← withDb dbPath (Entity.specs Muggle) (fetchAll Muggle)) "reopen"
+  unless rows.map (·.val.name) == #["Dursley"] do
+    throw <| IO.userError "FAIL: the migration lost a row"
+
 def run : IO Unit := do
   testTypedWindow
   testIndexNamesInSchemaJson
   testFrozenCollation
   testPlansAreTheLambda
+  testCollationChangeRebuildsIndex
 
 end TestsLdb14
