@@ -137,9 +137,51 @@ collate := some (LeanDb.Collate.nocase) }" do
   unless (Render.specsLit (Entity.specs Muggle)).contains "collate := some (LeanDb.Collate.nocase)" do
     throw <| IO.userError "FAIL: the frozen snapshot dropped the collation"
 
+/-! The tactic's string plans are the lambda, row for row: the typed
+    layer's meaning *is* the plan, so a leaf that means something else
+    changes the answer, not just the fetch. -/
+
+private def plans : List (String × (Stored Wizard → Bool) × Pred [Wizard]) :=
+  [("startsWith", fun w => w.val.name.startsWith "ha",
+      (by leandb_plan : PlanFor (ts := [Wizard]) fun w => w.val.name.startsWith "ha")),
+   ("contains", fun w => w.val.name.contains "ar",
+      (by leandb_plan : PlanFor (ts := [Wizard]) fun w => w.val.name.contains "ar")),
+   ("toLower.contains", fun w => w.val.name.toLower.contains "AR".toLower,
+      (by leandb_plan : PlanFor (ts := [Wizard]) fun w =>
+        w.val.name.toLower.contains "AR".toLower)),
+   ("toLower.startsWith", fun w => w.val.name.toLower.startsWith "HA".toLower,
+      (by leandb_plan : PlanFor (ts := [Wizard]) fun w =>
+        w.val.name.toLower.startsWith "HA".toLower)),
+   ("!startsWith", fun w => !w.val.name.startsWith "ha",
+      (by leandb_plan : PlanFor (ts := [Wizard]) fun w => !w.val.name.startsWith "ha"))]
+
+/-- Case-insensitive prefix, which has no leaf: it must stay residual. -/
+private def byLowerPrefix : Query School [Wizard] (Stored Wizard) :=
+  (Query.from Wizard).where' (fun w => w.val.name.toLower.startsWith "HA".toLower)
+
+private def testPlansAreTheLambda : IO Unit := do
+  let rows : List (Stored Wizard) :=
+    ["Hagrid", "ha1", "habitat", "Harry", "", "xHa", "HA"].zipIdx.map fun (n, i) =>
+      ⟨⟨Int64.ofNat (i + 1)⟩, ⟨n⟩⟩
+  for (label, lam, plan) in plans do
+    for r in rows do
+      unless plan.denote .empty r == lam r do
+        throw <| IO.userError s!"FAIL: plan {label} ≠ lambda on {repr r.val.name}"
+  let some (_, _, lowered) := plans.find? (·.1 == "toLower.startsWith") |
+    throw <| IO.userError "FAIL: no toLower.startsWith plan"
+  unless lowered.residuals == 1 do
+    throw <| IO.userError s!"FAIL: a lowered startsWith was pushed: {lowered.renderT.1}"
+  fresh dbPath
+  let r ← withDb dbPath specs do
+    for n in ["Hagrid", "ha1", "xHa", "Harry"] do
+      discard <| insert Wizard ⟨n⟩
+    runIs (names <$> Read.all byLowerPrefix) ["Hagrid", "ha1", "Harry"] "lowered startsWith"
+  discard <| expectOk r "lowered startsWith"
+
 def run : IO Unit := do
   testTypedWindow
   testIndexNamesInSchemaJson
   testFrozenCollation
+  testPlansAreTheLambda
 
 end TestsLdb14

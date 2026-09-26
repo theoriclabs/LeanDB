@@ -128,8 +128,9 @@
   (`\`, `%`, `_`) and bound, `Pred.contains` renders `instr(c, ?) > 0`
   (byte-exact), and `Pred.icontains` renders
   `instr(lower(c), lower(?)) > 0` — ASCII-only case folding on both
-  sides. The reifier accepts `String.startsWith`/`String.contains` (and
-  the `toLower` pair) on a column. All three are exact: `LIKE` folds
+  sides. The reifier accepts `String.startsWith`/`String.contains` on a
+  column, and `contains` with `toLower` on both sides; a lowered
+  `startsWith` stays in Lean. All three are exact: `LIKE` folds
   ASCII case, and the `instr` conjunct makes `prefix` case-sensitive like
   `startsWith`, so a pushed `LIMIT`/`OFFSET`, `COUNT(*)` or `EXISTS` over
   them is sound. A negated string leaf stays in Lean.
