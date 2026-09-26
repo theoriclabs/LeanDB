@@ -712,6 +712,19 @@ def fetchFiltered (α : Type) [Entity α] {ts : List Type} (pred : Pred ts)
     (limit : Option Nat := none) (order : Array (Order ts) := #[])
     (window : Window := {}) : DbM (Array (Stored α)) := transaction do
   if let .error e := window.check then throw e
+  -- A caller-supplied cap ships to SQL as a bound parameter, so the
+  -- fetch (and the child-list attachment under it) is bounded by the
+  -- cap, not by the table (issue: `rows --limit` never reached SQL).
+  -- `window.limit`/`window.offset` are already range-checked by
+  -- `Window.check` above; the bare `limit` reaches here unguarded, so
+  -- it gets Window.check's own predicate — `>= Int64.maxValue.toNatClampNeg`,
+  -- refusing `Int64.maxValue` itself too, kept identical so the two
+  -- caps cannot diverge: `Int64.ofNat` would wrap `2^63` to a negative
+  -- LIMIT, and SQLite reads a negative LIMIT as *no limit* — the
+  -- caller's own cap silently gone, with the whole child forest under it.
+  if let some n := limit then
+    if n >= Int64.maxValue.toNatClampNeg then
+      throw (.sqlite s!"limit out of Int64 range: {n}")
   let cap := window.limit <|> limit
   if pred.isTrivial && cap.isNone && window.offset == 0 && order.isEmpty then
     return ← fetchAll α
