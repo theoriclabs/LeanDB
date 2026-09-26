@@ -409,6 +409,71 @@ private def testSnapshotReaderLane : IO Unit := do
   | .ok (.error e) | .error e => throw <| IO.userError s!"FAIL: read after restore: {repr e}"
   svc.close
 
+/-- Is `PRAGMA query_only` on for this connection? -/
+private def queryOnly (conn : Conn) : IO Bool := do
+  let stmt ← conn.raw.prepare "PRAGMA query_only"
+  discard <| stmt.step
+  return (← stmt.columnInt64 0) == 1
+
+/-- The reader-lane snapshot holds its pool slot's lock for the whole
+    backup: with `readers := 1` a `withReader` that arrives mid-backup
+    runs only once the `VACUUM INTO` is complete, the snapshot waits for
+    a callback that holds the only slot, and readers see `query_only`
+    back on after a snapshot that succeeded and after one that failed. -/
+private def testSnapshotHoldsReader : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 30000 "seed" 200
+  -- a reader arriving once the backup has started writing `dest.tmp`
+  -- waits for it: its callback sees the output at its final size, or
+  -- already renamed into place
+  let tmp2 := snapTmpOf snapDest2
+  let snapTask ← IO.asTask (prio := .dedicated) (svc.snapshot snapDest2)
+  repeat
+    if (← tmp2.pathExists) || (← IO.hasFinished snapTask) then break
+    IO.sleep 1
+  let seen ← svc.withReader fun _ => do
+    if ← snapDest2.pathExists then return none
+    try return some (← System.FilePath.metadata tmp2).byteSize catch _ => return none
+  let r ← IO.ofExcept snapTask.get
+  check r.isOk s!"snapshot under a waiting reader: {repr r}"
+  let final := (← System.FilePath.metadata snapDest2).byteSize
+  match seen with
+  | .ok none => pure ()
+  | .ok (some n) => check (n == final) s!"a reader ran mid-backup: saw {n} of {final} bytes"
+  | .error e => throw <| IO.userError s!"FAIL: reader during snapshot: {repr e}"
+  -- a reader callback takes the only slot and keeps it for 200 ms
+  let taken ← IO.mkRef false
+  let released ← IO.mkRef 0
+  let held ← IO.asTask (prio := .dedicated) do
+    svc.withReader fun conn => do
+      taken.set true
+      IO.sleep 200
+      released.set (← IO.monoMsNow)
+      queryOnly conn
+  repeat
+    if ← taken.get then break
+    IO.sleep 2
+  let r ← svc.snapshot snapDest
+  let doneAt ← IO.monoMsNow
+  check r.isOk s!"snapshot on the held slot: {repr r}"
+  let heldR ← IO.ofExcept held.get
+  check (heldR matches .ok true) s!"the holding reader saw query_only on: {repr heldR}"
+  check (doneAt >= (← released.get)) "the snapshot waited for the reader holding its slot"
+  let ro ← svc.withReader queryOnly
+  check (ro matches .ok true) s!"query_only is back on after a snapshot: {repr ro}"
+  -- a failed backup restores it too: the destination's parent is a file,
+  -- so `backupTo` throws while the pragma is lifted
+  let r ← svc.snapshot (snapDest / "nested.sqlite")
+  check (r matches .error (.host _)) s!"snapshot under a file fails: {repr r}"
+  let ro ← svc.withReader queryOnly
+  check (ro matches .ok true) s!"query_only is back on after a failed snapshot: {repr ro}"
+  svc.close
+
 /-- With `readers := 0` the default reader lane falls back to the writer
     connection (logged on stderr) and still produces a valid copy. -/
 private def testSnapshotFallback : IO Unit := do
@@ -526,6 +591,7 @@ def run : IO Unit := do
   testImmediateBlocks
   testService
   testSnapshotReaderLane
+  testSnapshotHoldsReader
   testSnapshotFallback
   testSnapshotWriterLane
   testRestoreDuringSnapshot

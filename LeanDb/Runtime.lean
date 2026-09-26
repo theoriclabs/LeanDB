@@ -315,16 +315,20 @@ def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
   | .ok (job, conn?) =>
     match conn? with
     | some mtx =>
-        let conn ← mtx.atomically fun ref => ref.get
-        -- reader lane: the pool is not the writer lock, so run outside it.
-        -- `query_only` refuses a `VACUUM INTO` even on a read-only
+        -- reader lane: the pool is not the writer lock, so run outside it,
+        -- but hold the pool slot's own lock for the whole backup, so no
+        -- `withReader` / `runRead` shares the handle or sees `query_only`
+        -- lifted. `query_only` refuses a `VACUUM INTO` even on a read-only
         -- connection; the connection is `SQLITE_OPEN_READONLY`, so the
         -- pragma is only lifted for the backup, which writes the target
         -- file, never the instance.
-        conn.raw.exec "PRAGMA query_only = OFF"
         let r ←
           try
-            backupTo conn tmp (checkpoint := false)
+            mtx.atomically fun ref => do
+              let conn ← ref.get
+              conn.raw.exec "PRAGMA query_only = OFF"
+              try backupTo conn tmp (checkpoint := false)
+              finally conn.raw.exec "PRAGMA query_only = ON"
             if ← job.abort.get then
               -- restore claimed the connection while the `VACUUM INTO`
               -- ran; it cannot be interrupted, so stand down before the
@@ -335,7 +339,6 @@ def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
           catch e =>
             discard <| s.snapshotCleanup job
             pure (.error (.host (toString e)))
-        conn.raw.exec "PRAGMA query_only = ON"
         return r
     | none =>
         -- writer lane: hold the writer for the whole backup, as before;
