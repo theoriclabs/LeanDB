@@ -51,19 +51,23 @@
   "On first open the engine creates `_leandb_meta` inside the adopted file and stores the schema fingerprint; this is expected.",
   "The engine's DDL is CREATE TABLE IF NOT EXISTS — a no-op on the adopted tables; existing data is read through the generated codecs."],
  "notCarried":
- [{"reason":
-   "views are not imported; it remains in the adopted database file but is invisible to the typed layer",
+ [{"tables": ["orders"],
+   "reason":
+   "views are not imported; it remains in the adopted database file, invisible to the typed layer, until a rebuild drops or rewrites a table it references",
    "name": "big_orders",
    "kind": "view"},
-  {"reason":
-   "indexes are not represented in the generated schema (no @[index] emission yet); the physical index remains in the adopted database file",
+  {"tables": ["orders"],
+   "reason":
+   "indexes are not represented in the generated schema (no @[index] emission yet); the physical index remains in the adopted database file until a rebuild drops or rewrites its table",
    "name": "idx_orders_customer",
    "kind": "index"},
-  {"reason":
+  {"tables": ["customers"],
+   "reason":
    "SQLite default \"0\" is not lifted into the generated field; inserts must supply the field, and a future LeanDB rebuild will not preserve this source default",
    "name": "customers.balance",
    "kind": "default"},
-  {"reason":
+  {"tables": ["orders"],
+   "reason":
    "source uses ON DELETE NO ACTION, ON UPDATE NO ACTION, MATCH NONE; the adopted file retains those actions, but LeanDB rebuilds emit RESTRICT",
    "name": "orders.customer_id",
    "kind": "foreign-key action"}],

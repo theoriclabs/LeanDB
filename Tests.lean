@@ -1701,7 +1701,52 @@ private def testImportDualFk : IO Unit := do
   check (spid.any fun f => f.mapping == Mapping.ref "parent" "Parent")
     "a single single-column FK still types the column as Ref"
 
- end Importer
+ 
+
+/-- Issue 85: the report's survival claims ("remains in the adopted
+    database file") die at the example's own V1 rebuild — a rebuild drops
+    the table's uncarried indexes and leaves views referencing it broken.
+    The claims must be qualified, and the entries must name their tables
+    so `migrate status` can warn by name. -/
+private def testImportSurvivalClaims : IO Unit := do
+  let orders : RawTable :=
+    { name := "orders"
+      createSql :=
+        "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER, item TEXT, qty INT)"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1, defaultSql := none },
+        { name := "customer_id", declType := "INTEGER", notnull := false,
+          pkIndex := 0, defaultSql := none },
+        { name := "item", declType := "TEXT", notnull := true, pkIndex := 0, defaultSql := none },
+        { name := "qty", declType := "INT", notnull := true, pkIndex := 0, defaultSql := none }]
+      fks := #[]
+      indexes := #[{ name := "idx_orders_customer", isUnique := false, origin := "c",
+                     isPartial := false, columns := #[some "customer_id"] }] }
+  let raw : RawSchema :=
+    { tables := #[orders],
+      views := #[("big_orders", "CREATE VIEW big_orders AS SELECT * FROM orders WHERE qty > 10")],
+      triggers := #[], indexes := #["idx_orders_customer"] }
+  let plan := planOf "legacy" "Legacy" raw
+  let viewEntry := plan.notCarried.find? (·.kind == "view")
+  let ixEntry := plan.notCarried.find? (·.kind == "index")
+  check (viewEntry.any (·.reason.contains "until a rebuild")) "view survival claim is qualified"
+  check (viewEntry.any (·.owners == #["orders"])) "the view is attributed to the table it references"
+  check (ixEntry.any (·.reason.contains "until a rebuild")) "index survival claim is qualified"
+  check (ixEntry.any (·.owners == #["orders"])) "the index is attributed to its table"
+  -- the report JSON (and the MD, which renders the same reasons) carry
+  let j := reportJson plan "examples/import-fixture/legacy.db" "data/legacy.db"
+  let entries := (j.getObjValAs? (Array Lean.Json) "notCarried").toOption.getD #[]
+  let tablesOf := fun (kind : String) =>
+    match entries.find? (fun e => (e.getObjValAs? String "kind").toOption == some kind) with
+    | some e => (e.getObjValAs? (Array Lean.Json) "tables").toOption
+    | none => none
+  let hasOrders := fun (ts? : Option (Array Lean.Json)) =>
+    (ts?.getD #[]).any fun t => (t.getStr?).toOption == some "orders"
+  let md := importMd plan "examples/import-fixture/legacy.db" "data/legacy.db"
+  check ((md.splitOn "until a rebuild drops or rewrites").length > 1)
+    "IMPORT.md carries the qualified claims"
+
+end Importer
 
 /-! ## LEP-0003 B: JSON columns with a declared shape, derived columns -/
 
@@ -3519,8 +3564,88 @@ where
     let st ← (← SQLite.open p).prepare "SELECT COUNT(*) FROM author"
     if ← st.step then return (← st.columnInt64 0).toNatClampNeg else return 0
 
+/-- Issue 85: `migrate status` must warn by name that a pending rebuild
+    drops the table's uncarried indexes and invalidates its views — when
+    the import report sits next to the instance — and stay silent without
+    a destructive step or without the report. -/
+private def testStatusRebuildWarning : IO Unit := do
+  -- shaped like the legacy example's report: kind/name/tables per entry
+  let report := Lean.Json.mkObj [
+    ("notCarried", Lean.Json.arr #[
+      Lean.Json.mkObj [("kind", Lean.Json.str "view"), ("name", Lean.Json.str "big_orders"),
+        ("reason", Lean.Json.str "…"), ("tables", Lean.Json.arr #[Lean.Json.str "orders"])],
+      Lean.Json.mkObj [("kind", Lean.Json.str "index"), ("name", Lean.Json.str "idx_orders_customer"),
+        ("reason", Lean.Json.str "…"), ("tables", Lean.Json.arr #[Lean.Json.str "orders"])]])]
+  -- the legacy scenario: pending V1 rebuilds `orders`, report present
+  let notes := Cli.rebuildReportNotes report #[(1, "orders", "rebuilds")]
+  check (notes.size == 1 && notes[0]!.contains "V1" &&
+      notes[0]!.contains "idx_orders_customer" && notes[0]!.contains "big_orders")
+    s!"the warning names the casualties: {notes}"
+  -- nothing destructive pending → no warning
+  check ((Cli.rebuildReportNotes report #[]).isEmpty) "no pending rebuild, no warning"
+  -- a rebuild of a table the report says owns nothing → no warning
+  check ((Cli.rebuildReportNotes report #[(1, "customers", "rebuilds")]).isEmpty)
+    "a table without uncarried features stays quiet"
+  -- a drop is worded as a drop
+  check ((Cli.rebuildReportNotes report #[(2, "orders", "drops")]).any fun n =>
+      n.contains "V2 drops \"orders\"" && n.contains "idx_orders_customer")
+    s!"drop wording: {Cli.rebuildReportNotes report #[(2, "orders", "drops")]}"
+  -- file lookup: the report next to the instance (its directory), and at
+  -- the package root above it — the generated layout
+  let dir : System.FilePath := ".lake" / "leandb_test_import_report"
+  unless ← dir.pathExists do IO.FS.createDir dir
+  IO.FS.writeFile (dir / "import-report.json") report.pretty
+  let warned ← Cli.importReportNotes (Instance.ofPath (dir / "legacy.sqlite")) #[(1, "orders", "rebuilds")]
+  check (warned.any (·.contains "big_orders")) "the report next to the instance drives the warning"
+  unless ← (dir / "data").pathExists do IO.FS.createDir (dir / "data")
+  let warnedRoot ← Cli.importReportNotes (Instance.ofPath (dir / "data" / "legacy.sqlite")) #[(1, "orders", "rebuilds")]
+  check (warnedRoot.any (·.contains "idx_orders_customer")) "the report at the package root is found"
+  -- no report anywhere next to the instance → silent
+  let quietDir : System.FilePath := ".lake" / "leandb_test_no_report"
+  let quiet ← Cli.importReportNotes (Instance.ofPath (quietDir / "legacy.sqlite")) #[(1, "orders", "rebuilds")]
+  check (quiet.isEmpty) "no report, no warning"
+  -- end to end through a chained base's `migrate status`: a pending drop
+  -- of a table the report names → the warning; a pending create-only
+  -- migration with the same report → silent
+  let dir : System.FilePath := ".lake" / "leandb_test_rebuild_status"
+  unless ← dir.pathExists do IO.FS.createDir dir
+  let bookReport := Lean.Json.mkObj [("notCarried", Lean.Json.arr #[
+    Lean.Json.mkObj [("kind", Lean.Json.str "index"), ("name", Lean.Json.str "ix_book"),
+      ("reason", Lean.Json.str "…"), ("tables", Lean.Json.arr #[Lean.Json.str "book"])],
+    Lean.Json.mkObj [("kind", Lean.Json.str "view"), ("name", Lean.Json.str "cheap_books"),
+      ("reason", Lean.Json.str "…"), ("tables", Lean.Json.arr #[Lean.Json.str "book"])]])]
+  IO.FS.writeFile (dir / "import-report.json") bookReport.pretty
+  let b0 : Base := { name := "rb", tables := [CliTable.of Author, CliTable.of Book] }
+  let bDrop : Base := { name := "rb", tables := [CliTable.of Author] }
+  let bAdd : Base := { name := "rb", tables := [CliTable.of Author, CliTable.of Book, CliTable.of Marker] }
+  let migDrop : Migration :=
+    { fromFingerprint := fingerprint b0.specs
+      toFingerprint := fingerprint bDrop.specs
+      snapshot := bDrop.specs }
+  let migAdd : Migration :=
+    { fromFingerprint := fingerprint b0.specs
+      toFingerprint := fingerprint bAdd.specs
+      snapshot := bAdd.specs }
+  let dropChain : Base := { bDrop with chain := some { origin := b0.specs, migrations := [migDrop] } }
+  let addChain : Base := { bAdd with chain := some { origin := b0.specs, migrations := [migAdd] } }
+  let instDrop := Instance.ofPath (dir / "drop.sqlite")
+  discard <| expectOk (← Cli.Session.open b0 instDrop) "seed the drop instance at V0"
+  let dropSess ← expectOk (← Cli.Session.open dropChain instDrop) "open the drop chain"
+  let dropStatus ← dropChain.handle instDrop dropSess ["migrate", "status"]
+  let dropNotes := (dropStatus.getObjValAs? (Array String) "notes").toOption.getD #[]
+  check (dropNotes.any (·.contains "ix_book") && dropNotes.any (·.contains "cheap_books"))
+    s!"status warns by name for the pending drop: {dropStatus}"
+  let instAdd := Instance.ofPath (dir / "add.sqlite")
+  discard <| expectOk (← Cli.Session.open b0 instAdd) "seed the add instance at V0"
+  let addSess ← expectOk (← Cli.Session.open addChain instAdd) "open the add chain"
+  let addStatus ← addChain.handle instAdd addSess ["migrate", "status"]
+  let addNotes := (addStatus.getObjValAs? (Array String) "notes").toOption.getD #[]
+  check (addNotes.all fun n => !n.contains "ix_book" &&
+      !(toString addStatus).contains "import-report.json")
+    s!"a non-destructive pending migration stays silent: {addNotes}"
 
 private def adoptDbPath : System.FilePath := ".lake" / "leandb_test_adopt.sqlite"
+
 
 private def colRating : ColumnSpec := (Entity.spec Book).columns.getD 2 default
 
@@ -4251,6 +4376,7 @@ def main : IO UInt32 := do
   testHandleBoundary
   testRestoreWriterGuard
   testChain
+  testStatusRebuildWarning
   testFootprints
   testDerivedSpec
   testSortBy
@@ -4286,6 +4412,7 @@ def main : IO UInt32 := do
   testImportHostileNames
   testImportWithoutRowidPhrase
   testImportDualFk
+  testImportSurvivalClaims
   Lep3.run
   EnumSetA.run
   testOptionalParamPlans

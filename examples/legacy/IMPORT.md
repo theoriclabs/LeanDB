@@ -52,8 +52,8 @@ The `INTEGER PRIMARY KEY` column `id` becomes LeanDB's row identity (not a field
 
 Partial SQL support is a stated non-concern; *silent* partiality is not.
 
-- view `big_orders` — views are not imported; it remains in the adopted database file but is invisible to the typed layer
-- index `idx_orders_customer` — indexes are not represented in the generated schema (no @[index] emission yet); the physical index remains in the adopted database file
+- view `big_orders` — views are not imported; it remains in the adopted database file, invisible to the typed layer, until a rebuild drops or rewrites a table it references
+- index `idx_orders_customer` — indexes are not represented in the generated schema (no @[index] emission yet); the physical index remains in the adopted database file until a rebuild drops or rewrites its table
 - default `customers.balance` — SQLite default "0" is not lifted into the generated field; inserts must supply the field, and a future LeanDB rebuild will not preserve this source default
 - foreign-key action `orders.customer_id` — source uses ON DELETE NO ACTION, ON UPDATE NO ACTION, MATCH NONE; the adopted file retains those actions, but LeanDB rebuilds emit RESTRICT
 

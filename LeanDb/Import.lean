@@ -70,7 +70,9 @@ structure RawTable where
 
 structure RawSchema where
   tables : Array RawTable
-  views : Array String
+  /-- View name and its stored CREATE VIEW SQL; the SQL drives which
+      tables the view references. -/
+  views : Array (String × String)
   triggers : Array String
   indexes : Array String
   deriving Repr, Inhabited
@@ -152,7 +154,7 @@ def introspect (path : System.FilePath) : IO RawSchema := do
       tables := tables.push { name, createSql := sql, columns, fks,
                               indexes := tblIndexes }
     else if ty == "view" then
-      views := views.push name
+      views := views.push (name, sql)
     else if ty == "trigger" then
       triggers := triggers.push name
     else if ty == "index" then
@@ -383,6 +385,10 @@ structure NotCarried where
   kind : String
   name : String
   reason : String
+  /-- Source tables that own this feature (a view's referenced tables, an
+      index's table, …): empty when unknown. `migrate status` warns by
+      these names when a pending rebuild covers one of them. -/
+  owners : Array String := #[]
   deriving Repr, Inhabited
 
 structure Plan where
@@ -576,29 +582,39 @@ def planOf (baseName moduleName : String) (raw : RawSchema) : Plan := _root_.Id.
     named := named.push { tp with fields }
   -- Features not carried, by name, with reasons.
   let mut notCarried : Array NotCarried := #[]
-  for v in raw.views do
+  for (v, vsql) in raw.views do
+    -- A view is owned by every table its SQL references: a rebuild that
+    -- drops or rewrites any of them invalidates it (dropped columns at
+    -- minimum, the whole table when it is dropped).
+    let owners := (raw.tables.filter fun t => (bareWords vsql).contains t.name) |>.map (·.name)
     notCarried := notCarried.push ⟨"view", v,
-      "views are not imported; it remains in the adopted database file but is invisible to the typed layer"⟩
+      "views are not imported; it remains in the adopted database file, invisible to the typed layer, until a rebuild drops or rewrites a table it references",
+      owners⟩
   for tr in raw.triggers do
     notCarried := notCarried.push ⟨"trigger", tr,
-      "triggers are not imported; it remains in the adopted database file and will still fire inside SQLite"⟩
+      "triggers are not imported; it remains in the adopted database file and will still fire inside SQLite",
+      #[]⟩
   for ix in raw.indexes do
     -- A UNIQUE index carries a constraint, not just a lookup structure;
     -- calling it "an index" would under-report what is being dropped.
     let uniq := raw.tables.any fun t =>
       t.indexes.any fun i => i.name == ix && i.isUnique
+    let owners := (raw.tables.filter fun t => t.indexes.any (·.name == ix)) |>.map (·.name)
     notCarried := notCarried.push ⟨"index", ix,
-      "indexes are not represented in the generated schema (no @[index] emission yet); the physical index remains in the adopted database file"
-      ++ (if uniq then " — note this one is UNIQUE, a constraint the typed layer does not enforce" else "")⟩
+      "indexes are not represented in the generated schema (no @[index] emission yet); the physical index remains in the adopted database file until a rebuild drops or rewrites its table"
+      ++ (if uniq then " — note this one is UNIQUE, a constraint the typed layer does not enforce" else ""),
+      owners⟩
   for t in raw.tables do
     for c in t.columns do
       if let some dflt := c.defaultSql then
         notCarried := notCarried.push ⟨"default", s!"{t.name}.{c.name}",
-          s!"SQLite default {String.quote dflt} is not lifted into the generated field; inserts must supply the field, and a future LeanDB rebuild will not preserve this source default"⟩
+          s!"SQLite default {String.quote dflt} is not lifted into the generated field; inserts must supply the field, and a future LeanDB rebuild will not preserve this source default",
+          #[t.name]⟩
     for fk in t.fks do
       if fk.onDelete != "RESTRICT" || fk.onUpdate != "RESTRICT" || fk.matchClause != "NONE" then
         notCarried := notCarried.push ⟨"foreign-key action", s!"{t.name}.{fk.fromCol}",
-          s!"source uses ON DELETE {fk.onDelete}, ON UPDATE {fk.onUpdate}, MATCH {fk.matchClause}; the adopted file retains those actions, but LeanDB rebuilds emit RESTRICT"⟩
+          s!"source uses ON DELETE {fk.onDelete}, ON UPDATE {fk.onUpdate}, MATCH {fk.matchClause}; the adopted file retains those actions, but LeanDB rebuilds emit RESTRICT",
+          #[t.name]⟩
     -- "imported untyped" is only true of a table the plan carries; for a
     -- skipped table the skip reason already says why nothing is imported
     unless eligibleNames.any (fun (n, _) => n == t.name) do
@@ -609,7 +625,8 @@ def planOf (baseName moduleName : String) (raw : RawSchema) : Plan := _root_.Id.
         let targets := String.intercalate ", " (singles.toList.map (·.toTable))
         notCarried := notCarried.push ⟨"foreign-key", s!"{t.name}.{c.name}",
           s!"{singles.size} single-column foreign keys target this column ({targets}); \
-a typed `Ref` can carry only one, so the column is imported untyped and none of the references is carried"⟩
+a typed `Ref` can carry only one, so the column is imported untyped and none of the references is carried",
+          #[t.name]⟩
     for ix in t.indexes do
       -- `origin` is authoritative: "pk" is the primary key (carried as the
       -- row key, or the whole table is already skipped) and "c" is a
@@ -621,18 +638,21 @@ a typed `Ref` can carry only one, so the column is imported untyped and none of 
         let part := if ix.isPartial then " partial" else ""
         notCarried := notCarried.push
           ⟨"unique constraint", s!"{t.name}({cols})",
-           s!"the UNIQUE constraint on ({cols}) is not represented in the generated schema; it stays enforced by SQLite inside the adopted file (backing{part} index {ix.name}), but a future LeanDB rebuild will not preserve it"⟩
+           s!"the UNIQUE constraint on ({cols}) is not represented in the generated schema; it stays enforced by SQLite inside the adopted file (backing{part} index {ix.name}), but a future LeanDB rebuild will not preserve it",
+           #[t.name]⟩
   for t in raw.tables do
     -- No pragma exposes CHECKs, so this one is textual; see `bareWords`.
     let checks := checkConstraintsIn t.createSql
     for check in checks do
       if let some cname := check then
         notCarried := notCarried.push ⟨"check", s!"{t.name}.{cname}",
-          s!"CHECK constraint {String.quote cname} is not lifted into a smart constructor; it stays enforced by SQLite inside the adopted file (detected by scanning the stored CREATE TABLE — SQLite exposes no pragma for CHECKs)"⟩
+          s!"CHECK constraint {String.quote cname} is not lifted into a smart constructor; it stays enforced by SQLite inside the adopted file (detected by scanning the stored CREATE TABLE — SQLite exposes no pragma for CHECKs)",
+          #[t.name]⟩
     let anon := (checks.filter (·.isNone)).size
     if anon > 0 then
       notCarried := notCarried.push ⟨"check", t.name,
-        s!"{anon} unnamed CHECK constraint(s) in the table definition are not lifted into smart constructors; they stay enforced by SQLite inside the adopted file (detected by scanning the stored CREATE TABLE — SQLite exposes no pragma for CHECKs)"⟩
+        s!"{anon} unnamed CHECK constraint(s) in the table definition are not lifted into smart constructors; they stay enforced by SQLite inside the adopted file (detected by scanning the stored CREATE TABLE — SQLite exposes no pragma for CHECKs)",
+        #[t.name]⟩
   let notes := #[
     "Import loose, tighten forever: every text column is a named newtype with an identity validator — tighten `make` when you know the rule.",
     "On first open the engine creates `_leandb_meta` inside the adopted file and stores the schema fingerprint; this is expected.",
@@ -908,8 +928,13 @@ def reportJson (p : Plan) (source dbPath : String) : Json :=
     ("tablesSkipped", Json.arr (p.skippedTables.map fun (t, r) =>
       Json.mkObj [("table", Json.str t), ("reason", Json.str r)])),
     ("notCarried", Json.arr (p.notCarried.map fun e =>
-      Json.mkObj [("kind", Json.str e.kind), ("name", Json.str e.name),
-                  ("reason", Json.str e.reason)])),
+      let base : List (String × Json) :=
+        [("kind", Json.str e.kind), ("name", Json.str e.name),
+         ("reason", Json.str e.reason)]
+      -- which source tables own it (a view's referenced tables, an index's
+      -- table): `migrate status` keys its rebuild warning on these
+      Json.mkObj (if e.owners.isEmpty then base
+        else base ++ [("tables", Json.arr (e.owners.map Json.str))]))),
     ("notes", Json.arr (p.notes.map Json.str))]
 
 /-- The complete generated base: relative path → file contents. Pure. -/
