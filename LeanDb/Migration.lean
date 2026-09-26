@@ -286,8 +286,13 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
   -- lifetime. One restore point runs on success and on every failure path.
   let guarded : IO (Except DbError MigrateReport) := do
     try
-      if let some dest := backup then
-        backupTo conn dest
+      -- A same-second collision (#74) is resolved by `backupToUniquified`,
+      -- so an immediate `migrate apply` retry never wedges on the clock.
+      -- The uniquified path is what the journal records and the report
+      -- returns, so `migrate rollback` restores the file actually written.
+      let backup ← match backup with
+        | some dest => some <$> backupToUniquified conn dest
+        | none => pure none
       db.exec "PRAGMA foreign_keys = OFF"
       -- a rebuild renames the scratch table over the old one; an adopted file may
       -- carry views over it (uncarried by the importer), which the modern rename

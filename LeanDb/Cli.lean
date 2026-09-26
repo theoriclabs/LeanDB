@@ -270,13 +270,14 @@ def _root_.LeanDb.Instance.backupPath (i : Instance) (b : Base) (ver : Option Na
 private def backupJson (b : Base) (inst : Instance) (sess : Session) : IO Json := do
   let conn ← sess.conn.get
   let (_, ver) ← instanceInfoOn conn
-  let dest := inst.backupPath b ver (← unixNow conn)
-  try
-    backupTo conn dest
-    return Json.mkObj [("ok", Json.bool true), ("backup", Json.str dest.toString),
-      ("schema_version", (ver.map fun v => Lean.toJson v).getD Json.null)]
+  -- a second backup in the same wall-second (#74) gets a `-2`, `-3`…
+  -- suffix instead of failing the verb
+  let dest ← try
+    backupToUniquified conn (inst.backupPath b ver (← unixNow conn))
   catch e =>
     return (DbError.sqlite s!"backup failed: {e}").toJson
+  return Json.mkObj [("ok", Json.bool true), ("backup", Json.str dest.toString),
+    ("schema_version", (ver.map fun v => Lean.toJson v).getD Json.null)]
 
 /-! ### Restore safety: validate first, swap last
 

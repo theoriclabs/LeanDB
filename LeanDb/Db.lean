@@ -987,19 +987,33 @@ def writeMeta (db : SQLite) (key value : String) : IO Unit := do
   stmt.bindText 2 value
   stmt.exec
 
-/-- Add the columns of an engine bookkeeping table that an older engine
-    did not create (idempotent; `PRAGMA table_info` decides). Only the
-    engine's own tables are ever touched this way. -/
-def ensureColumns (db : SQLite) (table : String) (cols : List (String × String)) : IO Unit := do
+def columnNames (db : SQLite) (table : String) : IO (List String) := do
   let stmt ← db.prepare s!"PRAGMA table_info({quoteId table})"
   let mut present : List String := []
   repeat
     if ← stmt.step then
       present := (← stmt.columnText 1) :: present
     else break
+  return present
+
+/-- Add the columns of an engine bookkeeping table that an older engine
+    did not create (idempotent; `PRAGMA table_info` decides). Only the
+    engine's own tables are ever touched this way.
+
+    The read-then-ALTER is deliberately not wrapped in a transaction: two
+    processes opening the same pre-0.2.0 instance concurrently both see the
+    column missing and both ALTER (#78), and the loser's
+    `duplicate column name` must not fail the open of a fine database — so
+    a failed ALTER re-reads `table_info` and treats present = success. -/
+def ensureColumns (db : SQLite) (table : String) (cols : List (String × String)) : IO Unit := do
+  let present ← columnNames db table
   for (name, decl) in cols do
     unless present.contains name do
-      db.exec s!"ALTER TABLE {quoteId table} ADD COLUMN {quoteId name} {decl}"
+      try
+        db.exec s!"ALTER TABLE {quoteId table} ADD COLUMN {quoteId name} {decl}"
+      catch e =>
+        unless (← columnNames db table).contains name do
+          throw e
 
 /-! ### Restore safety primitives
 
@@ -1094,7 +1108,36 @@ def backupTo (conn : Conn) (dest : System.FilePath) : IO Unit := do
   let quoted := "'" ++ (dest.toString.replace "'" "''") ++ "'"
   conn.raw.exec s!"VACUUM INTO {quoted}"
 
-/-- The migration journal, newest first. -/
+/-- How many `-N` suffixes a backup name may go through before refusing. -/
+def backupRetries : Nat := 32
+
+/-- A full, consistent copy of the instance, like `backupTo`, but the
+    destination is only a suggestion: on a name collision — two backups in
+    the same wall-second, since the clock has second resolution (#74), or
+    another process claiming the name between the check and the write —
+    the path is retried as `<base>-2`, `<base>-3`… up to `retries`. Returns
+    the path actually written; callers journal it, and `migrate apply`
+    retries must stay possible within one wall-second. `unixNow`'s 0
+    fallback (every same-version backup colliding) is covered by the same
+    suffix loop. -/
+def backupToUniquified (conn : Conn) (dest : System.FilePath)
+    (retries : Nat := backupRetries) : IO System.FilePath := do
+  -- the suffix base is the suggested name minus `.sqlite`, computed once:
+  -- every retry starts from it, so collisions yield `base-2`, `base-3`…
+  -- (recomputing from the last attempt would compound suffixes instead)
+  let stem := dest.toString.dropEnd (if dest.toString.endsWith ".sqlite" then 7 else 0)
+  let mut d := dest
+  for k in [1:retries + 1] do
+    try
+      backupTo conn d
+      return d
+    catch e =>
+      -- the pre-check and `VACUUM INTO` itself both say "already exists"
+      unless (e.toString.splitOn "already exists").length > 1 do
+        throw e
+      d := s!"{stem}-{k + 1}.sqlite"
+  throw <| IO.userError s!"no free backup path after {retries} collisions: {dest}"
+
 def readJournal (conn : Conn) (limit : Nat) : IO (Array Lean.Json) := do
   let stmt ← conn.raw.prepare
     "SELECT idx, steps, fingerprint, applied_at, ok, from_version, to_version, backup, note \

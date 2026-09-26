@@ -2919,7 +2919,8 @@ private def testSession : IO Unit := do
   check (code refused == "migrate" && Cli.exitCodeOf refused == 2) "destructive apply refused"
   check (code (← b.handle inst sess ["rows", "author"]) == "schema_mismatch") "still gated after refusal"
   let applied ← b.handle inst sess ["migrate", "apply", "--allow-destructive"]
-  check ((applied.getObjValAs? Bool "ok").toOption == some true) "apply with the flag"
+  check ((applied.getObjValAs? Bool "ok").toOption == some true)
+    s!"apply with the flag: {applied}"
   let rows ← b.handle inst sess ["rows", "author"]
   check ((rows.getObjValAs? Nat "count").toOption == some 1) "admitted after apply, data kept"
   let v ← b.handle inst sess ["version"]
@@ -2961,6 +2962,66 @@ private def testSession : IO Unit := do
   let rs ← b.handle inst sess ["restore", bkPath]
   check ((rs.getObjValAs? Bool "in_sync").toOption == some true) "restore of a current backup stays in sync"
   check ((← b.handle inst sess ["rows", "author"] |>.map code) == "") "verbs admitted after restore"
+  -- two backups in the same wall-second: the second gets a `-2` suffix
+  -- (#74) instead of failing the verb
+  let bk1 ← b.handle inst sess ["backup"]
+  let bk2 ← b.handle inst sess ["backup"]
+  let p1 := (bk1.getObjValAs? String "backup").toOption.getD ""
+  let p2 := (bk2.getObjValAs? String "backup").toOption.getD ""
+  check (p1 != p2) s!"two same-second backups get distinct paths: {p1} vs {p2}"
+  check (p2.startsWith (System.FilePath.mk ".lake" / "backups" / "s-v2-").toString)
+    s!"the second backup stays named by base/version: {p2}"
+  check (← (System.FilePath.mk p2).pathExists) "the suffixed backup file exists"
+
+/-- #78: two connections racing `ensureColumns` over the same file — the
+    loser's `duplicate column name` must not fail its open. -/
+private def ensureRaceDbPath : System.FilePath := ".lake" / "leandb_test_ensure_race.sqlite"
+
+private def testEnsureColumnsRace : IO Unit := do
+  if ← ensureRaceDbPath.pathExists then IO.FS.removeFile ensureRaceDbPath
+  let db ← SQLite.open ensureRaceDbPath
+  db.exec "CREATE TABLE _leandb_migrations (idx INTEGER PRIMARY KEY)"
+  let cols := [("from_version", "INTEGER"), ("to_version", "INTEGER")]
+  -- the plain idempotence: a second connection's rescan sees the columns
+  -- and skips every ALTER
+  ensureColumns db "_leandb_migrations" cols
+  let bConn ← SQLite.open ensureRaceDbPath
+  ensureColumns bConn "_leandb_migrations" cols
+  -- the loser's interleave (#78), deterministically: `ensureColumns`
+  -- pre-scans `table_info` once and then ALTERs each requested column in
+  -- turn, so a duplicated request entry replays exactly what two
+  -- concurrent first upgrades do to the loser — its second ALTER runs on
+  -- a stale pre-scan that no longer knows `note` exists, fails with
+  -- `duplicate column name`, and the catch's re-check must treat
+  -- present = success instead of refusing a fine database. (`extra`
+  -- proves the ALTER after the tolerated duplicate still really runs.)
+  db.exec "CREATE TABLE _leandb_probe (id INTEGER PRIMARY KEY)"
+  ensureColumns db "_leandb_probe" [("note", "TEXT"), ("note", "TEXT"), ("extra", "INTEGER")]
+  let stmt ← db.prepare
+    "SELECT count(*) FROM pragma_table_info('_leandb_probe') WHERE name = 'note'"
+  discard <| stmt.step
+  check ((← stmt.columnInt64 0) == 1) "the column exists exactly once after the duplicate"
+
+/-- #74: with the suggested backup path and its `-2` suffix both already
+    taken, the next attempt is `<base>-3` — the suffix base is computed
+    once from the suggested name, not recomputed from the last attempt
+    (which would compound to `…-2-3`). -/
+private def backupStemDbPath : System.FilePath := ".lake" / "leandb_test_backup_stem.sqlite"
+
+private def testBackupSuffixChain : IO Unit := do
+  let dir : System.FilePath := ".lake" / "leandb_test_backup_stem"
+  IO.FS.createDirAll dir
+  let base := dir / "b-v1-0.sqlite"
+  IO.FS.writeFile base "taken"
+  IO.FS.writeFile (dir / "b-v1-0-2.sqlite") "taken"
+  if ← backupStemDbPath.pathExists then IO.FS.removeFile backupStemDbPath
+  -- an earlier run may have left a -3 behind: the chain must land on it
+  if ← (dir / "b-v1-0-3.sqlite").pathExists then IO.FS.removeFile (dir / "b-v1-0-3.sqlite")
+  let conn ← expectOk (← openDbRaw backupStemDbPath) "open the stem probe"
+  let dest ← backupToUniquified conn base
+  check (dest.toString.endsWith "b-v1-0-3.sqlite")
+    s!"the third collision is -3, not a compounded suffix: {dest}"
+  check (← dest.pathExists) "the -3 backup file was written"
 
 /-! ## Restore safety: a bad source is refused before the instance is touched
 
@@ -3546,6 +3607,8 @@ private def testFreezeNames : IO Unit := do
   match r with
   | .error m => check ((m.splitOn "a b").length > 1) s!"the refusal names the column, got {m}"
   | .ok _ => pure ()
+  testEnsureColumnsRace
+  testBackupSuffixChain
 
 private def lineStream (s : String) : IO (IO.Ref IO.FS.Stream.Buffer) := do
   IO.mkRef { data := s.toUTF8, pos := 0 }
