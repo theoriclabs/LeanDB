@@ -278,68 +278,83 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
   if plan.isDestructive && !allowDestructive then
     return .error (.migrate "plan is destructive (drops tables or columns); pass --allow-destructive")
   let db := conn.raw
-  try
-    if let some dest := backup then
-      backupTo conn dest
-    db.exec "PRAGMA foreign_keys = OFF"
-    -- a rebuild renames the scratch table over the old one; an adopted file may
-    -- carry views over it (uncarried by the importer), which the modern rename
-    -- check rejects — the legacy behaviour is the one the swap needs
-    db.exec "PRAGMA legacy_alter_table = ON"
-    db.exec "BEGIN"
-    let mut applied : List String := []
+  -- every exit from the guarded region restores the session PRAGMAs (#71):
+  -- an exception between the first PRAGMA and the inner catch, or one
+  -- thrown *by* the inner catch (a ROLLBACK that fails after a custom step
+  -- committed the transaction away), used to leave the session connection
+  -- with foreign_keys=OFF and legacy_alter_table=ON for its remaining
+  -- lifetime. One restore point runs on success and on every failure path.
+  let guarded : IO (Except DbError MigrateReport) := do
     try
-      for step in plan.steps do
-        match step with
-        | .rebuildTable spec _ =>
-            match m.steps.find? (·.table? == some spec.name), prev.find? (·.name == spec.name) with
-            | some (.transform _ d run), some old =>
-                let n ← transformTable conn old spec run
-                applied := applied ++ [s!"{d}: {n} rows"]
-            | _, _ =>
+      if let some dest := backup then
+        backupTo conn dest
+      db.exec "PRAGMA foreign_keys = OFF"
+      -- a rebuild renames the scratch table over the old one; an adopted file may
+      -- carry views over it (uncarried by the importer), which the modern rename
+      -- check rejects — the legacy behaviour is the one the swap needs
+      db.exec "PRAGMA legacy_alter_table = ON"
+      let began ← IO.mkRef false
+      let runTxn : IO (Except DbError MigrateReport) := do
+        let mut applied : List String := []
+        try
+          db.exec "BEGIN"
+          began.set true
+          for step in plan.steps do
+            match step with
+            | .rebuildTable spec _ =>
+                match m.steps.find? (·.table? == some spec.name), prev.find? (·.name == spec.name) with
+                | some (.transform _ d run), some old =>
+                    let n ← transformTable conn old spec run
+                    applied := applied ++ [s!"{d}: {n} rows"]
+                | _, _ =>
+                    for sql in step.sql do db.exec sql
+                    applied := applied ++ [step.describe]
+            | _ =>
                 for sql in step.sql do db.exec sql
                 applied := applied ++ [step.describe]
-        | _ =>
-            for sql in step.sql do db.exec sql
-            applied := applied ++ [step.describe]
-      for step in m.steps do
-        if let .custom d run := step then
-          run conn
-          applied := applied ++ [d]
-      let stmt ← db.prepare "PRAGMA foreign_key_check"
-      if ← stmt.step then
-        throw <| IO.userError s!"foreign_key_check failed on table {← stmt.columnText 0}"
-      writeMeta db "schema_json" (specsToJson m.snapshot).compress
-      writeMeta db "schema_fingerprint" m.toFingerprint
-      writeMeta db "schema_version" (toString toVersion)
-      let j ← db.prepare
-        "INSERT INTO _leandb_migrations (steps, fingerprint, ok, from_version, to_version, backup) \
+          for step in m.steps do
+            if let .custom d run := step then
+              run conn
+              applied := applied ++ [d]
+          let stmt ← db.prepare "PRAGMA foreign_key_check"
+          if ← stmt.step then
+            throw <| IO.userError s!"foreign_key_check failed on table {← stmt.columnText 0}"
+          writeMeta db "schema_json" (specsToJson m.snapshot).compress
+          writeMeta db "schema_fingerprint" m.toFingerprint
+          writeMeta db "schema_version" (toString toVersion)
+          let j ← db.prepare
+            "INSERT INTO _leandb_migrations (steps, fingerprint, ok, from_version, to_version, backup) \
 VALUES (?, ?, 1, ?, ?, ?)"
-      j.bindText 1 (Json.arr (applied.map Json.str).toArray).compress
-      j.bindText 2 m.toFingerprint
-      j.bindInt64 3 (Int64.ofNat (toVersion - 1))
-      j.bindInt64 4 (Int64.ofNat toVersion)
-      match backup with
-      | some dest => j.bindText 5 dest.toString
-      | none => j.bindNull 5
-      j.exec
-      db.exec "COMMIT"
+          j.bindText 1 (Json.arr (applied.map Json.str).toArray).compress
+          j.bindText 2 m.toFingerprint
+          j.bindInt64 3 (Int64.ofNat (toVersion - 1))
+          j.bindInt64 4 (Int64.ofNat toVersion)
+          match backup with
+          | some dest => j.bindText 5 dest.toString
+          | none => j.bindNull 5
+          j.exec
+          db.exec "COMMIT"
+          let report : MigrateReport := {
+            applied
+            notes := plan.notes
+            fingerprint := m.toFingerprint
+            fromVersion := some (toVersion - 1)
+            toVersion := some toVersion
+            backup := backup.map (·.toString) }
+          return .ok report
+        catch e =>
+          -- only a transaction that actually began can roll back; a failed
+          -- ROLLBACK must not skip the restore (it poisons instead, #72)
+          if ← began.get then
+            began.set false
+            try db.exec "ROLLBACK" catch rb => conn.poison (toString rb)
+          return .error (.migrate s!"V{toVersion}: {e}")
+      runTxn
     catch e =>
-      db.exec "ROLLBACK"
-      db.exec "PRAGMA legacy_alter_table = OFF"
-      db.exec "PRAGMA foreign_keys = ON"
-      return .error (.migrate s!"V{toVersion}: {e}")
-    db.exec "PRAGMA legacy_alter_table = OFF"
-    db.exec "PRAGMA foreign_keys = ON"
-    let report : MigrateReport := {
-      applied
-      notes := plan.notes
-      fingerprint := m.toFingerprint
-      fromVersion := some (toVersion - 1)
-      toVersion := some toVersion
-      backup := backup.map (·.toString) }
-    return .ok report
-  catch e =>
-    return .error (.sqlite (toString e))
+      return .error (.sqlite (toString e))
+  let r ← guarded
+  db.exec "PRAGMA legacy_alter_table = OFF"
+  db.exec "PRAGMA foreign_keys = ON"
+  return r
 
 end LeanDb
