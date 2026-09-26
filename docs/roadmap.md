@@ -50,6 +50,15 @@ its SQL-translatable approximation. It is not an end-to-end proof of the
 query compiler or SQLite executor. The original predicate still runs on
 decoded rows, and tests compare planned and unplanned execution.
 
+The pushdown correspondence has a first fully-stated instance: the
+predicate IR documents `approx` as the SQL-shippable abstraction of a
+plan, `approx_sound` as its machine-checked soundness lemma, and the
+planned-versus-unplanned differential tests as the agreement check
+against the reference semantics. String predicates follow the widening
+rule: a leaf whose SQL rendering accepts more rows than its Lean
+meaning is counted and kept off deciding paths such as count and
+exists, where the lambda's re-check restores exactness.
+
 ### Configurable products
 
 Turn the Eats configurable-offer experiment into reusable support.

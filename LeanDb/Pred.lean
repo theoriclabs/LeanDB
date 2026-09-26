@@ -17,6 +17,22 @@ reifies the call-site lambda into a `Pred`, the executor sends `approx`
 to SQL and still applies the lambda to what comes back (`finishRows`), so
 pushdown narrows a fetch and never decides a result.
 
+The correspondence this file maintains: `approx` is the SQL-shippable
+abstraction of the Lean predicate — it drops residual conjuncts and
+never narrows what the plan accepts; `approx_sound` is the
+machine-checked soundness lemma for that claim (pushdown never
+excludes a row the plan would accept); `selectSpec` in `LeanDb.Db` is
+the reference semantics every planned execution must agree with, and
+the planned-vs-unplanned differential tests are that agreement check
+in practice. One rule keeps widened leaves off deciding paths: a leaf
+whose SQL rendering is a strict widening of its Lean meaning (the
+string `prefix` case — SQLite's `LIKE` folds ASCII case where `denote`
+does not) is sound under `approx_sound`, but it must be counted by
+`Pred.widening` and must never reach a deciding path — `countP` and
+`existsP` fall back to fetch-and-reduce rather than answer from a
+widened count — because the lambda's re-check, not the shipped SQL, is
+what restores exactness.
+
 LEP-0004 adds `exists`/`forall` over a child table related by a foreign
 key. Their meaning needs the child rows, so `denote` takes a `Snapshot`;
 every other constructor ignores it. They render as correlated
