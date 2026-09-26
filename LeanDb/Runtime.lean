@@ -26,6 +26,17 @@ the source, swap under a temporary name, reopen, re-verify. A reopen
 failure leaves the service gated — verbs are refused loudly — rather
 than serving a file it could not open (#77's shape).
 
+Snapshot lanes (LDB-13): `snapshot` runs its `VACUUM INTO` on a pooled
+reader connection — a consistent read snapshot in WAL mode, so the
+writer keeps serving during the backup. The pool always has one (LDB-19),
+so there is no writer fallback; `snapshotOn .writer` asks for the writer
+explicitly. A snapshot writes to `dest.tmp` and renames on success, so a
+failed snapshot leaves no torn output. `restore` waits for a running
+snapshot: it stands down before its rename with a typed error, so the
+swap never happens under a reader's `VACUUM INTO`. `restore` reopens the
+reader pool with the writer, so a later snapshot copies the restored
+file, and a gated instance is not snapshotted on either lane.
+
 The callback contract: `f` must not retain the `Conn` past return. The
 connection enforces synchronous ownership; nothing stops a callback from
 stashing it, so this is documented, not enforced.
@@ -65,6 +76,13 @@ inductive RuntimeError where
   | reentrant
   /-- The instance failed verification; verbs are gated. -/
   | gated (e : DbError)
+  /-- A snapshot is already running; `snapshotOn` refuses to start a
+      second one (two `VACUUM INTO`s to one `dest.tmp` would corrupt
+      each other). -/
+  | snapshotBusy
+  /-- A running snapshot stood down because `restore` claimed the
+      connection (LDB-13); its partial output was removed. -/
+  | snapshotAborted
   deriving Repr
 
 def RuntimeError.message : RuntimeError → String
@@ -72,8 +90,42 @@ def RuntimeError.message : RuntimeError → String
   | .notReady s => s!"service is not ready (state: {repr s})"
   | .reentrant => "withConnection called reentrantly from its own callback"
   | .gated e => s!"instance gated: {e.message}"
+  | .snapshotBusy => "a snapshot is already running"
+  | .snapshotAborted => "snapshot aborted: restore claimed the connection"
 
 instance : ToString RuntimeError := ⟨RuntimeError.message⟩
+
+/-- Which connection a snapshot runs on (LDB-13). `.reader` runs the
+    `VACUUM INTO` on a pooled read-only connection — a consistent read
+    snapshot in WAL mode, so the writer keeps serving during the backup.
+    `.writer` holds the writer connection under the admission lock for
+    the whole backup: the pre-LDB-13 behaviour, only when asked for. -/
+inductive SnapshotLane where
+  | reader
+  | writer
+  deriving Repr, DecidableEq
+
+/-- The lane's name, for `Runtime.status`. -/
+def SnapshotLane.name : SnapshotLane → String
+  | .reader => "reader"
+  | .writer => "writer"
+
+/-- How the last finished snapshot went, for `Runtime.status`. -/
+structure SnapshotStat where
+  lane : SnapshotLane
+  durationMs : Nat
+  bytes : Nat
+  deriving Repr
+
+/-- A snapshot in flight, registered in the slot so `restore` can
+    coordinate with it (LDB-13): `abort` is set when restore claims the
+    connection. The `VACUUM INTO` itself cannot be interrupted, so the
+    snapshot honours the request where it can — before the rename — and
+    removes its partial output. -/
+private structure SnapshotJob where
+  lane : SnapshotLane
+  tmp : System.FilePath
+  abort : IO.Ref Bool
 
 /-- Mutable service state, inside the lock. -/
 private structure Slot where
@@ -83,6 +135,8 @@ private structure Slot where
   gate : Option DbError := none
   readers : Array (Std.Mutex Conn) := #[]
   readerIdx : Nat := 0
+  snapshotJob : Option SnapshotJob := none
+  lastSnapshot : Option SnapshotStat := none
 
 structure Config where
   readers : Nat := 0
@@ -104,6 +158,18 @@ private def gateOf (b : Base) (conn : Conn) : IO (Option DbError) := do
   | .ok () => return none
   | .error e => return some e
 
+/-- Open the reader pool (LDB-09, LDB-19): `readers := 0` still opens one
+    dedicated read-only connection, so the writer is never a reader. -/
+private def openReaders (b : Base) (path : System.FilePath) (config : Config) :
+    IO (Except DbError (Array (Std.Mutex Conn))) := do
+  let mut readers : Array (Std.Mutex Conn) := #[]
+  for _ in [0:max config.readers 1] do
+    match ← openDbRaw path b.log
+        { b.openConfig with busyTimeoutMs := config.readerBusyTimeoutMs } (readOnly := true) with
+    | .ok c => readers := readers.push (← Std.Mutex.new c)
+    | .error e => return .error e
+  return .ok readers
+
 def new (b : Base) (inst : Instance) (session : SessionMode) (verify : Bool := true)
     (config : Config := {}) : IO Service := do
   if let .error e := b.check then throw <| IO.userError e.message
@@ -114,14 +180,9 @@ def new (b : Base) (inst : Instance) (session : SessionMode) (verify : Bool := t
     | .error e => throw <| IO.userError e.message
   try applyAuxiliary conn.raw b.auxiliary catch e => throw e
   let gate ← if verify then gateOf b conn else pure (some (.schemaInvalid "unverified"))
-  let nReaders := max config.readers 1
-  let mut readers : Array (Std.Mutex Conn) := #[]
-  for _ in [0:nReaders] do
-    let rc ← match ← openDbRaw inst.path b.log
-        { b.openConfig with busyTimeoutMs := config.readerBusyTimeoutMs } (readOnly := true) with
-      | .ok c => pure c
-      | .error e => throw <| IO.userError e.message
-    readers := readers.push (← Std.Mutex.new rc)
+  let readers ← match ← openReaders b inst.path config with
+    | .ok readers => pure readers
+    | .error e => throw <| IO.userError e.message
   let slot ← Std.RecursiveMutex.new { conn, state := State.ready, gate, readers }
   return { base := b, inst, session, config, slot }
 
@@ -192,20 +253,154 @@ def resume (s : Service) : IO Unit :=
     let st ← getThe Slot
     if st.state == .draining then set { st with state := .ready }
 
-/-- A consistent copy of the instance at `dest` (`VACUUM INTO`), run on
-    the connection under the lock. -/
+/-- `dest.tmp`: a snapshot writes here and renames on success, so a
+    failed snapshot leaves no torn output at `dest` (LDB-13). -/
+private def snapshotTmp (dest : System.FilePath) : System.FilePath :=
+  s!"{dest}.tmp"
+
+/-- Give up a snapshot: remove the partial output and clear the job, so
+    `restore` stops waiting and a new snapshot may start. -/
+private def snapshotCleanup (s : Service) (job : SnapshotJob) : IO Unit := do
+  try IO.FS.removeFile job.tmp catch _ => pure ()
+  s.slot.atomically do
+    modify fun st => { st with snapshotJob := none }
+
+/-- Move the finished backup into place and record the stat. A failure
+    removes the partial output; nothing torn is left at `dest`. -/
+private def snapshotFinish (s : Service) (job : SnapshotJob) (dest : System.FilePath)
+    (start : Nat) : IO (Except RuntimeError Unit) := do
+  try
+    let bytes := (← System.FilePath.metadata job.tmp).byteSize.toNat
+    IO.FS.rename job.tmp dest
+    let durationMs := (← IO.monoMsNow) - start
+    let stat : SnapshotStat := { lane := job.lane, durationMs, bytes }
+    s.slot.atomically do
+      modify fun st => { st with snapshotJob := none, lastSnapshot := some stat }
+    return .ok ()
+  catch e =>
+    discard <| s.snapshotCleanup job
+    return .error (.host (toString e))
+
+/-- A consistent copy of the instance at `dest` (`VACUUM INTO`), on the
+    caller's chosen lane. The reader lane runs the backup on a pooled
+    read-only connection — no WAL checkpoint, which a reader cannot run;
+    `VACUUM INTO` reads through the WAL itself — outside the writer lock,
+    so the writer keeps serving. The backup is written to `dest.tmp` and
+    renamed on success. At most one snapshot runs at a time
+    (`.snapshotBusy`), and `restore` waits for the running one before its
+    file swap (LDB-13). With the writer lane the backup holds the writer
+    connection for its whole duration, the pre-LDB-13 behaviour. -/
+def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
+    IO (Except RuntimeError Unit) := do
+  let start ← IO.monoMsNow
+  let tmp := snapshotTmp dest
+  let reg : Except RuntimeError (SnapshotJob × Option (Std.Mutex Conn)) ← s.slot.atomically do
+    let st ← getThe Slot
+    if st.state != .ready then return .error (.notReady st.state)
+    -- a gated instance is not backed up, as `withConnection` refuses it
+    -- on the writer lane; after a failed `restore` reopen the pool still
+    -- reads the file that was replaced
+    if let some e := st.gate then return .error (.gated e)
+    if st.snapshotJob.isSome then return .error .snapshotBusy
+    -- the reader lane takes the next pool slot, the same round-robin as
+    -- `withReader`; `new` always opens at least one, so an empty pool is
+    -- refused like `withReader` refuses it, never run on the writer
+    let conn? : Option (Std.Mutex Conn) :=
+      if lane == .reader then st.readers[st.readerIdx % st.readers.size]? else none
+    if lane == .reader && conn?.isNone then return .error (.notReady st.state)
+    let abort ← IO.mkRef false
+    let job : SnapshotJob := { lane, tmp, abort }
+    set { st with readerIdx := st.readerIdx + (if conn?.isSome then 1 else 0), snapshotJob := some job }
+    return .ok (job, conn?)
+  match reg with
+  | .error e => return .error e
+  | .ok (job, conn?) =>
+    -- `dest` and `dest.tmp` are touched only once the job is registered:
+    -- a second snapshot to the same destination is refused above before
+    -- it can remove this one's in-progress output, and this check sees a
+    -- `dest` that an earlier snapshot renamed into place before clearing
+    -- its job
+    if ← dest.pathExists then
+      discard <| s.snapshotCleanup job
+      return .error (.host s!"backup target already exists: {dest}")
+    -- a `dest.tmp` here is a stale one, left by a crashed snapshot
+    try IO.FS.removeFile tmp catch _ => pure ()
+    match conn? with
+    | some mtx =>
+        -- reader lane: the pool is not the writer lock, so run outside it,
+        -- but hold the pool slot's own lock for the whole backup, so no
+        -- `withReader` / `runRead` shares the handle or sees `query_only`
+        -- lifted. `query_only` refuses a `VACUUM INTO` even on a read-only
+        -- connection; the connection is `SQLITE_OPEN_READONLY`, so the
+        -- pragma is only lifted for the backup, which writes the target
+        -- file, never the instance.
+        let r ←
+          try
+            mtx.atomically fun ref => do
+              let conn ← ref.get
+              conn.raw.exec "PRAGMA query_only = OFF"
+              try backupTo conn tmp (checkpoint := false)
+              finally conn.raw.exec "PRAGMA query_only = ON"
+            if ← job.abort.get then
+              -- restore claimed the connection while the `VACUUM INTO`
+              -- ran; it cannot be interrupted, so stand down before the
+              -- rename
+              discard <| s.snapshotCleanup job
+              pure (.error .snapshotAborted)
+            else s.snapshotFinish job dest start
+          catch e =>
+            discard <| s.snapshotCleanup job
+            pure (.error (.host (toString e)))
+        return r
+    | none =>
+        -- writer lane: hold the writer for the whole backup, as before;
+        -- `restore` serializes behind the same lock
+        match ← s.withConnection fun conn => backupTo conn tmp (checkpoint := true) with
+        | .error e =>
+            discard <| s.snapshotCleanup job
+            return .error e
+        | .ok () => s.snapshotFinish job dest start
+
+/-- A consistent copy of the instance at `dest`, on the reader lane. -/
 def snapshot (s : Service) (dest : System.FilePath) : IO (Except RuntimeError Unit) :=
-  s.withConnection fun conn => backupTo conn dest
+  s.snapshotOn .reader dest
 
 /-- Replace the instance file with `src` and reopen: drain, swap under a
-    temporary name (`Restore.swapFile` validates first), reopen, re-verify.
-    A reopen failure leaves the service gated rather than serving a file
-    it could not open. -/
-def restore (s : Service) (src : System.FilePath) : IO (Except RuntimeError Unit) :=
+    temporary name (`Restore.swapFile` validates first), reopen the writer
+    and the reader pool, re-verify. A reopen failure leaves the service
+    gated rather than serving a file it could not open. Waits for a
+    running snapshot first: the snapshot is asked to stand down before
+    its rename — it fails typed (`.snapshotAborted`) and its partial
+    output is removed — so the swap never happens under a reader's
+    `VACUUM INTO` (LDB-13). -/
+def restore (s : Service) (src : System.FilePath) : IO (Except RuntimeError Unit) := do
+  -- claim the connection: refuse closed, mark restoring (new admissions
+  -- are refused with `.notReady .restoring`), and learn whether a
+  -- snapshot is mid-flight. A writer-lane one found here has either not
+  -- reached the writer lock yet (its `withConnection` is now refused) or
+  -- finished its backup under it; either way it clears its job.
+  let claimed : Except RuntimeError (Option SnapshotJob) ← s.slot.atomically do
+    let st ← getThe Slot
+    if st.state == .closed then return Except.error (.notReady .closed)
+    set { st with state := .restoring }
+    return Except.ok st.snapshotJob
+  match claimed with
+  | .error e => return .error e
+  | .ok none => pure ()
+  | .ok (some job) =>
+      job.abort.set true
+      -- wait for it to stand down: poll the slot (briefly) until the job
+      -- is gone; the `VACUUM INTO` itself cannot be interrupted
+      repeat
+        let gone : Bool ← s.slot.atomically do
+          let st ← getThe Slot
+          return !st.snapshotJob.any (·.tmp == job.tmp)
+        if gone then break
+        IO.sleep 10
   s.slot.atomically do
     let st ← getThe Slot
-    if st.state == .closed then return .error (.notReady .closed)
-    set { st with state := .restoring }
+    -- a `close` may have landed between the claim and here
+    if st.state != .restoring then return .error (.notReady st.state)
     let r ← Restore.swapFile s.inst.path src
     match r with
     | .error e =>
@@ -215,8 +410,16 @@ def restore (s : Service) (src : System.FilePath) : IO (Except RuntimeError Unit
     match ← openDbRaw s.inst.path s.base.log with
     | .ok conn =>
         let gate ← gateOf s.base conn
-        set { (← getThe Slot) with conn, state := .ready, gate }
-        return .ok ()
+        -- the pool still reads the replaced file, and `snapshot` runs on
+        -- it (LDB-13): open a fresh one. A `withReader` in flight finishes
+        -- on its old slot; no snapshot is in flight (waited for above).
+        match ← openReaders s.base s.inst.path s.config with
+        | .ok readers =>
+            set { (← getThe Slot) with conn, state := .ready, gate, readers }
+            return .ok ()
+        | .error e =>
+            set { (← getThe Slot) with conn, state := .ready, gate := some e }
+            return .error (.gated e)
     | .error e =>
         -- the swap succeeded but the file did not open: gate loudly
         -- instead of serving whatever the old connection still sees (#77)
@@ -245,6 +448,11 @@ def status (s : Service) : IO Lean.Json := do
     ("state", Lean.Json.str (toString (repr st.state))),
     ("ready", Lean.Json.bool (st.state == .ready && st.gate.isNone && !s.session.readOnly)),
     ("gated", Lean.Json.bool st.gate.isSome),
-    ("gate", (st.gate.map (Lean.Json.str ·.message)).getD Lean.Json.null)]
+    ("gate", (st.gate.map (Lean.Json.str ·.message)).getD Lean.Json.null),
+    ("snapshot", (st.snapshotJob.map fun job => Lean.Json.str job.lane.name).getD Lean.Json.null),
+    ("last_snapshot", (st.lastSnapshot.map fun stat => Lean.Json.mkObj
+      [("lane", Lean.Json.str stat.lane.name),
+       ("duration_ms", Lean.toJson stat.durationMs),
+       ("bytes", Lean.toJson stat.bytes)]).getD Lean.Json.null)]
 
 end LeanDb.Runtime

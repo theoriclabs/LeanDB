@@ -289,6 +289,341 @@ private def testReadOnlyGuard : IO Unit := do
   | .error e => check (e.code == "read_only") s!"readOnly error, got {e}"
   | .ok _ => throw <| IO.userError "FAIL: write on readonly must fail"
 
+
+/-! ## Snapshot lanes (LDB-13)
+
+`snapshot` runs its `VACUUM INTO` on a pooled reader, so the writer
+keeps committing during the backup; `readers := 0` still has the one
+dedicated reader (LDB-19), so there is no writer fallback. The output is
+written to `dest.tmp` and renamed on success, `restore` waits for a
+running snapshot (typed `.snapshotAborted`, no torn output), and
+`status` reports the last snapshot's lane, duration and size. -/
+
+structure SnapRow where
+  tag : String
+  padding : String
+  deriving Repr, LeanDb.Entity
+
+private def snapBase : Base :=
+  { name := "ldb13", tables := [CliTable.of SnapRow] }
+
+private def snapDbPath : System.FilePath := ".lake" / "leandb_test_ldb13.sqlite"
+private def snapDest : System.FilePath := ".lake" / "leandb_test_ldb13_snap.sqlite"
+private def snapDest2 : System.FilePath := ".lake" / "leandb_test_ldb13_snap2.sqlite"
+private def snapTmpOf (d : System.FilePath) : System.FilePath :=
+  System.FilePath.mk (d.toString ++ ".tmp")
+
+/-- Seed `n` rows of `pad`-character padding through the writer
+    connection. -/
+private def seedRows (svc : Runtime.Service) (n : Nat) (pre : String := "seed")
+    (pad : Nat := 64) : IO Nat := do
+  let r ← svc.withConnection fun conn =>
+    DbM.run conn do
+      withTransaction do
+        let rows : Array SnapRow := (Array.range n).map fun i =>
+          ⟨s!"{pre}-{i}", String.mk (List.replicate pad 'x')⟩
+        discard <| insertMany SnapRow rows
+      let stored ← fetchAll SnapRow
+      return stored.size
+  match r with
+  | .ok (.ok n) => pure n
+  | .ok (.error e) | .error e => throw <| IO.userError s!"FAIL: seeding rows: {repr e}"
+
+/-- `PRAGMA quick_check` over a copy: the snapshot is a valid database. -/
+private def quickCheckOk (p : System.FilePath) : IO Bool := do
+  let db ← SQLite.open p
+  let stmt ← db.prepare "PRAGMA quick_check"
+  discard <| stmt.step
+  return (← stmt.columnText 0) == "ok"
+
+/-- Is a snapshot in flight? `status` reports the running snapshot's
+    lane, or null (LDB-13 diagnostics). -/
+private def snapshotRunning (svc : Runtime.Service) : IO Bool := do
+  let st ← Runtime.status svc
+  match st.getObjVal? "snapshot" with
+  | .ok j => return !(j matches .null)
+  | .error _ => return false
+
+/-- The `last_snapshot` object `status` reports (LDB-13). -/
+private def lastSnapshotOf (svc : Runtime.Service) : IO Lean.Json := do
+  let st ← Runtime.status svc
+  return (st.getObjVal? "last_snapshot").toOption.getD .null
+
+/-- With `readers := 1` the snapshot runs on the reader while the writer
+    keeps committing every ~10 ms: every commit lands, the copy is a
+    valid database, and `restore` accepts it. -/
+private def testSnapshotReaderLane : IO Unit := do
+  fresh snapDbPath
+  if ← snapDest.pathExists then IO.FS.removeFile snapDest
+  try IO.FS.removeFile (snapTmpOf snapDest) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 2000
+  -- the writer commits every ~10 ms while the snapshot runs
+  let commits ← IO.asTask (prio := .default) do
+    let mut ok := 0
+    for i in [0:60] do
+      let r ← svc.withConnection fun conn =>
+        DbM.run conn do
+          withTransaction do
+            discard <| insert SnapRow ⟨s!"commit-{i}", "c"⟩
+          pure ()
+      match r with
+      | .ok (.ok ()) => ok := ok + 1
+      | .ok (.error e) | .error e => throw <| IO.userError s!"FAIL: commit {i} failed: {repr e}"
+      IO.sleep 10
+    return ok
+  -- the reader-lane snapshot overlaps the commit loop
+  let snapTask ← IO.asTask (prio := .default) do
+    svc.snapshot snapDest
+  let snapResult ← IO.ofExcept snapTask.get
+  let commitsOk ← IO.ofExcept commits.get
+  match snapResult with
+  | .ok () => pure ()
+  | .error e => throw <| IO.userError s!"FAIL: reader-lane snapshot: {repr e}"
+  check (commitsOk == 60) s!"every commit succeeded during the snapshot, got {commitsOk}"
+  -- no torn output: only the renamed copy, never `dest.tmp`
+  check (← snapDest.pathExists) "snapshot file exists"
+  check (!(← (snapTmpOf snapDest).pathExists)) "no snapshot tmp left behind"
+  check (← quickCheckOk snapDest) "snapshot passes PRAGMA quick_check"
+  -- `restore` accepts the reader-lane copy
+  let r ← svc.restore snapDest
+  check r.isOk s!"restore accepts the snapshot: {repr r}"
+  check (← svc.ready) "ready after restore"
+  -- status reports the lane, duration and size of the last snapshot
+  let stat ← lastSnapshotOf svc
+  check ((stat.getObjValAs? String "lane").toOption == some "reader")
+    s!"last snapshot ran on the reader lane: {stat}"
+  let durMs := (stat.getObjValAs? Nat "duration_ms").toOption.getD 0
+  check (durMs > 0) s!"duration reported: {stat}"
+  let bytes := (stat.getObjValAs? Nat "bytes").toOption.getD 0
+  check (bytes > 0) s!"size reported: {stat}"
+  -- the restored instance serves the snapshot's data (2000 seeded rows,
+  -- plus whatever committed before the backup's read snapshot)
+  let r ← svc.withConnection fun conn =>
+    DbM.run conn do
+      let stored ← fetchAll SnapRow
+      return stored.size
+  match r with
+  | .ok (.ok n) => check (n >= 2000) s!"restored instance serves the snapshot's rows, got {n}"
+  | .ok (.error e) | .error e => throw <| IO.userError s!"FAIL: read after restore: {repr e}"
+  svc.close
+
+/-- Is `PRAGMA query_only` on for this connection? -/
+private def queryOnly (conn : Conn) : IO Bool := do
+  let stmt ← conn.raw.prepare "PRAGMA query_only"
+  discard <| stmt.step
+  return (← stmt.columnInt64 0) == 1
+
+/-- The reader-lane snapshot holds its pool slot's lock for the whole
+    backup: with `readers := 1` a `withReader` that arrives mid-backup
+    runs only once the `VACUUM INTO` is complete, the snapshot waits for
+    a callback that holds the only slot, and readers see `query_only`
+    back on after a snapshot that succeeded and after one that failed. -/
+private def testSnapshotHoldsReader : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 30000 "seed" 200
+  -- a reader arriving once the backup has started writing `dest.tmp`
+  -- waits for it: its callback sees the output at its final size, or
+  -- already renamed into place
+  let tmp2 := snapTmpOf snapDest2
+  let snapTask ← IO.asTask (prio := .dedicated) (svc.snapshot snapDest2)
+  repeat
+    if (← tmp2.pathExists) || (← IO.hasFinished snapTask) then break
+    IO.sleep 1
+  let seen ← svc.withReader fun _ => do
+    if ← snapDest2.pathExists then return none
+    try return some (← System.FilePath.metadata tmp2).byteSize catch _ => return none
+  let r ← IO.ofExcept snapTask.get
+  check r.isOk s!"snapshot under a waiting reader: {repr r}"
+  let final := (← System.FilePath.metadata snapDest2).byteSize
+  match seen with
+  | .ok none => pure ()
+  | .ok (some n) => check (n == final) s!"a reader ran mid-backup: saw {n} of {final} bytes"
+  | .error e => throw <| IO.userError s!"FAIL: reader during snapshot: {repr e}"
+  -- a reader callback takes the only slot and keeps it for 200 ms
+  let taken ← IO.mkRef false
+  let released ← IO.mkRef 0
+  let held ← IO.asTask (prio := .dedicated) do
+    svc.withReader fun conn => do
+      taken.set true
+      IO.sleep 200
+      released.set (← IO.monoMsNow)
+      queryOnly conn
+  repeat
+    if ← taken.get then break
+    IO.sleep 2
+  let r ← svc.snapshot snapDest
+  let doneAt ← IO.monoMsNow
+  check r.isOk s!"snapshot on the held slot: {repr r}"
+  let heldR ← IO.ofExcept held.get
+  check (heldR matches .ok true) s!"the holding reader saw query_only on: {repr heldR}"
+  check (doneAt >= (← released.get)) "the snapshot waited for the reader holding its slot"
+  let ro ← svc.withReader queryOnly
+  check (ro matches .ok true) s!"query_only is back on after a snapshot: {repr ro}"
+  -- a failed backup restores it too: the destination's parent is a file,
+  -- so `backupTo` throws while the pragma is lifted
+  let r ← svc.snapshot (snapDest / "nested.sqlite")
+  check (r matches .error (.host _)) s!"snapshot under a file fails: {repr r}"
+  let ro ← svc.withReader queryOnly
+  check (ro matches .ok true) s!"query_only is back on after a failed snapshot: {repr ro}"
+  svc.close
+
+/-- With `readers := 0` the snapshot still runs on the reader lane — the
+    pool's dedicated slot, not the writer — and produces a valid copy;
+    the writer lane runs only when asked for. -/
+private def testSnapshotNoReaders : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 0 }
+  discard <| seedRows svc 5
+  let r ← svc.snapshot snapDest
+  match r with
+  | .ok () => pure ()
+  | .error e => throw <| IO.userError s!"FAIL: snapshot with readers := 0: {repr e}"
+  check (← snapDest.pathExists) "snapshot wrote the file"
+  check (!(← (snapTmpOf snapDest).pathExists)) "no snapshot tmp left behind"
+  check (← quickCheckOk snapDest) "snapshot passes quick_check"
+  let stat ← lastSnapshotOf svc
+  check ((stat.getObjValAs? String "lane").toOption == some "reader")
+    s!"readers := 0 still snapshots on the reader lane: {stat}"
+  -- the writer lane is an explicit choice
+  let r ← svc.snapshotOn .writer snapDest2
+  check r.isOk s!"explicit writer lane: {repr r}"
+  let stat ← lastSnapshotOf svc
+  check ((stat.getObjValAs? String "lane").toOption == some "writer")
+    s!"writer lane recorded: {stat}"
+  svc.close
+
+/-- `snapshotOn .writer` on a service with readers runs on the writer and
+    refuses a second snapshot while one is running or the destination
+    already exists; a refused snapshot to the running one's destination
+    leaves its output alone. -/
+private def testSnapshotWriterLane : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 100
+  let r ← svc.snapshotOn .writer snapDest
+  match r with
+  | .ok () => pure ()
+  | .error e => throw <| IO.userError s!"FAIL: writer-lane snapshot: {repr e}"
+  let stat ← lastSnapshotOf svc
+  check ((stat.getObjValAs? String "lane").toOption == some "writer")
+    s!"explicit writer lane is recorded: {stat}"
+  -- the destination exists now: a second snapshot to it is refused
+  let r2 ← svc.snapshotOn .writer snapDest
+  check (r2 matches .error (.host _)) s!"existing destination refused: {repr r2}"
+  -- while a snapshot runs, a second one to the same destination is
+  -- refused with a typed error and leaves the running one's `dest.tmp`
+  -- alone: wait until the backup is writing it
+  discard <| seedRows svc 30000 "more" 200
+  let busy ← IO.asTask (prio := .dedicated) do svc.snapshotOn .reader snapDest2
+  repeat
+    if (← (snapTmpOf snapDest2).pathExists) || (← IO.hasFinished busy) then break
+    IO.sleep 1
+  let r3 ← svc.snapshotOn .writer snapDest2
+  match r3 with
+  | .error .snapshotBusy => pure ()
+  | .error (.host _) => pure () -- the first snapshot finished before the second registered
+  | other => throw <| IO.userError s!"FAIL: concurrent snapshot must be refused, got {repr other}"
+  let busyR ← IO.ofExcept busy.get
+  check busyR.isOk s!"the overlapping snapshot itself succeeded: {repr busyR}"
+  check (← quickCheckOk snapDest2) "the overlapping snapshot's output is intact"
+  svc.close
+
+/-- `restore` while a reader snapshot runs: the snapshot either finishes
+    first or stands down with a typed error; no torn output is left and
+    the instance serves the restored data. -/
+private def testRestoreDuringSnapshot : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 2000
+  -- the restore source: a good copy taken before more rows arrive
+  let r0 ← svc.snapshotOn .writer snapDest
+  -- extra rows so the second snapshot has real work: a multi-megabyte
+  -- `VACUUM INTO` is still running when the restore claims the lane
+  discard <| seedRows svc 30000 "extra" 200
+  -- a reader-lane snapshot; restore claims the connection mid-backup
+  let snapTask ← IO.asTask (prio := .default) do
+    svc.snapshotOn .reader snapDest2
+  -- wait until the snapshot has registered its job (status shows the
+  -- running lane), so the restore is guaranteed to claim mid-backup
+  let mut polls := 0
+  repeat
+    if ← snapshotRunning svc then break
+    if polls > 500 then throw <| IO.userError "FAIL: snapshot never registered"
+    polls := polls + 1
+    IO.sleep 2
+  let restoreR ← svc.restore snapDest
+  let snapR ← IO.ofExcept snapTask.get
+  match snapR with
+  | .ok () => check restoreR.isOk s!"snapshot finished first, restore followed: {repr restoreR}"
+  | .error .snapshotAborted =>
+      check restoreR.isOk s!"snapshot stood down typed, restore completed: {repr restoreR}"
+  | .error e => throw <| IO.userError s!"FAIL: unexpected snapshot error: {repr e}"
+  -- no torn output either way
+  check (!(← (snapTmpOf snapDest2).pathExists)) "no partial snapshot output left"
+  check (← svc.ready) "ready after restore"
+  -- the instance serves the restored data: the restore source's 2000 rows
+  let r ← svc.withConnection fun conn =>
+    DbM.run conn do
+      let stored ← fetchAll SnapRow
+      return stored.size
+  match r with
+  | .ok (.ok n) => check (n == 2000) s!"post-restore instance holds the backup's rows, got {n}"
+  | .ok (.error e) | .error e => throw <| IO.userError s!"FAIL: read after restore-during-snapshot: {repr e}"
+  svc.close
+
+/-- `restore` reopens the reader pool, not only the writer: `withReader`
+    and a reader-lane snapshot after a restore see the restored file, not
+    the one it replaced. A gated service refuses a snapshot, as the
+    writer-lane `withConnection` always did. -/
+private def testSnapshotAfterRestore : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 5
+  let r ← svc.snapshot snapDest
+  check r.isOk s!"snapshot before restore: {repr r}"
+  discard <| seedRows svc 10 "later"
+  let r ← svc.restore snapDest
+  check r.isOk s!"restore: {repr r}"
+  let n ← svc.withReader fun conn => DbM.run conn do return (← fetchAll SnapRow).size
+  check (n matches .ok (.ok 5)) s!"withReader after restore sees the restored rows: {repr n}"
+  let r ← svc.snapshot snapDest2
+  check r.isOk s!"snapshot after restore: {repr r}"
+  let copy ← expectOk (← openDbRaw snapDest2) "open the snapshot taken after restore"
+  let rows ← expectOk (← DbM.run copy (fetchAll SnapRow)) "read the snapshot taken after restore"
+  check (rows.size == 5) s!"snapshot after restore copies the restored instance, got {rows.size} rows"
+  svc.close
+  -- unverified, so gated: no snapshot on either lane
+  IO.FS.removeFile snapDest2
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve false
+  for lane in [Runtime.SnapshotLane.reader, .writer] do
+    let r ← svc.snapshotOn lane snapDest2
+    check (r matches .error (.gated _)) s!"gated service refuses a {lane.name} snapshot: {repr r}"
+  check (!(← snapDest2.pathExists)) "no snapshot of a gated instance"
+  svc.close
+
 def run : IO Unit := do
   testAbort
   testNestedSavepoint
@@ -296,6 +631,12 @@ def run : IO Unit := do
   testUntracked
   testImmediateBlocks
   testService
+  testSnapshotReaderLane
+  testSnapshotHoldsReader
+  testSnapshotNoReaders
+  testSnapshotWriterLane
+  testRestoreDuringSnapshot
+  testSnapshotAfterRestore
   testInspectSession
   testIndexes
   testCountExists

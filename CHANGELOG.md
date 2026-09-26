@@ -117,6 +117,19 @@
   builds one positionally (`⟨name, columns, indexes⟩`) adds `, none`, or
   switches to named fields. New `DbError` constructors: `invariant`,
   `notAppend`.
+- **LDB-13 (#112).** `Runtime.snapshot` runs its `VACUUM INTO` on a
+  pooled reader connection, holding that slot's lock for the backup, so
+  the writer keeps serving. `snapshotOn .writer` runs it on the writer
+  under the admission lock, as before. The copy is written to `dest.tmp`
+  and renamed on success, so a failed snapshot leaves no torn output. One
+  snapshot runs at a time (`RuntimeError.snapshotBusy`), and a gated
+  service is refused. `restore` waits for a running snapshot, which
+  stands down as `.snapshotAborted` and removes its partial output, and
+  now reopens the reader pool as well as the writer, so `withReader`,
+  `runRead` and snapshots after a restore read the restored file.
+  `status` reports the running snapshot's lane and the last one's lane,
+  duration and size. `RuntimeError` has two new constructors,
+  `snapshotBusy` and `snapshotAborted`.
 - **LDB-12.** `DbJson.via encode parse`: a JSON codec for a nested type
   with proof fields, through its data representation `σ` — `encode`
   erases the proofs, `parse` re-decides them, and the shape the

@@ -191,6 +191,8 @@ def Runtime.Service.faultOfRuntime : Runtime.RuntimeError → DbFault
   | .notReady st => .io s!"service is not ready ({repr st})"
   | .reentrant => .io "withConnection called reentrantly from its own callback"
   | .gated e => DbFault.ofDbError e
+  | .snapshotBusy => .io "a snapshot is already running"
+  | .snapshotAborted => .io "snapshot aborted: restore claimed the connection"
 
 /-- Run a `Read` on a pooled reader connection, in one deferred snapshot.
     The writer connection is never used (`withReader`); a writable
