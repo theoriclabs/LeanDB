@@ -123,6 +123,13 @@
   fingerprint, `schema` and `migrate` see is `σ`'s. A stored value that
   fails `parse` decodes as `DbError.decode` naming the table and field.
   The derive's proof-field errors name `DbJson.via` as the way out.
+- **Custom migration steps can run verbs (#75, #117).** `Migration.applyOn`
+  counts its `BEGIN … COMMIT` as an open transaction, so a verb, `append`,
+  or `withTransaction` inside a `Step.custom` nests under a SAVEPOINT
+  instead of failing with `cannot start a transaction within a
+  transaction`. A step that fails after its verb ran rolls the verb's
+  writes back with the migration. A step that COMMITs or ROLLBACKs the
+  migration's transaction away is still refused.
 
 ## 0.4.0 - 2026-09-18
 
