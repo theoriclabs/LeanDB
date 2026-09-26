@@ -70,6 +70,11 @@ srcDir = "scripts"
 [[lean_lib]]
 name = "FixturePortable"
 
+
+# R1: affinity conformance (`Migration.affinityOf` vs SQLite's behavior).
+[[lean_lib]]
+name = "TestsAffinityConformance"
+
 [[lean_exe]]
 name = "leandb_tests"
 root = "Tests"

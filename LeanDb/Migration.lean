@@ -167,6 +167,27 @@ private def declaredType : SqlType → String
   | .text => "TEXT"
   | .real => "REAL"
 
+/-- SQLite's five column-affinity classes (§3.1). -/
+inductive Affinity where
+  | integer | text | blob | real | numeric
+deriving Repr, BEq, DecidableEq, Inhabited
+
+/-- The affinity SQLite assigns a declared column type
+    (https://sqlite.org/datatype3.html §3.1), by first matching rule:
+    contains "INT" → INTEGER; contains "CHAR", "CLOB" or "TEXT" → TEXT;
+    empty or contains "BLOB" → BLOB; contains "REAL", "FLOA" or "DOUB" →
+    REAL; otherwise NUMERIC. Case-insensitive. The order is SQLite's own
+    scan priority (its build.c `sqlite3AffinityType` table): `BLOBINT` is
+    INTEGER (the source's own example), `BLOBREAL` and `REALBLOB` are
+    BLOB, `CHARBLOB` is TEXT. -/
+def Migration.affinityOf (declared : String) : Affinity :=
+  let ty := declared.toUpper
+  if ty.contains "INT" then .integer
+  else if ty.contains "CHAR" || ty.contains "CLOB" || ty.contains "TEXT" then .text
+  else if ty.isEmpty || ty.contains "BLOB" then .blob
+  else if ty.contains "REAL" || ty.contains "FLOA" || ty.contains "DOUB" then .real
+  else .numeric
+
 /-- Does the file hold exactly this snapshot's tables (names, columns,
     declared types, nullability)? Tables the snapshot does not know are
     ignored, as adoption always has. -/
@@ -174,23 +195,19 @@ private def matchesSnapshot (conn : Conn) (specs : List TableSpec) : IO Bool := 
   for t in specs do
     let live ← liveColumns conn t.name
     if live.isEmpty then return false
-    let want := t.columns.toList.map fun c => (c.name, declaredType c.sqlType, !c.nullable)
+    let want := t.columns.toList.map fun c =>
+      (c.name, Migration.affinityOf (declaredType c.sqlType), !c.nullable)
     -- SQLite reports the DECLARED type, which can be any of the affinity
     -- synonyms: BIGINT, SMALLINT and TINYINT are INTEGER affinity;
     -- VARCHAR, CHARACTER and CLOB are TEXT affinity. The snapshots record
-    -- the canonical spelling, so the match must normalize the same way
-    -- SQLite computes affinity (https://sqlite.org/datatype3.html §3.1) —
+    -- the canonical spelling, so the match must compare affinity classes
+    -- (`Migration.affinityOf`, https://sqlite.org/datatype3.html §3.1) —
     -- otherwise a file whose columns are declared BIGINT or VARCHAR
     -- matches no version, `adopt` returns none, and `verify` stamps it at
     -- the head, silently skipping the migrations in between.
     let norm := fun (x : String × String × Bool) =>
       let (n, ty, nn) := x
-      let aff := if ty.contains "INT" then "INTEGER"
-        else if ty.contains "CHAR" || ty.contains "CLOB" || ty.contains "TEXT" then "TEXT"
-        else if ty.isEmpty || ty.contains "BLOB" then "BLOB"
-        else if ty.contains "REAL" || ty.contains "FLOA" || ty.contains "DOUB" then "REAL"
-        else "NUMERIC"
-      (n, aff, nn)
+      (n, Migration.affinityOf ty, nn)
     if live.map norm != want then return false
   return true
 
