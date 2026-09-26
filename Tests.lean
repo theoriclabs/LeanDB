@@ -879,13 +879,14 @@ unplanned says {lean.map (·.val.username)}")
     if ← stmt.step then rows := rows.push (← stmt.columnText 3) else break
   check (rows.any fun r => r.contains "ix_profile_tenant_username")
     s!"the (tenant, username) NOCASE index serves the prefix push, got {rows}"
-  -- the property test: random strings over `%`, `_`, `\`, ASCII case pairs
-  -- and an astral-plane scalar agree with the Lean predicate, per leaf —
+  -- the property test: random strings over `%`, `_`, `\`, ASCII case pairs,
+  -- a non-ASCII case pair (which neither `lower` nor `toLower` folds) and
+  -- an astral-plane scalar agree with the Lean predicate, per leaf —
   -- through `selectP`, through `countP`'s `COUNT(*)`, and as raw SQL in
   -- both polarities (`render … true` is the exact complement)
   if ← strPredDbPath.pathExists then IO.FS.removeFile strPredDbPath
   let mut seed : Nat := 113
-  let chars : Array Char := #['a', 'b', 'A', '\\', '%', '_', '𝕏']
+  let chars : Array Char := #['a', 'b', 'A', 'B', '\\', '%', '_', 'ü', 'Ü', '𝕏']
   let mut vals : Array String := #[]
   for _ in [0:120] do
     let mut v := ""
@@ -893,7 +894,7 @@ unplanned says {lean.map (·.val.username)}")
       seed := lcg seed
       v := v.push chars[seed % chars.size]!
     vals := vals.push v
-  let mut pats : Array String := #["", "a", "𝕏"]
+  let mut pats : Array String := #["", "a", "𝕏", "Ü", "Ab"]
   for _ in [0:16] do
     let mut v := ""
     for _ in [0:3] do
