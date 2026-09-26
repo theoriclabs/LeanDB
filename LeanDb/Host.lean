@@ -86,22 +86,26 @@ def Child.call (c : Child) (argv : List String) : IO Json :=
     through `Cli.portOf` at `run` (issue #56: an in-parser `Nat.toUInt16`
     bound port mod 2^16 while the banner echoed the raw number). -/
 def parseArgs : List String →
-    Except String (Option String × String × Option String × List String)
-  | [] => .ok (none, "127.0.0.1", none, [])
-  | "--port" :: p :: rest => do let (_, h, t, specs) ← parseArgs rest; return (some p, h, t, specs)
-  | "--bind" :: h :: rest => do let (p, _, t, specs) ← parseArgs rest; return (p, h, t, specs)
-  | "--auth-token" :: t :: rest => do let (p, h, _, specs) ← parseArgs rest; return (p, h, some t, specs)
-  | spec :: rest => do let (p, h, t, specs) ← parseArgs rest; return (p, h, t, spec :: specs)
+    Except String (Option String × String × Option String × Option Nat × List String)
+  | [] => .ok (none, "127.0.0.1", none, none, [])
+  | "--port" :: p :: rest => do let (_, h, t, d, specs) ← parseArgs rest; return (some p, h, t, d, specs)
+  | "--bind" :: h :: rest => do let (p, _, t, d, specs) ← parseArgs rest; return (p, h, t, d, specs)
+  | "--auth-token" :: t :: rest => do let (p, h, _, d, specs) ← parseArgs rest; return (p, h, some t, d, specs)
+  | "--handshake-ms" :: ms :: rest => do
+      let some d := ms.toNat? | throw s!"expected milliseconds after --handshake-ms, got {String.quote ms}"
+      let (p, h, t, _, specs) ← parseArgs rest
+      return (p, h, t, some d, specs)
+  | spec :: rest => do let (p, h, t, d, specs) ← parseArgs rest; return (p, h, t, d, spec :: specs)
 
-/-- `leandb host --port P [--bind H] [--auth-token <t>] name=exe[,args]…
+/-- `leandb host --port P [--bind H] [--auth-token <t>] [--handshake-ms <ms>] name=exe[,args]…
     (a literal comma in exe or an arg is escaped `\,`) -/
 def run (args : List String) : IO UInt32 := do
-  let usage := "host --port <port> [--bind <host>] [--auth-token <t>] <name>=<exe>[,<arg>,…]…  (a literal comma in exe or an arg is escaped \\,)"
+  let usage := "host --port <port> [--bind <host>] [--auth-token <t>] [--handshake-ms <ms>] <name>=<exe>[,<arg>,…]…  (a literal comma in exe or an arg is escaped \\,)"
   match parseArgs args with
   | .error m =>
       IO.eprintln (Json.mkObj [("ok", Json.bool false), ("code", Json.str "usage"), ("message", Json.str s!"{m}; {usage}")]).compress
       return 3
-  | .ok (portStr?, host, token?, specs) =>
+  | .ok (portStr?, host, token?, handshakeMs?, specs) =>
       let some portStr := portStr? | do
         IO.eprintln (Json.mkObj [("ok", Json.bool false), ("code", Json.str "usage"), ("message", Json.str usage)]).compress
         return 3
@@ -116,7 +120,7 @@ def run (args : List String) : IO UInt32 := do
       let mut children : Array Child := #[]
       let mut spawnErr : Option String := none
       for spec in specs do
-        match ← spawn spec with
+        match ← spawn spec (handshakeMs?.getD handshakeDeadlineMs) with
         | .ok c => children := children.push c
         | .error m =>
             spawnErr := some m

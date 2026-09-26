@@ -171,8 +171,10 @@ private def processRpc
 /-- How long `leandb host` waits for a freshly spawned base to answer the
     `version` handshake before it kills the child and names the failed spec
     (#62 facet 2): a silent base — or one that stalls mid-banner-line —
-    would otherwise wedge the host pre-bind forever. -/
-def handshakeDeadlineMs : Nat := 10000
+    would otherwise wedge the host pre-bind forever. A base's startup runs
+    `Conn.verify` and log pruning before it answers, so the default is
+    generous; `leandb host --handshake-ms <ms>` overrides it. -/
+def handshakeDeadlineMs : Nat := 30000
 
 /-- How often the bounded wait wakes to re-check the handshake task: short
     sleeps, never a busy spin. -/
@@ -199,7 +201,7 @@ private partial def Client.pollRpcUntil
     child behind it. -/
 def Client.rpcBounded (c : Client) (argv : List String)
     (deadlineMs : Nat := handshakeDeadlineMs) : IO (Option (Except DbError Json)) := do
-  let t ← IO.asTask (c.rpc argv)
+  let t ← IO.asTask (c.rpc argv) (prio := .dedicated)
   let now ← IO.monoMsNow
   Client.pollRpcUntil t (now + deadlineMs)
 

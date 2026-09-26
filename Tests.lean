@@ -4327,19 +4327,26 @@ private def testHostSpecParsing : IO Unit := do
     wrap bug bound port mod 2^16 while the banner echoed the raw Nat). -/
 private def testHostPortWiring : IO Unit := do
   match Host.parseArgs ["--port", "70000", "a=exe"] with
-  | .ok (p, h, _, specs) =>
+  | .ok (p, h, _, d, specs) =>
       check (p == some "70000") "the --port flag survives as its string"
+      check (d == none) "no --handshake-ms leaves the default deadline"
       check (h == "127.0.0.1" && specs == ["a=exe"]) "the rest of the argv still parses"
       check ((Cli.portOf (p.getD "")).toOption.isNone) "a port beyond 65535 is refused, not wrapped"
   | .error m => check false s!"host argv should parse: {m}"
   match Host.parseArgs ["--port", "0", "a=exe"] with
-  | .ok (p, _, _, _) =>
+  | .ok (p, _, _, _, _) =>
       check ((Cli.portOf (p.getD "")).toOption.isNone) "port 0 is refused"
   | .error m => check false s!"host argv should parse: {m}"
   match Host.parseArgs ["--port", "7654", "a=exe"] with
-  | .ok (p, _, _, _) =>
+  | .ok (p, _, _, _, _) =>
       check ((Cli.portOf (p.getD "")).toOption == some 7654) "an in-range port resolves as-is"
   | .error m => check false s!"host argv should parse: {m}"
+  match Host.parseArgs ["--handshake-ms", "120000", "--port", "7654", "a=exe"] with
+  | .ok (_, _, _, d, specs) =>
+      check (d == some 120000 && specs == ["a=exe"]) "--handshake-ms sets the spawn deadline"
+  | .error m => check false s!"host argv should parse: {m}"
+  check (Host.parseArgs ["--handshake-ms", "soon", "a=exe"] matches .error _)
+    "a non-numeric --handshake-ms is refused"
 
 /-- The response-line guard (issue #62, uncapped read + desync): only a
     JSON object line is a response; eof, an undecodable line, an over-cap
@@ -4521,7 +4528,7 @@ private def testMcpRpc : IO Unit := do
 /-- #62 facet 2: `Host.spawn` gives up on a child that never answers the
     `version` handshake — silent, or stalled mid-banner-line — within the
     deadline, kills it, and names the failed spec. The tests inject a
-    small deadline; production defaults to `handshakeDeadlineMs` (10 s). -/
+    small deadline; production defaults to `handshakeDeadlineMs` (30 s). -/
 private def testHostHandshakeDeadline : IO Unit := do
   -- a silent child: sh -c 'sleep 30' (spawn appends `serve` as argv0)
   let t0 ← IO.monoMsNow
