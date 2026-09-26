@@ -143,6 +143,7 @@ def IndexSpec.toJson (ix : IndexSpec) : Json :=
     [("unique", Json.bool ix.unique),
      ("columns", Json.arr (ix.columns.map Json.str))]
     ++ (ix.partialWhere.map fun w => ("where", Json.str w)).toList
+    ++ (ix.name.map fun n => ("name", Json.str n)).toList
     ++ (ix.collate.map fun k => ("collate", Json.str k.toSql)).toList
 
 def IndexSpec.fromJson? (j : Json) : Except String IndexSpec := do

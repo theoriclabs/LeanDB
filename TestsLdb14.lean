@@ -22,7 +22,18 @@ structure Wizard where
   name : String
   deriving Repr, BEq, LeanDb.Entity
 
+unique% Wizard.byName := name
+
 schema% School := Wizard
+
+/-- An index with both a name and a collation, declared by hand. -/
+structure Muggle where
+  name : String
+  deriving Repr, LeanDb.Entity
+
+instance : Indexes Muggle where
+  indexes := #[{ columns := #["name"], name := some "ix_muggle_by_name",
+                 collate := some .nocase }]
 
 private def specs : List TableSpec := IsSchema.specs School
 
@@ -78,7 +89,39 @@ private def testTypedWindow : IO Unit := do
       ["ha1"] "withWindow"
   discard <| expectOk r "typed prefix window"
 
+/-- `schema_json` keeps every index's name next to its collation: an
+    index stored without its name differs from the declared one, so every
+    open would plan to drop and re-add it. -/
+private def testIndexNamesInSchemaJson : IO Unit := do
+  let specs := IsSchema.specs School ++ Entity.specs Muggle
+  for t in specs do
+    for ix in t.indexes do
+      match IndexSpec.fromJson? ix.toJson with
+      | .ok back =>
+          unless back == ix do
+            throw <| IO.userError s!"FAIL: index JSON round trip: {repr back} ≠ {repr ix}"
+      | .error e => throw <| IO.userError s!"FAIL: index JSON parse: {e}"
+  unless specs.any (·.indexes.any (·.name == some "uq_wizard_byName")) do
+    throw <| IO.userError "FAIL: the derived unique index is not named"
+  fresh dbPath
+  discard <| expectOk (← withDb dbPath specs (pure ())) "open"
+  let conn ← expectOk (← openDb dbPath specs) "reopen"
+  let raw := (← readMeta conn.raw "schema_json").getD ""
+  for n in ["uq_wizard_byName", "ix_muggle_by_name"] do
+    unless raw.contains n do
+      throw <| IO.userError s!"FAIL: schema_json lost the index name {n}: {raw}"
+  let some stored ← readStoredSchema conn |
+    throw <| IO.userError "FAIL: no stored schema"
+  unless stored == specs do
+    throw <| IO.userError s!"FAIL: stored schema ≠ declared: {repr stored}"
+  match planMigration stored specs with
+  | .ok plan =>
+      unless plan.steps.isEmpty do
+        throw <| IO.userError s!"FAIL: reopening plans {plan.steps.map (·.describe)}"
+  | .error e => throw <| IO.userError s!"FAIL: plan: {e}"
+
 def run : IO Unit := do
   testTypedWindow
+  testIndexNamesInSchemaJson
 
 end TestsLdb14
