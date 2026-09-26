@@ -143,6 +143,20 @@
   transaction`. A step that fails after its verb ran rolls the verb's
   writes back with the migration. A step that COMMITs or ROLLBACKs the
   migration's transaction away is still refused.
+- **LDB-14.** Pushed string predicates: `Pred.prefix` renders
+  `(c LIKE ? ESCAPE '\' AND instr(c, ?) = 1)` with the pattern escaped
+  (`\`, `%`, `_`) and bound, `Pred.contains` renders `instr(c, ?) > 0`
+  (byte-exact), and `Pred.icontains` renders
+  `instr(lower(c), lower(?)) > 0` — ASCII-only case folding on both
+  sides. The reifier accepts `String.startsWith`/`String.contains` on a
+  column, and `contains` with `toLower` on both sides; a lowered
+  `startsWith` stays in Lean. All three are exact: `LIKE` folds
+  ASCII case, and the `instr` conjunct makes `prefix` case-sensitive like
+  `startsWith`, so a pushed `LIMIT`/`OFFSET`, `COUNT(*)` or `EXISTS` over
+  them is sound. A negated string leaf stays in Lean.
+  `IndexSpec.collate := some .nocase` declares a `COLLATE NOCASE` index,
+  which is what lets SQLite serve a pushed `prefix` from an index; it is
+  DDL, schema-JSON and fingerprint material.
 
 ## 0.4.0 - 2026-09-18
 

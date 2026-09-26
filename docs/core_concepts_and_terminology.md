@@ -122,6 +122,21 @@ Sorting runs in Lean too.
 `select` currently returns complete entity rows. You can map those results
 to individual fields in Lean. That does not reduce the columns read by SQL.
 
+String predicates push too (LDB-14): `String.startsWith` becomes SQL
+`(c LIKE ? ESCAPE '\' AND instr(c, ?) = 1)`, with the `LIKE` pattern
+escaped and every value bound, and `String.contains` becomes
+`instr(…) > 0`. Both are exact: `LIKE` folds ASCII case, but the `instr`
+conjunct is case-sensitive like `startsWith`, so `Hagrid` never matches
+`"ha"`. Case-insensitive matching is
+`icontains` — `instr(lower(…), lower(?)) > 0` — and it is ASCII-only:
+SQLite's `lower()` folds ASCII letters unless the ICU extension is
+loaded, and Lean's `String.toLower` folds the same way, so the two agree.
+An application needing full Unicode case folding should store a folded
+shadow column and filter on that. `prefix` uses an index only when the
+column's collation agrees with `LIKE`'s ASCII folding: declare the index
+`IndexSpec.collate := some .nocase`, and SQLite will serve the
+`LIKE 'x%'` as an index range and check `instr` on the rows in it.
+
 `log` shows the query plans and their outcomes. Set
 `set_option leandb.explain true` to inspect plans during compilation.
 Advanced queries can use `Pred`, `pred%`, and `selectP` directly.

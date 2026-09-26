@@ -541,6 +541,31 @@ private partial def strict (ctx : Ctx) (fuel : Nat) (e : Expr) :
     if let some q ← childQuantifier fuel (e.isAppOfArity ``List.any 3) (e.getArg! 1) (e.getArg! 2) then
       return some q
     return none
+  -- String prefix / substring (LDB-14). `s.startsWith p` and `s.contains p`
+  -- are generic over the pattern; the last argument is the instance, so the
+  -- column is `args[size-3]` and the pattern `args[size-2]`. A `Char`
+  -- pattern (or any non-`String` one) fails `mkAppM` and falls through to
+  -- the residual. `(s.toLower).contains (p.toLower)` is `icontains` — the
+  -- ASCII folding the tactic can vouch for, since both sides lower. There
+  -- is no case-insensitive prefix leaf: a lowered `startsWith` finds no
+  -- column under `toLower` and stays residual, never a `prefix` of the
+  -- unlowered column.
+  if (e.getAppFn.isConstOf ``String.startsWith || e.getAppFn.isConstOf ``String.contains)
+      && e.getAppNumArgs ≥ 3 then
+    let isPrefix := e.getAppFn.isConstOf ``String.startsWith
+    let s := e.getArg! (e.getAppNumArgs - 3)
+    let pat := e.getArg! (e.getAppNumArgs - 2)
+    let sL ← whnfR s
+    let patL ← whnfR pat
+    let icontains := !isPrefix &&
+      sL.isAppOfArity ``String.toLower 1 && patL.isAppOfArity ``String.toLower 1
+    if let some (c, _) ← colOf? ctx (if icontains then sL.getArg! 0 else s) then
+      if isValue ctx (if icontains then patL.getArg! 0 else pat) then
+        let v ← instantiateMVars (if icontains then patL.getArg! 0 else pat)
+        let ctor := if isPrefix then ``Pred.prefix
+          else if icontains then ``Pred.icontains else ``Pred.contains
+        if let some p ← attempt (mkAppM ctor #[c, v]) then return some p
+    return none
   -- bare Bool column
   if let some (c, _) ← colOf? ctx e then
     return ← attempt (mkCmp c .eq (mkConst ``Bool.true))

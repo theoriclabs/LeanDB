@@ -892,6 +892,15 @@ partial def Pred.toJsonWith {ts : List Type} (names : Nat → String) : Pred ts 
   | .or a b => Lean.Json.mkObj [("kind", Lean.Json.str "or"),
       ("a", a.toJsonWith names), ("b", b.toJsonWith names)]
   | .opaque _ => Lean.Json.mkObj [("opaque", Lean.Json.bool true)]
+  | .prefix c p =>
+      Lean.Json.mkObj [("kind", Lean.Json.str "prefix"), ("col", colJson names c),
+        ("pattern", Lean.Json.str p)]
+  | .contains c p =>
+      Lean.Json.mkObj [("kind", Lean.Json.str "contains"), ("col", colJson names c),
+        ("pattern", Lean.Json.str p)]
+  | .icontains c p =>
+      Lean.Json.mkObj [("kind", Lean.Json.str "icontains"), ("col", colJson names c),
+        ("pattern", Lean.Json.str p)]
   | .exists (child := child) (ent := ent) parent fk body =>
       let childName := @Entity.tableName child ent
       let inner := fun i => if i == 0 then childName else names (i - 1)

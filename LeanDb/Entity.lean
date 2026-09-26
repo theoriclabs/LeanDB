@@ -302,10 +302,18 @@ def TableSpec.ddlNamed (t : TableSpec) (name : String) (ifNotExists : Bool := tr
     are part of the parent's value. -/
 def TableSpec.ddl (t : TableSpec) : String := t.ddlNamed t.name
 
-/-- `CREATE [UNIQUE] INDEX` statements for this table's declared indexes. -/
+/-- `CREATE [UNIQUE] INDEX` statements for this table's declared indexes.
+    `ix.collate` (LDB-14) appends `COLLATE <k>` to every column — a
+    `NOCASE` index is what lets SQLite use a pushed `prefix`
+    (`LIKE 'x%' ESCAPE '\'`) as an index range. -/
 def TableSpec.indexDdl (t : TableSpec) : Array String :=
   t.indexes.map fun ix =>
-    let cols := String.intercalate ", " (ix.columns.toList.map quoteIdent)
+    let col (c : String) : String :=
+      quoteIdent c ++
+        match ix.collate with
+        | some k => s!" COLLATE {k.toSql}"
+        | none => ""
+    let cols := String.intercalate ", " (ix.columns.toList.map col)
     let kind := if ix.unique then "UNIQUE INDEX" else "INDEX"
     let where? := match ix.partialWhere with
       | some w => s!" WHERE {w}"

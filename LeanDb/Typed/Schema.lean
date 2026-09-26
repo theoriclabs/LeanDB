@@ -658,7 +658,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
     let ixName := s!"uq_{tbl}_{e.ctor.getString!}"
     let nameStx : Term := ⟨Syntax.mkStrLit ixName⟩
     ixLits := ixLits.push
-      (← `(term| (⟨true, #[$cols,*], none, some $nameStx⟩ : LeanDb.IndexSpec)))
+      (← `(term| (⟨true, #[$cols,*], none, some $nameStx, none⟩ : LeanDb.IndexSpec)))
   let allLits : Array Term ← entries.mapM fun e =>
     `(term| .$(mkIdent e.ctor):ident)
   elabCommand (← `(command|

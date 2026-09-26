@@ -361,12 +361,16 @@ default — existing rows have no value for it. Make it `Option`, or give it a \
 carry a default (rebuild)"
           steps := steps ++ [.rebuildTable spec copyCols]
         if changed.isEmpty then
-          for ix in spec.indexes do
-            unless oldSpec.indexes.any (· == ix) do
-              steps := steps ++ [.addIndex spec.name ix]
+          -- drops first: an index that changes but keeps its name (a new
+          -- `collate`, `partialWhere` or `unique`) is a drop and an add of
+          -- one name. Added first, `CREATE INDEX IF NOT EXISTS` is a no-op
+          -- and the drop then removes the index the new schema declares.
           for ix in oldSpec.indexes do
             unless spec.indexes.any (· == ix) do
               steps := steps ++ [.dropIndex spec.name ix]
+          for ix in spec.indexes do
+            unless oldSpec.indexes.any (· == ix) do
+              steps := steps ++ [.addIndex spec.name ix]
   -- dropped tables
   for oldSpec in old do
     if (new.find? (·.name == oldSpec.name)).isNone then
