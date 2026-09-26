@@ -4081,6 +4081,94 @@ private def testTomlString : IO Unit := do
   check ((rendered.splitOn "\\u").length == 4) "every escaped control char is \\uXXXX"
   check (Import.tomlString nasty == rendered) "the importer's escaper agrees with the scaffold's"
 
+/-- MCP over the handler: notifications never answered, bad arguments
+    refused (issues #63, #64). -/
+
+private def mcpDbPath : System.FilePath := ".lake" / "leandb_test_mcp.sqlite"
+
+private def testMcpRpc : IO Unit := do
+  if ← mcpDbPath.pathExists then IO.FS.removeFile mcpDbPath
+  discard <| expectOk (← withDb mcpDbPath [Entity.spec Probe] (pure ())) "create the mcp probe"
+  let b : Base := { name := "m", tables := [CliTable.of Probe] }
+  let inst := Instance.ofPath mcpDbPath
+  let sess ← expectOk (← Cli.Session.open b inst) "open the mcp session"
+  let parse (s : String) : Lean.Json :=
+    match Lean.Json.parse s with
+    | .ok j => j
+    | .error e => panic! s!"bad test JSON: {e}"
+  let answer (line : String) : IO (Option String) := do
+    match ← Mcp.respond b inst sess (parse line) with
+    | none => pure none
+    | some r => pure r.compress
+  let codeOf (r : Option String) : Option Int :=
+    match r with
+    | none => none
+    | some t =>
+      match (parse t).getObjVal? "error" with
+      | .ok e => (e.getObjValAs? Int "code").toOption
+      | .error _ => none
+  let countOf (r : Option String) : Option Nat :=
+    match r with
+    | none => none
+    | some t =>
+      match (parse t).getObjVal? "result" with
+      | .ok res => match res.getObjVal? "structuredContent" with
+        | .ok sc => (sc.getObjValAs? Nat "count").toOption
+        | .error _ => none
+      | .error _ => none
+  -- a request still gets its reply, echoing the id
+  let hi ← answer "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}"
+  check (((parse (hi.getD "")).getObjValAs? Int "id").toOption == some 1) "a request's reply echoes its id"
+  -- #64: a notification with a known method gets no reply
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\"}}"
+  check (r == none) "a known-method notification gets no reply"
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\"}"
+  check (r == none) "tools/list as a notification gets no reply"
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"method\":\"frobnicate\"}"
+  check (r == none) "an unknown-method notification still gets no reply"
+  -- #64: tools/call as a notification gets no reply and is never executed
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"insert_probe\",\"arguments\":{\"row\":{\"label\":\"ghost\"}}}}"
+  check (r == none) "tools/call as a notification gets no reply"
+  let rows ← b.handle inst sess ["rows", "probe"]
+  check ((rows.getObjValAs? Nat "count").toOption == some 0) "the notification never executed the tool"
+  -- #64: id:null is an invalid request (-32600), not a notification, and
+  -- the tool it names is not executed
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"tools/call\",\"params\":{\"name\":\"insert_probe\",\"arguments\":{\"row\":{\"label\":\"ghost\"}}}}"
+  check (codeOf r == some (-32600)) s!"an id:null request is invalid, got {r}"
+  let rows ← b.handle inst sess ["rows", "probe"]
+  check ((rows.getObjValAs? Nat "count").toOption == some 0) "the id:null request never executed the tool"
+  -- #63: a malformed eq is refused with -32602, unfiltered rows never returned
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"rows_probe\",\"arguments\":{\"eq\":\"label=ghost\"}}}"
+  check (codeOf r == some (-32602)) s!"a string eq is refused with -32602, got {r}"
+  check ((r.getD "").contains "eq") "the refusal names the argument"
+  check (((parse (r.getD "")).getObjVal? "result").toOption.isNone) "no result accompanies the refusal"
+  -- #63: an array eq with a non-string member is refused too
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"rows_probe\",\"arguments\":{\"eq\":[5]}}}"
+  check (codeOf r == some (-32602)) s!"a non-string eq member is refused with -32602, got {r}"
+  -- #63: a non-scalar limit is refused
+  let r ← answer "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"rows_probe\",\"arguments\":{\"limit\":{\"n\":5}}}}"
+  check (codeOf r == some (-32602)) s!"an object limit is refused with -32602, got {r}"
+  -- the well-formed path is unchanged: absent eq is no filter, a real eq filters
+  discard <| b.handle inst sess ["insert", "probe", "{\"label\":\"keep\"}"]
+  let rowsNone ← answer "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"rows_probe\",\"arguments\":{}}}"
+  check (countOf rowsNone == some 1) "an absent eq still means no filter"
+  let rowsFiltered ← answer "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"rows_probe\",\"arguments\":{\"eq\":[\"label=ghost\"]}}}"
+  check (countOf rowsFiltered == some 0) "an array eq filters as before"
+  let rowsKeep ← answer "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"rows_probe\",\"arguments\":{\"eq\":[\"label=keep\"]}}}"
+  check (countOf rowsKeep == some 1) "the eq filter matches the inserted row"
+  -- argvOf: the same contract, on the argv level
+  let noEq := Mcp.argvOf b "rows_probe" (parse "{\"limit\":5}")
+  check (noEq.toOption == some ["rows", "probe", "--limit", "5"]) "absent eq is no filter"
+  match Mcp.argvOf b "rows_probe" (parse "{\"eq\":\"label=keep\"}") with
+  | .error m => check (m.contains "eq") s!"the argvOf refusal names eq, got {m}"
+  | .ok _ => pure ()
+  match Mcp.argvOf b "rows_probe" (parse "{\"eq\":[\"label=keep\"]}") with
+  | .error _ => pure ()
+  | .ok argv => check (argv == ["rows", "probe", "--eq", "label=keep"]) "a real eq becomes --eq pairs"
+  -- a non-object message is an invalid request, not a notification
+  let r ← answer "3"
+  check (codeOf r == some (-32600)) s!"a non-object message is invalid, got {r}"
+
 def main : IO UInt32 := do
   testCliLimits
   testStrictSchemaJson
@@ -4100,6 +4188,7 @@ def main : IO UInt32 := do
   testBaseSpecs
   testNextLineCap
   testSession
+  testMcpRpc
   testRestoreSafety
   testRestoreResilience
   testHandleBoundary

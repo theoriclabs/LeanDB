@@ -107,11 +107,22 @@ def argvOf (b : Base) (name : String) (args : Json) : Except String (List String
         unless b.tables.any (·.name == t) do throw s!"unknown table {t}"
         match v with
         | "rows_" =>
-            let eqs := match args.getObjValAs? (Array String) "eq" with
-              | .ok xs => xs.toList.flatMap fun e => ["--eq", e]
-              | .error _ => []
-            let limit := match getStr "limit" with | some n => ["--limit", n] | none => []
-            return ["rows", t] ++ eqs ++ limit
+            let eqs ← match args.getObjVal? "eq" with
+              -- only the key's absence means "no filter"; anything present
+              -- must be an array of strings, else the caller's filter would
+              -- be silently dropped
+              | .error _ => pure []
+              | .ok (.arr a) =>
+                  let vs ← a.mapM fun e =>
+                    match e with | .str s => pure s | _ => throw "eq must be an array of strings"
+                  pure (vs.toList)
+              | .ok _ => throw "eq must be an array of strings"
+            let limit ← match args.getObjVal? "limit" with
+              | .error _ => pure []
+              | .ok (.str s) => pure ["--limit", s]
+              | .ok (.num n) => pure ["--limit", toString n]
+              | .ok _ => throw "limit must be a string"
+            return ["rows", t] ++ (eqs.flatMap fun e => ["--eq", e]) ++ limit
         | "get_" => return ["get", t, ← need "id"]
         | "insert_" => return ["insert", t, ← rowArg "row"]
         | "update_" => return ["update", t, ← need "id", ← rowArg "row"]
@@ -133,6 +144,39 @@ private def toolResult (id : Json) (j : Json) : Json :=
     ("structuredContent", j),
     ("isError", Json.bool (!ok))]
 
+/-- One message → the optional response. A JSON-RPC notification (no `id`)
+    gets no reply of any kind, whatever the method — `tools/call` is never
+    executed as a notification. A request whose `id` is `null` is invalid
+    (-32600), not a notification. -/
+def respond (b : Base) (inst : Instance) (sess : Cli.Session) (msg : Json) : IO (Option Json) := do
+  let id? := (msg.getObjVal? "id").toOption
+  -- no `id`: a notification, never answered, whatever the method
+  if id?.isNone then
+    unless msg matches .obj _ do
+      -- a non-object message cannot even claim to be a notification
+      return some (rpcError .null (-32600) "invalid request: not an object")
+    return none
+  if let some .null := id? then
+    return some (rpcError .null (-32600) "invalid request: id must be a string or a number")
+  let id := id?.getD Json.null
+  let method := (msg.getObjValAs? String "method").toOption.getD ""
+  let params := (msg.getObjVal? "params").toOption.getD (Json.mkObj [])
+  match method with
+  | "initialize" => pure <| some <| result id <| Json.mkObj [
+      ("protocolVersion", str ((params.getObjValAs? String "protocolVersion").toOption.getD "2025-06-18")),
+      ("capabilities", Json.mkObj [("tools", Json.mkObj [("listChanged", Json.bool false)])]),
+      ("serverInfo", Json.mkObj [("name", str s!"leandb-{b.name}"), ("version", str "0.3.1")]),
+      ("instructions", str s!"The {b.name} base: typed tables and registered queries. Every tool is one command of the base's CLI; errors carry a typed code.")]
+  | "ping" => pure <| some <| result id (Json.mkObj [])
+  | "tools/list" => pure <| some <| result id (Json.mkObj [("tools", Json.arr (tools b))])
+  | "tools/call" =>
+      let name := (params.getObjValAs? String "name").toOption.getD ""
+      let args := (params.getObjVal? "arguments").toOption.getD (Json.mkObj [])
+      match argvOf b name args with
+      | .error m => pure <| some <| rpcError id (-32602) m
+      | .ok argv => pure <| some <| toolResult id (← b.handle inst sess argv)
+  | _ => pure <| some <| rpcError id (-32601) s!"method not found: {method}"
+
 /-- Serve MCP on stdio against one session until EOF. -/
 def serve (b : Base) (inst : Instance) : IO UInt32 := do
   match ← Cli.Session.open b inst with
@@ -142,7 +186,6 @@ def serve (b : Base) (inst : Instance) : IO UInt32 := do
   | .ok sess =>
       let stdin ← IO.getStdin
       let out ← IO.getStdout
-      let toolList := tools b
       let reader ← Cli.LineReader.new stdin
       repeat
         match ← reader.next with
@@ -160,32 +203,11 @@ def serve (b : Base) (inst : Instance) : IO UInt32 := do
           | .error m =>
               out.putStrLn (rpcError Json.null (-32700) s!"parse error: {m}").compress
           | .ok msg =>
-              let id := (msg.getObjVal? "id").toOption.getD Json.null
-              let method := (msg.getObjValAs? String "method").toOption.getD ""
-              let params := (msg.getObjVal? "params").toOption.getD (Json.mkObj [])
-              -- notifications carry no id and get no reply
-              let isNotification := (msg.getObjVal? "id").toOption.isNone
-              let reply? : Option Json ← do
-                match method with
-                | "initialize" => pure <| some <| result id <| Json.mkObj [
-                    ("protocolVersion", str ((params.getObjValAs? String "protocolVersion").toOption.getD "2025-06-18")),
-                    ("capabilities", Json.mkObj [("tools", Json.mkObj [("listChanged", Json.bool false)])]),
-                    ("serverInfo", Json.mkObj [("name", str s!"leandb-{b.name}"), ("version", str "0.3.1")]),
-                    ("instructions", str s!"The {b.name} base: typed tables and registered queries. Every tool is one command of the base's CLI; errors carry a typed code.")]
-                | "ping" => pure <| some <| result id (Json.mkObj [])
-                | "tools/list" => pure <| some <| result id (Json.mkObj [("tools", Json.arr toolList)])
-                | "tools/call" =>
-                    let name := (params.getObjValAs? String "name").toOption.getD ""
-                    let args := (params.getObjVal? "arguments").toOption.getD (Json.mkObj [])
-                    match argvOf b name args with
-                    | .error m => pure <| some <| rpcError id (-32602) m
-                    | .ok argv => pure <| some <| toolResult id (← b.handle inst sess argv)
-                | _ =>
-                    if isNotification then pure none
-                    else pure <| some <| rpcError id (-32601) s!"method not found: {method}"
-              if let some reply := reply? then
-                out.putStrLn reply.compress
-                out.flush
+              match ← respond b inst sess msg with
+              | none => pure ()
+              | some reply =>
+                  out.putStrLn reply.compress
+                  out.flush
       return 0
 
 initialize
