@@ -283,9 +283,6 @@ private def snapshotFinish (s : Service) (job : SnapshotJob) (dest : System.File
     connection for its whole duration, the pre-LDB-13 behaviour. -/
 def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
     IO (Except RuntimeError Unit) := do
-  if ← dest.pathExists then
-    return .error (.host s!"backup target already exists: {dest}")
-  try IO.FS.removeFile (snapshotTmp dest) catch _ => pure ()
   let start ← IO.monoMsNow
   let tmp := snapshotTmp dest
   let reg : Except RuntimeError (SnapshotJob × Option (Std.Mutex Conn)) ← s.slot.atomically do
@@ -305,6 +302,16 @@ def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
   match reg with
   | .error e => return .error e
   | .ok (job, conn?) =>
+    -- `dest` and `dest.tmp` are touched only once the job is registered:
+    -- a second snapshot to the same destination is refused above before
+    -- it can remove this one's in-progress output, and this check sees a
+    -- `dest` that an earlier snapshot renamed into place before clearing
+    -- its job
+    if ← dest.pathExists then
+      discard <| s.snapshotCleanup job
+      return .error (.host s!"backup target already exists: {dest}")
+    -- a `dest.tmp` here is a stale one, left by a crashed snapshot
+    try IO.FS.removeFile tmp catch _ => pure ()
     match conn? with
     | some mtx =>
         -- reader lane: the pool is not the writer lock, so run outside it,

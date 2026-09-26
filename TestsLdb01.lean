@@ -505,7 +505,8 @@ private def testSnapshotNoReaders : IO Unit := do
 
 /-- `snapshotOn .writer` on a service with readers runs on the writer and
     refuses a second snapshot while one is running or the destination
-    already exists. -/
+    already exists; a refused snapshot to the running one's destination
+    leaves its output alone. -/
 private def testSnapshotWriterLane : IO Unit := do
   fresh snapDbPath
   for p in [snapDest, snapDest2] do
@@ -524,10 +525,14 @@ private def testSnapshotWriterLane : IO Unit := do
   -- the destination exists now: a second snapshot to it is refused
   let r2 ← svc.snapshotOn .writer snapDest
   check (r2 matches .error (.host _)) s!"existing destination refused: {repr r2}"
-  -- while a snapshot runs, a second one is refused with a typed error
-  discard <| seedRows svc 1200 "more"
-  let busy ← IO.asTask (prio := .default) do svc.snapshotOn .reader snapDest2
-  IO.sleep 30 -- let the overlapping snapshot register its job
+  -- while a snapshot runs, a second one to the same destination is
+  -- refused with a typed error and leaves the running one's `dest.tmp`
+  -- alone: wait until the backup is writing it
+  discard <| seedRows svc 30000 "more" 200
+  let busy ← IO.asTask (prio := .dedicated) do svc.snapshotOn .reader snapDest2
+  repeat
+    if (← (snapTmpOf snapDest2).pathExists) || (← IO.hasFinished busy) then break
+    IO.sleep 1
   let r3 ← svc.snapshotOn .writer snapDest2
   match r3 with
   | .error .snapshotBusy => pure ()
@@ -535,6 +540,7 @@ private def testSnapshotWriterLane : IO Unit := do
   | other => throw <| IO.userError s!"FAIL: concurrent snapshot must be refused, got {repr other}"
   let busyR ← IO.ofExcept busy.get
   check busyR.isOk s!"the overlapping snapshot itself succeeded: {repr busyR}"
+  check (← quickCheckOk snapDest2) "the overlapping snapshot's output is intact"
   svc.close
 
 /-- `restore` while a reader snapshot runs: the snapshot either finishes
