@@ -1369,14 +1369,12 @@ def logFootprints (conn : Conn) (limit : Nat) : IO (Array (Option String × List
 
 /-! ## LDB-06: `count` / `exists`
 
-When the predicate has no residual and no widening leaf (LDB-14: a
-`prefix`'s `LIKE` is case-insensitive where the Lean predicate is not),
-these render `COUNT(*)` / `EXISTS`. Otherwise they fetch and reduce in
-Lean and the plan log records that. -/
+When the predicate has no residual, these render `COUNT(*)` / `EXISTS`.
+Otherwise they fetch and reduce in Lean and the plan log records that. -/
 
 def countP [RowsOf ts] (p : Pred ts) : DbM Nat :=
   withLog "count" (selectDetail ts p) (fun _ => 1) (plan := some (planJson ts p)) do
-    if p.hasOpaque || p.hasWidening then
+    if p.hasOpaque then
       return (← selectP ts p).size
     let specs := RowsOf.specs ts
     let (fromSql, whereSql, binds) ← match specs with
@@ -1402,7 +1400,7 @@ def exists? [RowsOf ts] (p : Rows ts → Bool) (plan : PlanFor p := by leandb_pl
 
 def existsP [RowsOf ts] (p : Pred ts) : DbM Bool :=
   withLog "exists" (selectDetail ts p) (fun _ => 1) (plan := some (planJson ts p)) do
-    if p.hasOpaque || p.hasWidening then
+    if p.hasOpaque then
       return !(← selectP ts p (window := { limit := some 1 })).isEmpty
     let specs := RowsOf.specs ts
     let (fromSql, whereSql, binds) ← match specs with

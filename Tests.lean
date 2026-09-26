@@ -17,6 +17,7 @@ import TestsM14c
 import TestsM15a
 import CheckAxioms
 import TestsLdb12
+import TestsLdb14
 
 /-! Engine tests: codecs, deriving, the dependent select against a real
 SQLite file, CAS staleness, FK restriction. Fixture types live here — the
@@ -704,6 +705,19 @@ private def inlineBinds (sql : String) (binds : Array Col) : String :=
 
 private def strPredDbPath : System.FilePath := ".lake" / "leandb_test_strpred.sqlite"
 
+/-- The usernames a rendered `WHERE` selects from `profile`, straight from
+    SQLite in id order. No Lean re-check runs, so this is what the SQL
+    itself accepts — the check that a leaf is exact, not just sound. -/
+private def rawUsernames (db : SQLite) (whereSql : String) (binds : Array Col) :
+    IO (List String) := do
+  let stmt ← db.prepare
+    s!"SELECT username FROM \"profile\" AS t0 WHERE {whereSql} ORDER BY id"
+  bindCols stmt 1 binds
+  let mut out : List String := []
+  repeat
+    if ← stmt.step then out := out ++ [← stmt.columnText 0] else break
+  return out
+
 private def expectOk' (r : Except DbError α) (context : String) : IO α :=
   match r with
   | .ok a => pure a
@@ -729,38 +743,43 @@ private def testStringPredicates : IO Unit := do
   check (Pred.likePattern "a%b_c\\d" == "a\\%b\\_c\\\\d%")
     s!"LIKE escaping, got {repr (Pred.likePattern "a%b_c\\d")}"
   -- the tactic reifies the three lambdas
-  checkPlan prefixPlan "(t0.\"tenant\" IS ? AND t0.\"username\" LIKE ? ESCAPE '\\')"
-    #[.text "t1", .text "ha%"] 0 "startsWith pushes as LIKE with the tenant guard"
+  checkPlan prefixPlan
+    "(t0.\"tenant\" IS ? AND (t0.\"username\" LIKE ? ESCAPE '\\' AND instr(t0.\"username\", ?) = 1))"
+    #[.text "t1", .text "ha%", .text "ha"] 0
+    "startsWith pushes as LIKE narrowed by instr, with the tenant guard"
   checkPlan containsPlan "instr(t0.\"username\", ?) > 0" #[.text "a b"] 0
     "contains pushes as a byte-exact instr"
   checkPlan icontainsPlan "instr(lower(t0.\"username\"), lower(?)) > 0" #[.text "BÜ"] 0
     "toLower.contains pushes as instr(lower(…), lower(?))"
-  -- one-sided: `LIKE` folds ASCII case where `String.startsWith` does not,
-  -- so the negation must never ship — it is exact in Lean, opaque to SQL
+  -- there is no negated string leaf: `neg` keeps the negation exact in
+  -- Lean, as a residual
   checkPlan notPrefixPlan "1" #[] 1 "negated prefix stays residual"
   -- the plan as data (selectP's input shape) renders the same
   let p : Pred [Profile] :=
     .and (.eq (.here Profile.Field.tenant) .eq "t1")
       (.prefix (.here Profile.Field.username) "ha")
-  check (p.residuals == 0 && !p.hasOpaque && p.hasWidening)
-    "prefix is fully pushed and counts as a widening leaf"
+  check (p.residuals == 0 && !p.hasOpaque) "prefix is fully pushed"
   check (p.renderT ==
-      ("(t0.\"tenant\" IS ? AND t0.\"username\" LIKE ? ESCAPE '\\')", #[.text "t1", .text "ha%"]))
+      ("(t0.\"tenant\" IS ? AND (t0.\"username\" LIKE ? ESCAPE '\\' AND instr(t0.\"username\", ?) = 1))",
+        #[.text "t1", .text "ha%", .text "ha"]))
     s!"data-plan render, got {repr (p.renderT)}"
-  -- render's negation polarity: `NOT LIKE`/`= 0` are the under-
-  -- approximations a `NOT EXISTS` inner condition needs, and the
-  -- pre-LDB-14 constructors render byte-identically to `p.neg.render`
+  -- render's negation polarity is the exact SQL negation (checked against
+  -- SQLite below), and the pre-LDB-14 constructors render byte-identically
+  -- to `p.neg.render`
   let t0 : Nat → String := fun _ => "t0"
+  let tenantT1 : Pred [Profile] := .eq (.here Profile.Field.tenant) .eq "t1"
+  check (tenantT1.render t0 0 true == tenantT1.neg.render t0) "negated eq renders as its neg"
   check ((Pred.prefix (ts := [Profile]) (.here Profile.Field.username) "ha").render t0 0 true ==
-      ("t0.\"username\" NOT LIKE ? ESCAPE '\\'", #[Col.text "ha%"])) "negated prefix renders NOT LIKE"
+      ("(t0.\"username\" NOT LIKE ? ESCAPE '\\' OR instr(t0.\"username\", ?) != 1)",
+        #[Col.text "ha%", Col.text "ha"])) "negated prefix renders the De Morgan dual"
   check ((Pred.contains (ts := [Profile]) (.here Profile.Field.username) "ab").render t0 0 true ==
       ("instr(t0.\"username\", ?) = 0", #[Col.text "ab"])) "negated contains renders instr = 0"
   check ((Pred.icontains (ts := [Profile]) (.here Profile.Field.username) "AB").render t0 0 true ==
       ("instr(lower(t0.\"username\"), lower(?)) = 0", #[Col.text "AB"])) "negated icontains"
   check ((Pred.and (ts := [Profile]) (.eq (.here Profile.Field.tenant) .eq "t1")
       (Pred.prefix (.here Profile.Field.username) "ha")).render t0 0 true ==
-    ("(t0.\"tenant\" IS NOT ? OR t0.\"username\" NOT LIKE ? ESCAPE '\\')",
-      #[Col.text "t1", Col.text "ha%"])) "negation flips and/or"
+    ("(t0.\"tenant\" IS NOT ? OR (t0.\"username\" NOT LIKE ? ESCAPE '\\' OR instr(t0.\"username\", ?) != 1))",
+      #[Col.text "t1", Col.text "ha%", Col.text "ha"])) "negation flips and/or"
   -- index DDL and JSON carry the collation; it is fingerprint material
   check ((Entity.spec Profile).indexDdl.toList.any fun d =>
       d.contains "COLLATE NOCASE" && d.contains "ix_profile_tenant_username")
@@ -780,8 +799,8 @@ private def testStringPredicates : IO Unit := do
         indexes := #[{ columns := #["tenant", "username"], collate := some .binary }] }])
     "the collation is fingerprint material"
   -- end to end: wildcards, the escape character, ASCII case pairs and
-  -- astral-plane scalars, through the full selectP path — the re-check
-  -- restores exactly what the Lean predicate accepts
+  -- astral-plane scalars, through the full selectP path and through
+  -- `countP`, whose `COUNT(*)` is the SQL alone
   if ← strPredDbPath.pathExists then IO.FS.removeFile strPredDbPath
   let leaves : Array ((String → Pred [Profile]) × (String → String → Bool)) :=
     #[(fun p => Pred.prefix (.here Profile.Field.username) p, fun v q => v.startsWith q),
@@ -800,6 +819,10 @@ private def testStringPredicates : IO Unit := do
         unless got.map (·.val.username) == lean.map (·.val.username) do
           throw (.sqlite s!"FAIL: leaf vs unplanned on {repr pat}: got {got.map (·.val.username)}, \
 unplanned says {lean.map (·.val.username)}")
+        -- `selectP` re-checks in Lean; `COUNT(*)` does not
+        let n ← countP (ts := [Profile]) (mk pat)
+        unless n == lean.size do
+          throw (.sqlite s!"FAIL: COUNT(*) on {repr pat}: {n} ≠ {lean.size}")
     -- the prefix select is fully pushed and LIMIT-eligible (LDB-04): a
     -- window with a limit is accepted because nothing is residual
     let got ← selectP [Profile] p (window := { limit := some 20 })
@@ -816,15 +839,30 @@ unplanned says {lean.map (·.val.username)}")
       (window := { limit := some 20 })
     unless bounded.size == 20 do
       throw (.sqlite s!"FAIL: LIMIT did not bound the prefix fetch: {bounded.size}")
-    -- countP decides in SQL, so a widening leaf sends it back to Lean
+    -- the window is pushed, so the SQL must be exact: `LIKE` alone would
+    -- let `Hagrid` take the second slot, and the re-check would then drop
+    -- it and return a short page (`ha1` only)
+    let page ← selectP [Profile] p (window := { limit := some 2 })
+    unless page.map (·.val.username) == #["ha1", "habitat"] do
+      throw (.sqlite s!"FAIL: prefix + LIMIT 2: {page.map (·.val.username)}")
+    let page ← selectP [Profile] p (window := { offset := 1, limit := some 2 })
+    unless page.map (·.val.username) == #["habitat", "ha_1"] do
+      throw (.sqlite s!"FAIL: prefix + OFFSET 1 LIMIT 2: {page.map (·.val.username)}")
+    -- countP / existsP decide in SQL (`COUNT(*)` / `EXISTS`)
     let n ← countP (ts := [Profile]) p
     unless n == 6 do
       throw (.sqlite s!"FAIL: countP with a prefix leaf: {n} ≠ 6")
-    -- the plan log shows the pushed LIKE with no residual conjunct
-    let entries ← readLog 10
+    let hag : Pred [Profile] := .prefix (.here Profile.Field.username) "hag"
+    let n ← countP (ts := [Profile]) hag
+    unless n == 0 do
+      throw (.sqlite s!"FAIL: countP counted a case-folded prefix match: {n}")
+    if ← existsP (ts := [Profile]) hag then
+      throw (.sqlite "FAIL: existsP found a case-folded prefix match")
+    -- the plan log shows the pushed prefix with no residual conjunct
+    let entries ← readLog 20
     let details := entries.map fun e => (e.getObjValAs? String "detail").toOption.getD ""
-    let want := "profile | pushed: (t0.\"tenant\" IS ? AND t0.\"username\" LIKE ? ESCAPE '\\'), "
-      ++ "residual conjuncts: 0"
+    let want := "profile | pushed: (t0.\"tenant\" IS ? AND (t0.\"username\" LIKE ? ESCAPE '\\' "
+      ++ "AND instr(t0.\"username\", ?) = 1)), residual conjuncts: 0"
     unless details.any fun d => d == want do
       throw (.sqlite s!"FAIL: log lacks the fully-pushed prefix plan: {details}")
   discard <| expectOk' r "string predicate e2e"
@@ -842,7 +880,9 @@ unplanned says {lean.map (·.val.username)}")
   check (rows.any fun r => r.contains "ix_profile_tenant_username")
     s!"the (tenant, username) NOCASE index serves the prefix push, got {rows}"
   -- the property test: random strings over `%`, `_`, `\`, ASCII case pairs
-  -- and an astral-plane scalar agree with the Lean predicate, per leaf
+  -- and an astral-plane scalar agree with the Lean predicate, per leaf —
+  -- through `selectP`, through `countP`'s `COUNT(*)`, and as raw SQL in
+  -- both polarities (`render … true` is the exact complement)
   if ← strPredDbPath.pathExists then IO.FS.removeFile strPredDbPath
   let mut seed : Nat := 113
   let chars : Array Char := #['a', 'b', 'A', '\\', '%', '_', '𝕏']
@@ -869,7 +909,19 @@ unplanned says {lean.map (·.val.username)}")
         unless got.map (·.val.username) == lean.map (·.val.username) do
           throw (.sqlite s!"FAIL: property mismatch for {repr pat}: got {got.map (·.val.username)}, \
 unplanned says {lean.map (·.val.username)}")
+        let n ← countP (ts := [Profile]) (mk pat)
+        unless n == lean.size do
+          throw (.sqlite s!"FAIL: property COUNT(*) for {repr pat}: {n} ≠ {lean.size}")
   discard <| expectOk' r "string predicate property"
+  let db ← SQLite.open strPredDbPath
+  for pat in pats do
+    for (mk, ok) in leaves do
+      for neg in [false, true] do
+        let (whereSql, binds) := (mk pat).render Pred.tAlias 0 neg
+        let got ← rawUsernames db whereSql binds
+        let want := vals.toList.filter fun v => ok v pat != neg
+        check (got == want)
+          s!"raw SQL {whereSql} (negated: {neg}) for {repr pat}: got {got}, Lean says {want}"
 
 /-! ### Coherence of the tactic's plans
 
@@ -4732,5 +4784,6 @@ def main : IO UInt32 := do
   TestsM15a.run
   TestsLdb12.run
   testStringPredicates
+  TestsLdb14.run
   IO.println "all engine tests passed"
   return 0

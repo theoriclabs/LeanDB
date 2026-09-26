@@ -261,10 +261,13 @@ inductive Pred : List Type → Type 1 where
   | bit {ts : List Type} {α : Type} [ce : ClosedEnum α] {i : ColCodec (EnumSet α)}
       (c : Pred.Col ts (EnumSet α) i) (a : α) (set : Bool) : Pred ts
   /-- String prefix (LDB-14): `c` starts with `p`. Pushed as
-      `c LIKE ? ESCAPE '\'` with `p` escaped (`\`, `%`, `_`) and `%`
-      appended, bound — never interpolated. SQLite's `LIKE` folds ASCII
-      case, so the SQL is a strict WIDENING of `denote`
-      (`String.startsWith`); the lambda re-checks what comes back. -/
+      `(c LIKE ? ESCAPE '\' AND instr(c, ?) = 1)`, both bound — never
+      interpolated. The `LIKE` (`likePattern p`) is there for the index:
+      SQLite serves it as a range from a `COLLATE NOCASE` index
+      (`IndexSpec.collate`). It folds ASCII case, so alone it would also
+      accept `Hagrid` for `ha`; `instr(c, p) = 1` is byte-exact, so the
+      conjunction is exactly `String.startsWith` and the leaf is as exact
+      as `eq` — a pushed `LIMIT`, `COUNT(*)` or `EXISTS` over it is sound. -/
   | prefix {ts : List Type} {i : ColCodec String}
       (c : Pred.Col ts String i) (p : String) : Pred ts
   /-- Substring (LDB-14): `p` occurs in `c`. Pushed as
@@ -419,11 +422,10 @@ def any {ts : List Type} {α child : Type} [Entity α] [Entity child] {j : ColCo
 
 /-- Exact negation. `ord`/`ord2` flip the operator, exact by the `SqlOrd`
     argument at the constructor; `eq`/`eq2` flip `IS`/`IS NOT`; null tests
-    swap; the string leaves negate their Lean predicate as an opaque leaf
-    — their SQL is one-sided (see `prefix`), so a negated string leaf must
-    never ship (`approx` drops the opaque); `and`/`or` by De Morgan; the
-    quantifiers swap with their body negated; the residual negates its
-    function. -/
+    swap; the string leaves (LDB-14) have no negated constructor, so their
+    negation is the Lean predicate as an opaque leaf — exact, but left to
+    the lambda; `and`/`or` by De Morgan; the quantifiers swap with their
+    body negated; the residual negates its function. -/
 def neg {ts : List Type} : Pred ts → Pred ts
   | .tt => .ff
   | .ff => .tt
@@ -434,7 +436,7 @@ def neg {ts : List Type} : Pred ts → Pred ts
   | .isNull c => .isNotNull c
   | .isNotNull c => .isNull c
   | .bit (ce := ce) c a set => .bit (ce := ce) c a (!set)
-  | .prefix (i := i) c p => .opaque fun r => !(String.startsWith (c.proj r) p)
+  | .prefix c p => .opaque fun r => !(String.startsWith (c.proj r) p)
   | .contains c p => .opaque fun r => !(String.contains (c.proj r) p)
   | .icontains c p => .opaque fun r => !((c.proj r).toLower.contains p.toLower)
   | .and a b => .or a.neg b.neg
@@ -528,23 +530,6 @@ def residuals {ts : List Type} : Pred ts → Nat
   | _ => 0
 
 def hasOpaque {ts : List Type} (p : Pred ts) : Bool := p.residuals != 0
-
-/-- String leaves whose SQL is a strict widening of their denotation
-    (LDB-14): SQLite's `LIKE` folds ASCII case, so `prefix` accepts rows
-    `String.startsWith` rejects. Pushdown only ever widens a fetch and the
-    lambda re-checks — but `countP`/`existsP` DECIDE in SQL, so they must
-    not ship a widening leaf. `contains`/`icontains` are exact and do not
-    count. -/
-def widening {ts : List Type} : Pred ts → Nat
-  | .prefix _ _ => 1
-  | .and a b => a.widening + b.widening
-  | .or a b => a.widening + b.widening
-  | .«exists» (ent := _) _ _ b => b.widening
-  | .«forall» (ent := _) _ _ b => b.widening
-  | _ => 0
-
-def hasWidening {ts : List Type} (p : Pred ts) : Bool := p.widening != 0
-
 
 theorem denote_andS {ts : List Type} (snap : Snapshot) (a b : Pred ts) (r : Rows ts) :
     (andS a b).denote snap r = (a.denote snap r && b.denote snap r) := by
@@ -798,8 +783,8 @@ where
       if acc.any (fun y => @Entity.tableName y.1 y.2 == @Entity.tableName x.1 x.2) then acc
       else acc ++ [x]
 
-/-- Node count. `neg` preserves it (`size_neg`), which is what lets
-    `render` recurse into a negated quantifier body. -/
+/-- Node count: `render`'s termination measure. `neg` preserves it
+    (`size_neg`). -/
 def size {ts : List Type} : Pred ts → Nat
   | .and a b | .or a b => a.size + b.size + 1
   | .«exists» (ent := _) _ _ b => b.size + 1
@@ -831,13 +816,10 @@ def likePattern (p : String) : String :=
 
     `not = true` renders the NEGATION of the subtree, structurally:
     operators flip, `and`/`or` trade places, quantifiers swap. This is
-    how `forall` renders its body (`NOT EXISTS`), and it is what keeps the
-    one-sided string leaves (LDB-14) sound under negation: `LIKE` accepts
-    a superset of `String.startsWith` (ASCII case folding), so the negated
-    form `NOT LIKE` accepts a subset of `¬startsWith` — the under-
-    approximation a `NOT EXISTS` inner condition needs. Rendering through
-    `neg` would widen instead (`neg` of a string leaf is an opaque leaf),
-    and a widened inner condition excludes rows the plan accepts.
+    how `forall` renders its body (`NOT EXISTS`). Every leaf's SQL is
+    exact, so its negated rendering is exact too. The string leaves
+    (LDB-14) need this path: `neg` has no pushed form for them (it makes
+    them opaque, which renders as `1`).
 
     For every constructor the engine predates LDB-14, `render … true`
     produces exactly what `p.neg.render` produced.
@@ -867,15 +849,16 @@ def render {ts : List Type} (aliasOf : Nat → String) (depth : Nat := 0) (not :
       let bind := LeanDb.Col.int (Int64.ofNat (@EnumSet.bitOf _ ce a).toNat)
       let set := if not then !set else set
       (s!"(({col aliasOf c} & ?) {if set then "!=" else "="} 0)", #[bind])
-  -- LDB-14: the pattern is `p` escaped for `LIKE`, with `%` appended, and
-  -- the parameters are bound. `instr` is byte-exact against
+  -- LDB-14: every parameter is bound. `prefix` is the index-friendly
+  -- `LIKE` narrowed by the exact `instr(…) = 1` (see `prefix`), and its
+  -- negation is the De Morgan dual. `instr` is byte-exact against
   -- `String.contains`; `lower` is ASCII-only on both sides (SQLite without
-  -- ICU, Lean `String.toLower`), so `icontains` is exact too. `prefix`'s
-  -- `LIKE` is a widening; under `not` it renders `NOT LIKE`, the
-  -- under-approximation `NOT EXISTS` needs (see the doc above).
+  -- ICU, Lean `String.toLower`), so `icontains` is exact too.
   | .prefix c p =>
-      (s!"{col aliasOf c}{if not then " NOT" else ""} LIKE ? ESCAPE '\\'",
-        #[.text (likePattern p)])
+      let cs := col aliasOf c
+      (if not then s!"({cs} NOT LIKE ? ESCAPE '\\' OR instr({cs}, ?) != 1)"
+        else s!"({cs} LIKE ? ESCAPE '\\' AND instr({cs}, ?) = 1)",
+        #[.text (likePattern p), .text p])
   | .contains c p =>
       (s!"instr({col aliasOf c}, ?){if not then " =" else " >"} 0", #[.text p])
   | .icontains c p =>
@@ -902,7 +885,7 @@ def render {ts : List Type} (aliasOf : Nat → String) (depth : Nat := 0) (not :
       let q := if not then "EXISTS" else "NOT EXISTS"
       (s!"{q} ({subquery (@Entity.tableName child ent) s fk.name (col aliasOf parent) bs})", bb)
 termination_by p => p.size
-decreasing_by all_goals (simp [size, size_neg]; try omega)
+decreasing_by all_goals (simp [size]; try omega)
 where
   col {ts : List Type} {τ : Type} {i : ColCodec τ} (aliasOf : Nat → String) (c : Col ts τ i) :
       String :=
