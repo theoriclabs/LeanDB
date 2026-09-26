@@ -4181,19 +4181,18 @@ private def testFetchFilteredLimitBound : IO Unit := do
 
 private def testCliArgNatBound : IO Unit := do
   -- registered-query parameters (CLI and HTTP args both) parse through
-  -- `CliArg Nat` and bind through the `Nat` codec's documented wrap: a
-  -- param ≥ 2^63 would make the planned SQL diverge from the reference
-  -- lambda or poison rows — refused at the argv boundary (issue #80)
+  -- `CliArg Nat`. Since LDB-18 a comparison bound above `natSqlMax` no
+  -- longer wraps (it becomes a tautology or contradiction), and writes
+  -- refuse it, so the argv boundary does not refuse large params (#80)
   check ((Cli.CliArg.parse (α := Nat) "0").toOption == some 0) "0 parses"
   check ((Cli.CliArg.parse (α := Nat) "9223372036854775807").toOption == some 9223372036854775807)
     "the largest Int64 still parses"
-  for s in ["9223372036854775808", "18446744073709551615", "18446744073709551616"] do
-    check ((Cli.CliArg.parse (α := Nat) s).toOption.isNone) s!"a Nat param beyond Int64 range is refused: {s}"
-  -- the popArg boundary query handlers compile to surfaces the refusal
-  expectErr (← withDb rowsDbPath schema do
-    discard <| Cli.popArg Nat "n" ["18446744073709551616"]) "decode"
-    "a wrapped Nat query param is refused at the popArg boundary"
-  -- row ids share the same bound through the `Id` parse
+  for s in ["9223372036854775808", "18446744073709551616"] do
+    check ((Cli.CliArg.parse (α := Nat) s).toOption == s.toNat?) s!"a Nat param beyond Int64 range parses: {s}"
+  let (n, _) ← expectOk (← withDb rowsDbPath schema do
+    Cli.popArg Nat "n" ["18446744073709551616"]) "popArg of 2^64"
+  check (n == 18446744073709551616) "popArg carries the unwrapped Nat"
+  -- row ids are refused beyond Int64 range: an id is stored, not compared
   check ((Cli.CliArg.parse (α := LeanDb.Id Author) "18446744073709551616").toOption.isNone)
     "a row id beyond Int64 range is refused"
 

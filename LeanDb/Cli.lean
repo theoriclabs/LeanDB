@@ -25,17 +25,8 @@ open Lean (Json)
 class CliArg (α : Type) where
   parse : String → Except String α
 
-/-- Query parameters bind as Int64 through the `Nat` codec's documented
-    wrap (`Int64.ofNat` reduces mod 2^64), so a param ≥ 2^63 would make
-    the planned SQL diverge from the reference lambda — or wrap negative
-    and poison rows on write. Like row ids (`parseId`) and limits
-    (`limitOf`), values beyond Int64 range are refused at the argv
-    boundary. -/
 instance : CliArg Nat := ⟨fun s => match s.toNat? with
-  | some n =>
-      if n > Int64.maxValue.toNatClampNeg then
-        .error s!"integer out of Int64 range: {s}"
-      else .ok n
+  | some n => .ok n
   | none => .error s!"expected a natural number, got {String.quote s}"⟩
 
 instance : CliArg Int64 := ⟨fun s => match s.toInt? with
@@ -47,10 +38,10 @@ instance : CliArg Int64 := ⟨fun s => match s.toInt? with
 
 instance : CliArg String := ⟨.ok⟩
 
-/-- Row ids share the `Nat` parse, which is already Int64-bounded —
-    the same bound `parseId` enforces for the direct row verbs. -/
 instance : CliArg (Id α) := ⟨fun s => do
   let n ← (CliArg.parse s : Except String Nat)
+  if n > Int64.maxValue.toNatClampNeg then
+    throw s!"row id out of Int64 range: {s}"
   return ⟨Int64.ofNat n⟩⟩
 
 instance [ClosedEnum α] : CliArg α := ⟨fun s =>
