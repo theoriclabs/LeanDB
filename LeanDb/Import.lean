@@ -2,6 +2,7 @@ import SQLite
 import Lean.Data.Json
 import LeanDb.Entity
 import LeanDb.Derive
+import LeanDb.Render
 
 namespace LeanDb.Import
 
@@ -208,24 +209,54 @@ private def isValidFieldName (s : String) : Bool :=
   (s.foldl (init := (true, true)) fun (ok, first) c =>
     (ok && (if first then c.isAlpha else c.isAlpha || c.isDigit || c == '_'), false)).1
 
-/-- Lean keywords that are still fine as field names inside guillemets. -/
-private def leanKeywords : List String :=
-  ["at", "by", "calc", "do", "else", "end", "for", "fun", "have", "if", "in",
-   "let", "match", "then", "with", "where", "from", "import", "open",
-   "mutual", "namespace", "section", "structure", "inductive", "instance",
-   "class", "def", "theorem", "lemma", "example", "axiom", "abbrev",
-   "opaque", "variable", "universe", "deriving", "extends", "macro",
-   "notation", "syntax", "set_option", "private", "protected", "partial",
-   "unsafe", "noncomputable", "rec", "return", "try", "catch", "finally",
-   "throw", "show", "sorry", "admit", "exact", "this", "mut", "break",
-   "continue", "while", "repeat", "until", "global", "local", "scoped",
-   "attribute", "export", "include", "omit", "exit", "hiding", "renaming",
-   "infix", "infixl", "infixr", "prefix", "postfix", "initialize", "nomatch",
-   "fine", "when", "unless"]
+/-- Column names Lean refuses even under guillemets: a binder spelled with
+    one collides in the kernel with a declaration Lean generates for the
+    structure itself or for `deriving LeanDb.Entity`'s symbol inductive
+    (issue #66). Each entry was verified against Lean v4.33.0 by compiling
+    a structure with that field name under guillemets and deriving
+    `LeanDb.Entity`: `mk` is refused as the structure constructor's name,
+    and `noConfusion`, `noConfusionType`, `casesOn`, `recOn`, `ctorIdx`
+    and `toCtorIdx` fail with "(kernel) constant has already been
+    declared" — the constructor-index functions cover the structure and
+    the derived symbol inductive. (`rec` and the modifier keywords
+    `unsafe`/`noncomputable`/`partial`/`private`/`protected` are refused
+    by `LeanDb.Derive.unusableSymNames` instead, which the importer also
+    checks.) -/
+private def unusableFieldNames : List String :=
+  ["mk", "noConfusion", "noConfusionType", "casesOn", "recOn", "ctorIdx",
+   "toCtorIdx"]
 
-/-- Render a column name as a Lean field binder (keywords get guillemets). -/
-private def renderFieldName (s : String) : String :=
-  if leanKeywords.contains s then s!"«{s}»" else s
+/-- Column names that cannot be spelled bare in binder position but
+    compile guillemet-quoted: Lean keyword tokens (statement and
+    declaration keywords, the capitalized type keywords `Type`/`Sort`/
+    `Prop`, two-token words like `suffices` and `grind_pattern`, and the
+    token `λ`). Every entry was verified against Lean v4.33.0 the same
+    way: the bare binder fails to parse, the guillemet-quoted one
+    elaborates and derives `LeanDb.Entity` cleanly. Names *not* listed
+    here — including words that once looked like keywords but compile
+    bare on this toolchain (`type`, `fine`, `when`, `this`, `admit`,
+    `exact`, `throw`, `global`, `lemma`, `exit`, `below`, `brecOn`,
+    `inj`, `sizeOf`) — become plain binders. -/
+private def quotedFieldNames : List String :=
+  ["abbrev", "at", "attribute", "axiom", "break", "by", "calc", "catch",
+   "class", "continue", "decreasing_by", "def", "deriving", "do", "elab",
+   "else", "end", "example", "exists", "export", "extends", "finally",
+   "for", "forall", "from", "fun", "have", "haveI", "hiding", "if",
+   "import", "in", "include", "inductive", "infix", "infixl", "infixr",
+   "initialize", "instance", "let", "letI", "local", "macro",
+   "macro_rules", "match", "mut", "mutual", "namespace", "nomatch",
+   "nonrec", "notation", "omit", "opaque", "open", "postfix", "prefix",
+   "Prop", "renaming", "repeat", "return", "run_cmd", "scoped", "seal",
+   "section", "set_option", "show", "sorry", "Sort", "structure",
+   "suffices", "syntax", "termination_by", "then", "theorem", "try",
+   "Type", "universe", "unless", "unseal", "until", "using", "variable",
+   "where", "while", "with", "λ"]
+
+/-- A generated field binder: guillemet-quoted when the bare spelling is
+    a Lean token, plain otherwise. The refusal gate has already removed
+    every name that cannot appear at all. -/
+private def fieldBinder (column : String) : String :=
+  if quotedFieldNames.contains column then s!"«{column}»" else column
 
 /-- Column name → segment of a scalar newtype name (best effort; the result
     is deduplicated against everything else in the plan). -/
@@ -304,6 +335,19 @@ private def checkConstraintsIn (createSql : String) : Array (Option String) :=
           else none
     return out
 
+/-- True when the stored DDL declares the table `WITHOUT ROWID`, decided
+    over `bareWords` (comment- and string-aware) so a string default or
+    comment containing the phrase cannot fake it — the same lexical
+    discipline `checkConstraintsIn` uses; a raw substring once excluded a
+    perfectly importable rowid table whose `tag` defaulted to
+    `'WITHOUT ROWID'` (issue #67). -/
+private def isWithoutRowid (createSql : String) : Bool := _root_.Id.run do
+  let ws := bareWords createSql
+  for i in [0:ws.size] do
+    if upperStr ws[i]! == "WITHOUT" && i + 1 < ws.size && upperStr ws[i + 1]! == "ROWID" then
+      return true
+  return false
+
 /-! ## The import plan -/
 
 inductive Mapping where
@@ -354,7 +398,7 @@ structure Plan where
 /-- Eligibility: single INTEGER PRIMARY KEY rowid alias named `id`,
     a mangleable name, and identifier-safe columns. -/
 private def eligibilityOf (t : RawTable) : Except String String := do
-  if hasSub (upperStr t.createSql) "WITHOUT ROWID" then
+  if isWithoutRowid t.createSql then
     .error "WITHOUT ROWID tables have no rowid for LeanDB's `id`"
   let pks := t.columns.filter (·.pkIndex > 0)
   if pks.size == 0 then
@@ -376,6 +420,12 @@ private structure Eligible where
   raw : RawTable
   structName : String
 
+/-- The single-column FK groups whose only member is a FK from column
+    `c`, in source order — the only candidates for a typed `Ref`. -/
+private def singleColFks (t : RawTable) (c : String) : Array RawFk :=
+  t.fks.filter fun fk =>
+    fk.fromCol == c && (t.fks.filter (·.groupId == fk.groupId)).size == 1
+
 /-- Map one non-pk column. `.newtype ""` is a placeholder filled in by the
     naming pass; refs may still be downgraded by the cycle pass. -/
 private def mapColumn (eligibleNames : Array (String × String))
@@ -383,16 +433,29 @@ private def mapColumn (eligibleNames : Array (String × String))
     Except (String × String) FieldPlan := do  -- .error = (column, skip reason)
   let declU := upperStr c.declType
   let mut notes : Array String := #[]
-  -- FK lookup: only single-column FK groups are Ref candidates.
+  -- FK lookup: only single-column FK groups are Ref candidates, and a
+  -- column targeted by two or more of them cannot carry a typed
+  -- reference at all — a `Ref` can point at only one parent, so typing
+  -- the first would silently lose the rest (issue #68).
   let fk? := t.fks.find? (·.fromCol == c.name)
   let isComposite := fk?.elim false fun fk => (t.fks.filter (·.groupId == fk.groupId)).size > 1
-  -- a name the generated symbol inductive cannot declare (`rec` collides
-  -- with its recursor, the modifier keywords cannot start a constructor):
-  -- importing it would produce a package that fails to compile with an
-  -- unattributed kernel or parser error
+  let singles := singleColFks t c.name
+  let ambiguous := singles.size > 1
+  if ambiguous then
+    let targets := String.intercalate ", " (singles.toList.map (·.toTable))
+    notes := notes.push <|
+      s!"{singles.size} single-column foreign keys target this column ({targets}); \
+a typed `Ref` can carry only one, so the references are not typed"
+  -- names LeanDB cannot generate at all: the derive's symbol-inductive
+  -- refusals (rec, the modifier keywords — the derive rejects them with
+  -- an attributed error) and the kernel collisions above (issue #66).
+  -- A keyword token is fine: it becomes a guillemet-quoted binder.
   if LeanDb.Derive.unusableSymNames.contains c.name then
     .error (c.name, s!"column name {String.quote c.name} cannot be declared as a Lean field \
 symbol (an inductive constructor with that name is refused by Lean); column skipped")
+  if unusableFieldNames.contains c.name then
+    .error (c.name, s!"column name {String.quote c.name} collides in the kernel with a name Lean \
+generates for the structure or its LeanDB field symbols; column skipped")
   if hasSub declU "BLOB" then
     let extra := if c.notnull && c.defaultSql.isNone then
       " (NOT NULL without default: inserts through LeanDB will be rejected by SQLite)" else ""
@@ -401,7 +464,9 @@ symbol (an inductive constructor with that name is refused by Lean); column skip
     if hasSub declU "INT" then
       match fk? with
       | some fk =>
-          if isComposite then
+          if ambiguous then
+            pure Mapping.int64
+          else if isComposite then
             notes := notes.push s!"part of a composite FK to {fk.toTable}; imported as Int64, reference not typed"
             pure Mapping.int64
           else if fk.toCol != none && fk.toCol != some "id" then
@@ -534,6 +599,17 @@ def planOf (baseName moduleName : String) (raw : RawSchema) : Plan := _root_.Id.
       if fk.onDelete != "RESTRICT" || fk.onUpdate != "RESTRICT" || fk.matchClause != "NONE" then
         notCarried := notCarried.push ⟨"foreign-key action", s!"{t.name}.{fk.fromCol}",
           s!"source uses ON DELETE {fk.onDelete}, ON UPDATE {fk.onUpdate}, MATCH {fk.matchClause}; the adopted file retains those actions, but LeanDB rebuilds emit RESTRICT"⟩
+    -- "imported untyped" is only true of a table the plan carries; for a
+    -- skipped table the skip reason already says why nothing is imported
+    unless eligibleNames.any (fun (n, _) => n == t.name) do
+      continue
+    for c in t.columns do
+      let singles := singleColFks t c.name
+      if singles.size > 1 then
+        let targets := String.intercalate ", " (singles.toList.map (·.toTable))
+        notCarried := notCarried.push ⟨"foreign-key", s!"{t.name}.{c.name}",
+          s!"{singles.size} single-column foreign keys target this column ({targets}); \
+a typed `Ref` can carry only one, so the column is imported untyped and none of the references is carried"⟩
     for ix in t.indexes do
       -- `origin` is authoritative: "pk" is the primary key (carried as the
       -- row key, or the whole table is already skipped) and "c" is a
@@ -634,7 +710,7 @@ private def entitiesFile (p : Plan) : String := _root_.Id.run do
   let mut decls : Array String := #[]
   for tp in p.tables do
     let fields := tp.fields.toList.map fun f =>
-      s!"  {renderFieldName f.column} : {renderFieldType f}"
+      s!"  {fieldBinder f.column} : {renderFieldType f}"
     decls := decls.push <| String.intercalate "\n" <|
       [s!"/-- Imported from table `{tp.table}` (`id` is LeanDB's, not a field). -/",
        s!"structure {tp.structName} where"]

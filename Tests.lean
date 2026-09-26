@@ -1536,6 +1536,169 @@ private def testImportHostileDeclType : IO Unit := do
     "a VARCHAR column reads as TEXT affinity"
   check ((scalars2.splitOn "VARCHAR(20)").length == 1)
     "even a benign declared type stays out of generated Lean"
+/-- Issue #66, revisited against Lean v4.33.0: a column name can still be
+    carried as a guillemet-quoted binder when only the bare spelling is a
+    token (`suffices`, `using`, `forall`), is refused only when even the
+    quoted binder clashes in the kernel (`mk`, `noConfusion`, `ctorIdx`),
+    and words that were once refused wholesale but compile bare on this
+    toolchain (`type`) come through as plain binders. Each refusal or
+    quoting decision was verified by scratch-compiling the candidate as a
+    structure field under `deriving LeanDb.Entity`. -/
+private def testImportHostileNames : IO Unit := do
+  let col (n : String) : RawColumn :=
+    { name := n, declType := "TEXT", notnull := false, pkIndex := 0, defaultSql := none }
+  let t : RawTable :=
+    { name := "hostile"
+      createSql :=
+        "CREATE TABLE hostile (id INTEGER PRIMARY KEY, suffices TEXT, using TEXT, \
+type TEXT, mk TEXT, noConfusion TEXT, ctorIdx TEXT, toCtorIdx TEXT, ok TEXT)"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+          defaultSql := none },
+        col "suffices", col "using", col "type", col "mk", col "noConfusion",
+        col "ctorIdx", col "toCtorIdx", col "ok"]
+      fks := #[]
+      indexes := #[] }
+  let plan := planOf "hn" "Hn" { tables := #[t], views := #[], triggers := #[], indexes := #[] }
+  let some tp := plan.tables.find? (·.table == "hostile")
+    | throw <| IO.userError "FAIL: hostile table planned"
+  check ((tp.skippedColumns.map (·.1)).toList ==
+      ["mk", "noConfusion", "ctorIdx", "toCtorIdx"])
+    s!"only the kernel-clashing names are skipped, got {repr tp.skippedColumns.toList}"
+  check (tp.skippedColumns.all fun (_, r) => (r.splitOn "kernel").length > 1)
+    "each skip reason names the kernel collision"
+  check ((tp.fields.map (·.column)).toList == ["suffices", "using", "type", "ok"])
+    "token and ordinary names are still carried"
+  let files := renderFiles plan "." "h.db" "h.db" "test"
+  let some entities := (files.find? (·.1 == "Hn/Entities.lean")).map (·.2)
+    | throw <| IO.userError "FAIL: Entities.lean was generated"
+  for n in ["mk", "noConfusion", "ctorIdx", "toCtorIdx"] do
+    check ((entities.splitOn n).length == 1)
+      s!"Entities.lean never mentions refused name {n}"
+  check ((entities.splitOn "  «suffices» : ").length > 1)
+    "the token name suffices is emitted guillemet-quoted"
+  check ((entities.splitOn "  «using» : ").length > 1)
+    "the token name using is emitted guillemet-quoted"
+  check ((entities.splitOn "  type : Option HostileType").length > 1)
+    "type is emitted as a plain binder (no over-refusal, no over-quoting)"
+  check ((entities.splitOn "  ok : Option HostileOk").length > 1)
+    "the ordinary column is emitted as a plain identifier"
+
+/-- Issue #67: `WITHOUT ROWID` is a token decision over `bareWords`, not
+    a raw DDL substring — a string default containing the phrase must not
+    exclude a perfectly importable rowid table, while a real WITHOUT
+    ROWID table is still refused. -/
+private def testImportWithoutRowidPhrase : IO Unit := do
+  let phrase : RawTable :=
+    { name := "note"
+      createSql :=
+        "CREATE TABLE note (\n" ++
+        "  id INTEGER PRIMARY KEY,\n" ++
+        "  tag TEXT DEFAULT 'WITHOUT ROWID' -- WITHOUT ROWID\n" ++
+        ")"
+      columns := #[
+        { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+          defaultSql := none },
+        { name := "tag", declType := "TEXT", notnull := false, pkIndex := 0,
+          defaultSql := some "'WITHOUT ROWID'" }]
+      fks := #[]
+      indexes := #[] }
+  let real : RawTable :=
+    { name := "w"
+      createSql := "CREATE TABLE w (a TEXT) WITHOUT ROWID"
+      columns := #[{ name := "a", declType := "TEXT", notnull := false,
+                     pkIndex := 0, defaultSql := none }]
+      fks := #[]
+      indexes := #[] }
+  let plan := planOf "wr" "Wr"
+    { tables := #[phrase, real], views := #[], triggers := #[], indexes := #[] }
+  check ((plan.tables.map (·.table)) == #["note"])
+    "a string default containing the phrase does not exclude the table"
+  let skipped := plan.skippedTables.filter (·.1 == "w")
+  check (skipped.size == 1) "a real WITHOUT ROWID table is still skipped"
+  check (skipped.any fun (_, r) => (r.splitOn "WITHOUT ROWID").length > 1)
+    "the skip reason still says WITHOUT ROWID"
+
+/-- Issue #68: a column targeted by two single-column foreign keys
+    cannot carry a typed reference — a `Ref` points at only one parent,
+    and typing the first silently lost the second. It is imported as
+    Int64 with the targets named in `notCarried`; a single-FK column
+    still types as `Ref`. -/
+private def fkRow (fromCol toTable : String) (gid : Nat) : RawFk :=
+  { groupId := gid, fromCol, toTable, toCol := some "id",
+    onUpdate := "RESTRICT", onDelete := "RESTRICT", matchClause := "NONE" }
+
+private def dualFkParent : RawTable :=
+  { name := "parent"
+    createSql := "CREATE TABLE parent (id INTEGER PRIMARY KEY, name TEXT)"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "name", declType := "TEXT", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[]
+    indexes := #[] }
+
+private def dualFkOther : RawTable :=
+  { name := "other"
+    createSql := "CREATE TABLE other (id INTEGER PRIMARY KEY, tag TEXT)"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "tag", declType := "TEXT", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[]
+    indexes := #[] }
+
+/-- The issue's dual_fk fixture: `pid` carries two single-column FKs. -/
+private def dualFkTable : RawTable :=
+  { name := "dual_fk"
+    createSql :=
+      "CREATE TABLE dual_fk (id INTEGER PRIMARY KEY, pid INTEGER, \
+FOREIGN KEY (pid) REFERENCES parent(id), FOREIGN KEY (pid) REFERENCES other(id))"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "pid", declType := "INTEGER", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[fkRow "pid" "parent" 0, fkRow "pid" "other" 1]
+    indexes := #[] }
+
+/-- A column with exactly one single-column FK keeps its typed `Ref`. -/
+private def singleFkTable : RawTable :=
+  { name := "single"
+    createSql :=
+      "CREATE TABLE single (id INTEGER PRIMARY KEY, pid INTEGER, \
+FOREIGN KEY (pid) REFERENCES parent(id))"
+    columns := #[
+      { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
+        defaultSql := none },
+      { name := "pid", declType := "INTEGER", notnull := false, pkIndex := 0,
+        defaultSql := none }]
+    fks := #[fkRow "pid" "parent" 0]
+    indexes := #[] }
+
+private def testImportDualFk : IO Unit := do
+  let plan := planOf "df" "Df"
+    { tables := #[dualFkParent, dualFkOther, dualFkTable, singleFkTable],
+      views := #[], triggers := #[], indexes := #[] }
+  let pid := (plan.tables.find? (·.table == "dual_fk")).bind fun tp =>
+    tp.fields.find? (·.column == "pid")
+  check (pid.any fun f => f.mapping == Mapping.int64)
+    "the dual-FK column is imported as Int64, not Ref"
+  check (pid.any fun f => f.notes.any fun n =>
+      (n.splitOn "parent").length > 1 && (n.splitOn "other").length > 1)
+    "the field note names both FK targets"
+  let nc := plan.notCarried.filter fun e =>
+    e.kind == "foreign-key" && e.name == "dual_fk.pid"
+  check (nc.size == 1) "the untyped FKs are reported by name in notCarried"
+  check (nc.any fun e =>
+      (e.reason.splitOn "parent").length > 1 && (e.reason.splitOn "other").length > 1)
+    "the notCarried reason names both targets"
+  let spid := (plan.tables.find? (·.table == "single")).bind fun tp =>
+    tp.fields.find? (·.column == "pid")
+  check (spid.any fun f => f.mapping == Mapping.ref "parent" "Parent")
+    "a single single-column FK still types the column as Ref"
 
  end Importer
 
@@ -3974,6 +4137,9 @@ def main : IO UInt32 := do
   testForeignFileRefused
   testImportUnusableNames
   testImportHostileDeclType
+  testImportHostileNames
+  testImportWithoutRowidPhrase
+  testImportDualFk
   Lep3.run
   EnumSetA.run
   testOptionalParamPlans
