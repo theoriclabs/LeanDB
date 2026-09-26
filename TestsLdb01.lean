@@ -292,9 +292,9 @@ private def testReadOnlyGuard : IO Unit := do
 
 /-! ## Snapshot lanes (LDB-13)
 
-`snapshot` runs its `VACUUM INTO` on a pooled reader when readers are
-configured, so the writer keeps committing during the backup; with
-`readers := 0` it falls back to the writer and logs. The output is
+`snapshot` runs its `VACUUM INTO` on a pooled reader, so the writer
+keeps committing during the backup; `readers := 0` still has the one
+dedicated reader (LDB-19), so there is no writer fallback. The output is
 written to `dest.tmp` and renamed on success, `restore` waits for a
 running snapshot (typed `.snapshotAborted`, no torn output), and
 `status` reports the last snapshot's lane, duration and size. -/
@@ -474,27 +474,28 @@ private def testSnapshotHoldsReader : IO Unit := do
   check (ro matches .ok true) s!"query_only is back on after a failed snapshot: {repr ro}"
   svc.close
 
-/-- With `readers := 0` the default reader lane falls back to the writer
-    connection (logged on stderr) and still produces a valid copy. -/
-private def testSnapshotFallback : IO Unit := do
+/-- With `readers := 0` the snapshot still runs on the reader lane — the
+    pool's dedicated slot, not the writer — and produces a valid copy;
+    the writer lane runs only when asked for. -/
+private def testSnapshotNoReaders : IO Unit := do
   fresh snapDbPath
   for p in [snapDest, snapDest2] do
     if ← p.pathExists then IO.FS.removeFile p
     try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
   let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 0 }
   discard <| seedRows svc 5
-  -- the default lane is `.reader`; with no readers it uses the writer
   let r ← svc.snapshot snapDest
   match r with
   | .ok () => pure ()
-  | .error e => throw <| IO.userError s!"FAIL: fallback snapshot: {repr e}"
-  check (← snapDest.pathExists) "fallback snapshot wrote the file"
+  | .error e => throw <| IO.userError s!"FAIL: snapshot with readers := 0: {repr e}"
+  check (← snapDest.pathExists) "snapshot wrote the file"
   check (!(← (snapTmpOf snapDest).pathExists)) "no snapshot tmp left behind"
-  check (← quickCheckOk snapDest) "fallback snapshot passes quick_check"
+  check (← quickCheckOk snapDest) "snapshot passes quick_check"
   let stat ← lastSnapshotOf svc
-  check ((stat.getObjValAs? String "lane").toOption == some "writer")
-    s!"the fallback is visible in status: {stat}"
-  -- the explicit writer lane behaves the same
+  check ((stat.getObjValAs? String "lane").toOption == some "reader")
+    s!"readers := 0 still snapshots on the reader lane: {stat}"
+  -- the writer lane is an explicit choice
   let r ← svc.snapshotOn .writer snapDest2
   check r.isOk s!"explicit writer lane: {repr r}"
   let stat ← lastSnapshotOf svc
@@ -592,7 +593,7 @@ def run : IO Unit := do
   testService
   testSnapshotReaderLane
   testSnapshotHoldsReader
-  testSnapshotFallback
+  testSnapshotNoReaders
   testSnapshotWriterLane
   testRestoreDuringSnapshot
   testInspectSession

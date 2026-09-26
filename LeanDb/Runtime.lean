@@ -27,14 +27,13 @@ failure leaves the service gated — verbs are refused loudly — rather
 than serving a file it could not open (#77's shape).
 
 Snapshot lanes (LDB-13): `snapshot` runs its `VACUUM INTO` on a pooled
-reader connection when `Config.readers > 0` — a consistent read snapshot
-in WAL mode, so the writer keeps serving during the backup — and falls
-back to the writer (logging it) when no readers are configured;
-`snapshotOn` names the lane explicitly. A snapshot writes to `dest.tmp`
-and renames on success, so a failed snapshot leaves no torn output.
-`restore` waits for a running snapshot: it stands down before its rename
-with a typed error, so the swap never happens under a reader's `VACUUM
-INTO`.
+reader connection — a consistent read snapshot in WAL mode, so the
+writer keeps serving during the backup. The pool always has one (LDB-19),
+so there is no writer fallback; `snapshotOn .writer` asks for the writer
+explicitly. A snapshot writes to `dest.tmp` and renames on success, so a
+failed snapshot leaves no torn output. `restore` waits for a running
+snapshot: it stands down before its rename with a typed error, so the
+swap never happens under a reader's `VACUUM INTO`.
 
 The callback contract: `f` must not retain the `Conn` past return. The
 connection enforces synchronous ownership; nothing stops a callback from
@@ -98,8 +97,7 @@ instance : ToString RuntimeError := ⟨RuntimeError.message⟩
     `VACUUM INTO` on a pooled read-only connection — a consistent read
     snapshot in WAL mode, so the writer keeps serving during the backup.
     `.writer` holds the writer connection under the admission lock for
-    the whole backup: the pre-LDB-13 behaviour, and the fallback when
-    `Config.readers := 0`. -/
+    the whole backup: the pre-LDB-13 behaviour, only when asked for. -/
 inductive SnapshotLane where
   | reader
   | writer
@@ -281,9 +279,8 @@ private def snapshotFinish (s : Service) (job : SnapshotJob) (dest : System.File
     so the writer keeps serving. The backup is written to `dest.tmp` and
     renamed on success. At most one snapshot runs at a time
     (`.snapshotBusy`), and `restore` waits for the running one before its
-    file swap (LDB-13). With the writer lane — or with `readers := 0`,
-    where the fallback is logged — the backup holds the writer connection
-    for its whole duration, the pre-LDB-13 behaviour. -/
+    file swap (LDB-13). With the writer lane the backup holds the writer
+    connection for its whole duration, the pre-LDB-13 behaviour. -/
 def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
     IO (Except RuntimeError Unit) := do
   if ← dest.pathExists then
@@ -291,24 +288,19 @@ def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
   try IO.FS.removeFile (snapshotTmp dest) catch _ => pure ()
   let start ← IO.monoMsNow
   let tmp := snapshotTmp dest
-  -- Which connection runs the backup: a pooled reader when the caller
-  -- asked for the reader lane and readers exist, the writer otherwise.
   let reg : Except RuntimeError (SnapshotJob × Option (Std.Mutex Conn)) ← s.slot.atomically do
     let st ← getThe Slot
     if st.state != .ready then return .error (.notReady st.state)
     if st.snapshotJob.isSome then return .error .snapshotBusy
-    let useReader := lane == .reader && !st.readers.isEmpty
-    if !useReader && lane == .reader then
-      IO.eprintln "leandb: snapshot falls back to the writer connection (no reader connections configured; set Config.readers)"
-    let abort ← IO.mkRef false
-    let job : SnapshotJob := { lane := if useReader then .reader else .writer, tmp, abort }
+    -- the reader lane takes the next pool slot, the same round-robin as
+    -- `withReader`; `new` always opens at least one, so an empty pool is
+    -- refused like `withReader` refuses it, never run on the writer
     let conn? : Option (Std.Mutex Conn) :=
-      if useReader then
-        -- round-robin over the pool, the same rule as `withReader`
-        let i := st.readerIdx % st.readers.size
-        st.readers[i]?
-      else none
-    set { st with readerIdx := st.readerIdx + (if useReader then 1 else 0), snapshotJob := some job }
+      if lane == .reader then st.readers[st.readerIdx % st.readers.size]? else none
+    if lane == .reader && conn?.isNone then return .error (.notReady st.state)
+    let abort ← IO.mkRef false
+    let job : SnapshotJob := { lane, tmp, abort }
+    set { st with readerIdx := st.readerIdx + (if conn?.isSome then 1 else 0), snapshotJob := some job }
     return .ok (job, conn?)
   match reg with
   | .error e => return .error e
@@ -349,8 +341,7 @@ def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
             return .error e
         | .ok () => s.snapshotFinish job dest start
 
-/-- A consistent copy of the instance at `dest`, on the reader lane when
-    readers are configured and on the writer (logged) otherwise. -/
+/-- A consistent copy of the instance at `dest`, on the reader lane. -/
 def snapshot (s : Service) (dest : System.FilePath) : IO (Except RuntimeError Unit) :=
   s.snapshotOn .reader dest
 
