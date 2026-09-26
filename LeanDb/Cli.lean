@@ -237,6 +237,11 @@ private def versionJson (b : Base) (info : Option (Option String × Option Nat))
 structure Session where
   conn : IO.Ref Conn
   gate : IO.Ref (Option DbError)
+  /-- Set when a restore swapped the instance file but both reopens
+      failed (#77): the connection then serves the old, now-unlinked inode
+      while the path holds the new file, so even gate-exempt verbs must
+      refuse (with the stored reason) until the process restarts. -/
+  dead : IO.Ref (Option String)
 
 private def gateOf (b : Base) (conn : Conn) : IO (Option DbError) := do
   if let some c := b.chain then discard <| c.adopt conn
@@ -253,7 +258,7 @@ def Session.open (b : Base) (inst : Instance) : IO (Except DbError Session) := d
   | .ok conn =>
       try applyAuxiliary conn.raw b.auxiliary catch e => return .error (.sqlite (toString e))
       let gate ← IO.mkRef (← gateOf b conn)
-      return .ok { conn := ← IO.mkRef conn, gate }
+      return .ok { conn := ← IO.mkRef conn, gate, dead := ← IO.mkRef none }
 
 /-- Where the next backup of this instance goes: named by the base, the
     version the instance is at, and the clock. -/
@@ -282,11 +287,16 @@ in-memory database; `restore /dev/zero` read the whole source into
 memory. -/
 
 /-- Replace the instance file with `src` and reopen. Validation runs
-    BEFORE anything destructive (`Restore.swapFile`); the old connection
-    stays open until the rename has succeeded and the new file has opened
-    cleanly. A failure past the swap sets the gate (so verbs are refused
-    loudly instead of silently hitting an empty database) and reopens the
-    instance file. Assumes this process is the only writer. -/
+    BEFORE anything destructive (`Restore.swapFile`); the copy lands under
+    a temporary name and is renamed into place so no reader ever sees a
+    half-written file, and stale `-wal`/`-shm` siblings go with the old
+    file. The old connection stays open until the rename has succeeded and
+    the new file has opened cleanly; a failure past the swap sets the gate
+    (so verbs are refused loudly instead of silently hitting an empty
+    database) and reopens the instance file. If the retry open fails too
+    (#77), the dead flag is set: the connection still serves the old
+    unlinked inode, so gate-exempt verbs refuse as well. Assumes this
+    process is the only writer. -/
 private def replaceFile (b : Base) (inst : Instance) (sess : Session) (src : System.FilePath) :
     IO (Except DbError Unit) := do
   match ← Restore.swapFile inst.path src with
@@ -299,7 +309,20 @@ private def replaceFile (b : Base) (inst : Instance) (sess : Session) (src : Sys
       return .ok ()
   | .error e =>
       sess.gate.set (some e)
-      if let .ok conn ← openDbRaw inst.path b.log then sess.conn.set conn
+      match ← openDbRaw inst.path b.log with
+      | .ok conn =>
+          -- #59: the retry opened cleanly, so the gate must be recomputed
+          -- from the connection actually installed; leaving the stale `e`
+          -- set would hold every gated verb back although the reopened
+          -- instance verifies fine
+          sess.conn.set conn
+          sess.gate.set (← gateOf b conn)
+      | .error retry =>
+          -- #77: both reopens failed. The session's connection still
+          -- serves the old, now-unlinked inode while the path holds the
+          -- new file: gate-exempt verbs refuse too (see `refuseDead`)
+          -- instead of backing up or migrating the discarded file.
+          sess.dead.set (some s!"post-restore reopen failed; the session's connection serves the replaced instance file: {e}; retry: {retry}")
       return .error e
 
 private def restoreJson (b : Base) (inst : Instance) (sess : Session) (src : System.FilePath) :
@@ -639,20 +662,27 @@ where
               ("changed", changedJson changed), ("impact", impact), ("unregistered_runs", anonymous),
               ("impact_log", window)]
 
-/-- The one place argv meets an open instance: every transport (one-shot
-    CLI, JSON-lines `serve`, and the servers built on it) sends argv here
-    and gets one JSON value back. `ok:false` responses carry a `code`
-    (`usage`, or a `DbError` code) from which exit codes derive. -/
-def _root_.LeanDb.Base.handle (b : Base) (inst : Instance) (sess : Session) : List String → IO Json
+/-- #77: gate-exempt verbs answer while the gate is set (a drifted
+    instance still serves `version` and `migrate`), but not while the
+    session is dead: after a failed post-restore reopen the connection
+    serves the old, now-unlinked inode, and `version`, `migrate`,
+    `backup` and `restore` refuse with the stored reason instead of
+    reading or writing the discarded file. -/
+private def refuseDead (sess : Session) (serve : IO Json) : IO Json := do
+  match ← sess.dead.get with
+  | some why => return (DbError.sqlite why).toJson
+  | none => serve
+
+private def handleOpen (b : Base) (inst : Instance) (sess : Session) : List String → IO Json
   | [] | ["help"] | ["--help"] => return usageJson b inst
   | ["schema"] =>
       match b.check with
       | .error e => return e.toJson
       | .ok () => return schemaJson b.name b.specs
-  | ["version"] => return versionJson b (some (← instanceInfoOn (← sess.conn.get)))
-  | "migrate" :: rest => migrateJson b inst sess rest
-  | ["backup"] => backupJson b inst sess
-  | ["restore", src] => restoreJson b inst sess src
+  | ["version"] => do refuseDead sess (pure (versionJson b (some (← instanceInfoOn (← sess.conn.get)))))
+  | "migrate" :: rest => refuseDead sess (migrateJson b inst sess rest)
+  | ["backup"] => refuseDead sess (backupJson b inst sess)
+  | ["restore", src] => refuseDead sess (restoreJson b inst sess src)
   | args => do
       match command b args with
       | .error m => return usageErr m
@@ -674,6 +704,20 @@ def _root_.LeanDb.Base.handle (b : Base) (inst : Instance) (sess : Session) : Li
               | .ok j => return j
               | .error e => return e.toJson
 
+/-- The one place argv meets an open instance: every transport (one-shot
+    CLI, JSON-lines `serve`, MCP, and HTTP) sends argv here and gets one
+    JSON value back. `ok:false` responses carry a `code` (`usage`, or a
+    `DbError` code) from which exit codes derive. Typed `DbError`s come
+    back as JSON below this boundary, so a raw exception escaping here is
+    an unexpected IO failure (#73): `migrate history`'s journal read,
+    `unixNow` before a backup, a journal event after a restore's swap.
+    The catch turns it into `ok:false` JSON so the transport loops lose
+    neither the process (serve/MCP) nor the response (HTTP). -/
+def _root_.LeanDb.Base.handle (b : Base) (inst : Instance) (sess : Session) :
+    List String → IO Json := fun args =>
+  try handleOpen b inst sess args
+  catch e => return (DbError.sqlite (toString e)).toJson
+
 /-- Exit code for a `handle` response: 0 ok, 3 usage, 4 schema mismatch,
     2 any other typed error. -/
 def exitCodeOf (j : Json) : UInt32 :=
@@ -693,6 +737,10 @@ inductive StdLine where
     eof
   | /-- A complete line (the newline dropped). -/
     line (s : String)
+  | /-- The line's bytes were not valid UTF-8 (#57): the transports answer
+      it with an error instead of skipping it, or the peer would hang
+      waiting for a response that never comes. -/
+    undecodable
   | /-- The line exceeded the budget: it was drained, not buffered. -/
     tooLong
 
@@ -700,18 +748,27 @@ private partial def readLineLoop (h : IO.FS.Stream) (cap : Nat) (chunkSize : USi
     (pending : IO.Ref ByteArray) (acc : ByteArray) (over : Bool) : IO StdLine := do
   let mut chunk ← pending.get
   pending.set ByteArray.empty
-  if chunk.isEmpty then chunk ← h.read chunkSize
+  -- WHY byte-wise: `Handle.read n` is stdio `fread` — on a pipe it blocks
+  -- until *n* bytes or EOF, so chunked reads wedge against piped peers
+  -- whose line is shorter than the chunk (#96). One byte per read returns
+  -- as soon as a byte is available; correctness-first for a line protocol
+  -- and the cap bounds the drain cost.
+  if chunk.isEmpty then chunk ← h.read 1
   if chunk.isEmpty then
     if over then return .tooLong
     if acc.isEmpty then return .eof
-    return .line (String.fromUTF8? acc |>.getD "")
+    match String.fromUTF8? acc with
+    | some s => return .line s
+    | none => return .undecodable
   match chunk.findIdx? (· == 10) with
   | some i =>
       -- the rest of the chunk is the next request's first bytes: never
       -- discard it (a peer may pipeline)
       pending.set (chunk.extract (i + 1) chunk.size)
       if over || acc.size + i > cap then return .tooLong
-      return .line (String.fromUTF8? (acc ++ chunk.extract 0 i) |>.getD "")
+      match String.fromUTF8? (acc ++ chunk.extract 0 i) with
+      | some s => return .line s
+      | none => return .undecodable
   | none =>
       -- no newline: keep going, but once the budget is gone, drain and
       -- discard — the bytes are never buffered past `cap`
@@ -719,10 +776,10 @@ private partial def readLineLoop (h : IO.FS.Stream) (cap : Nat) (chunkSize : USi
       else readLineLoop h cap chunkSize pending (acc ++ chunk) over
 
 /-- A line reader over a stdio peer, with a byte budget per request line —
-    the stdio analogue of the HTTP body cap (#21/#23). Chunked reads with
-    one chunk of pushback, so a pipelined peer's following lines survive;
-    a misbehaving peer that emits a newline-less megabyte stream gets
-    `tooLong` instead of an OOM. -/
+    the stdio analogue of the HTTP body cap (#21/#23). Byte-wise reads
+    (#96) with one chunk of pushback, so a pipelined peer's following
+    lines survive; a misbehaving peer that emits a newline-less megabyte
+    stream gets `tooLong` instead of an OOM. -/
 structure LineReader where
   stream : IO.FS.Stream
   cap : Nat := defaultMaxLineBytes
@@ -737,12 +794,14 @@ def LineReader.new (stream : IO.FS.Stream) (cap : Nat := defaultMaxLineBytes) :
 /-- The next request line. EOF right after bytes is that (unterminated)
     line, like `Handle.getLine` would return it. -/
 def LineReader.next (r : LineReader) : IO StdLine :=
-  readLineLoop r.stream r.cap 4096 r.pending ByteArray.empty false
+  readLineLoop r.stream r.cap 1 r.pending ByteArray.empty false
 
 /-- Served mode: JSON-lines over stdio against one persistent connection.
     Each request line is a JSON array of argv strings; each response is one
     JSON object line. EOF ends the session. A drifted instance is served
-    too: verbs answer `schema_mismatch` until `["migrate","apply"]`. -/
+    too: verbs answer `schema_mismatch` until `["migrate","apply"]`. Only
+    genuinely empty lines are skipped silently; an undecodable line is
+    answered with an error (#57). -/
 def serve (b : Base) (inst : Instance) : IO UInt32 := do
   match ← Session.open b inst with
   | .error e =>
@@ -757,6 +816,9 @@ def serve (b : Base) (inst : Instance) : IO UInt32 := do
         | .eof => break
         | .tooLong =>
             out.putStrLn (usageErr s!"request line exceeds {defaultMaxLineBytes} bytes").compress
+            out.flush
+        | .undecodable =>
+            out.putStrLn (usageErr "request line is not valid UTF-8").compress
             out.flush
         | .line rawLine =>
           let line := rawLine.trimAscii.toString

@@ -150,6 +150,9 @@ def serve (b : Base) (inst : Instance) : IO UInt32 := do
         | .tooLong =>
             out.putStrLn (rpcError Json.null (-32700) s!"request line exceeds {Cli.defaultMaxLineBytes} bytes").compress
             out.flush
+        | .undecodable =>
+            out.putStrLn (rpcError Json.null (-32700) "request line is not valid UTF-8").compress
+            out.flush
         | .line rawLine =>
           let line := rawLine.trimAscii.toString
           if line.isEmpty then continue
