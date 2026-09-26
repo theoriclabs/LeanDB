@@ -1061,6 +1061,22 @@ def Restore.copyChunked (src dest : System.FilePath) : IO Unit := do
     if bytes.isEmpty then break
     output.write bytes
 
+/-- #76: refuse the restore/rollback file swap while another process holds
+    the instance's write lock. `BEGIN IMMEDIATE` takes SQLite's RESERVED
+    lock and fails immediately (no busy timeout is set) when a concurrent
+    writer is active; the probe transaction is rolled back at once — it
+    asserts availability, it writes nothing. Not a lockfile: a writer that
+    opens between the probe and the rename still ends up on the unlinked
+    old inode — its post-swap commits vanish (documented on the verbs). -/
+def assertSoleWriter (conn : Conn) (verb : String) : IO (Except DbError Unit) := do
+  try
+    conn.raw.exec "BEGIN IMMEDIATE"
+  catch e =>
+    return .error (.busy s!"{verb}: another writer holds the instance write lock ({e}); \
+retry when the other writer is idle")
+  conn.raw.exec "ROLLBACK"
+  return .ok ()
+
 /-- Replace the instance file at `path` with `src`: validate first, copy
     under a temporary name, rename into place so no reader sees a
     half-written file, and take stale `-wal`/`-shm`/`-journal` siblings

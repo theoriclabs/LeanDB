@@ -3173,6 +3173,46 @@ structure V0Author where
   age : Int64
   deriving Repr, LeanDb.Entity
 
+
+/-- #76: `restore` refuses with a typed `busy` error while another
+    process holds the instance's write transaction, and the refusal
+    destroys nothing; once the writer is gone the same restore succeeds. -/
+private def testRestoreWriterGuard : IO Unit := do
+  if ← restoreDbPath.pathExists then IO.FS.removeFile restoreDbPath
+  discard <| expectOk (← withDb restoreDbPath [Entity.spec Probe] (pure ()))
+    "create the guard probe"
+  let b : Base := { name := "r", tables := [CliTable.of Probe] }
+  let inst := Instance.ofPath restoreDbPath
+  let sess ← expectOk (← Cli.Session.open b inst) "open the guard probe"
+  discard <| b.handle inst sess ["insert", "probe", "{\"label\":\"keep\"}"]
+  -- a valid source, so the refusal can only come from the writer guard
+  let bk ← b.handle inst sess ["backup"]
+  let bkPath := (bk.getObjValAs? String "backup").toOption.getD ""
+  -- a second connection takes the write transaction and holds it
+  let other ← SQLite.open restoreDbPath
+  other.exec "BEGIN IMMEDIATE"
+  other.exec "INSERT INTO probe (label) VALUES ('writer')"
+  let refused ← b.handle inst sess ["restore", bkPath]
+  check ((refused.getObjValAs? Bool "ok").toOption == some false)
+    s!"restore refused under a foreign writer: {refused}"
+  check ((refused.getObjValAs? String "code").toOption == some "busy")
+    s!"the refusal is a typed busy error: {refused}"
+  let msg := (refused.getObjValAs? String "message").toOption.getD ""
+  check ((msg.splitOn "writer").length > 1) s!"the refusal names the writer: {refused}"
+  -- the refused swap destroyed nothing: the writer's transaction is
+  -- still intact and commits, and the session then serves its row
+  other.exec "COMMIT"
+  let rows ← b.handle inst sess ["rows", "probe"]
+  check ((rows.getObjValAs? Nat "count").toOption == some 2)
+    s!"the foreign writer's row survived the refused swap: {rows}"
+  -- and once no writer is active, the same restore succeeds
+  let rs ← b.handle inst sess ["restore", bkPath]
+  check ((rs.getObjValAs? Bool "ok").toOption == some true)
+    s!"restore succeeds once the writer is gone: {rs}"
+  let restored ← b.handle inst sess ["rows", "probe"]
+  check ((restored.getObjValAs? Nat "count").toOption == some 1)
+    s!"the restored instance holds the backup's rows: {restored}"
+
 /-- V1: `age` becomes a closed `Cohort`, NOT NULL without a default — the
     diff refuses it; the transform decides. -/
 inductive Cohort where
@@ -3801,6 +3841,7 @@ def main : IO UInt32 := do
   testRestoreSafety
   testRestoreResilience
   testHandleBoundary
+  testRestoreWriterGuard
   testChain
   testFootprints
   testDerivedSpec

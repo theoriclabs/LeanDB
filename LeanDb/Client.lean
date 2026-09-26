@@ -80,6 +80,7 @@ def DbError.ofJson (j : Json) : DbError :=
   | some "transport" => .transport msg
   | some "invariant" => .invariant "remote" msg
   | some "not_append" => .notAppend "remote" msg
+  | some "busy" => .busy msg
   | _ => .sqlite msg
 
 /-- A connection to a served base. Transports implement one JSON argv request

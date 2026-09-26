@@ -103,7 +103,8 @@ private def usageJson (b : Base) (inst : Instance) : Json :=
       Json.str "log prune <keep>  (delete older audit entries; 0 clears the log)",
       Json.str "migrate status | apply [--allow-destructive] [--no-backup] | rollback | history [limit] | freeze [--module M]",
       Json.str "backup  (full copy under <instance dir>/backups)",
-      Json.str "restore <file>",
+      Json.str "restore <file>  (refused while another writer holds the instance write \
+lock; a writer that opens mid-swap still loses its post-swap writes)",
       Json.str "serve  (JSON-lines over stdio, persistent connection)",
       Json.str "serve --http <port> [--bind <host>] [--auth-token <t>]  (HTTP/1.1; every route is sugar over the CLI; $LEANDB_TOKEN also sets the token)",
       Json.str "serve --mcp  (Model Context Protocol over stdio; tools derived from tables and queries)",
@@ -296,10 +297,20 @@ memory. -/
     (so verbs are refused loudly instead of silently hitting an empty
     database) and reopens the instance file. If the retry open fails too
     (#77), the dead flag is set: the connection still serves the old
-    unlinked inode, so gate-exempt verbs refuse as well. Assumes this
-    process is the only writer. -/
-private def replaceFile (b : Base) (inst : Instance) (sess : Session) (src : System.FilePath) :
-    IO (Except DbError Unit) := do
+    unlinked inode, so gate-exempt verbs refuse as well.
+
+    Cross-process guard (#76): the swap refuses with a typed `busy` error
+    while another writer holds the instance's write lock (`BEGIN
+    IMMEDIATE` probe). Residual race: a writer that opens — or goes idle —
+    between the probe and the rename still ends up on the unlinked old
+    inode; its post-swap commits go to the deleted file and vanish, and
+    its reads keep serving the pre-restore snapshot. Closing that window
+    needs an advisory lock held for the whole session, not just the probe. -/
+private def replaceFile (b : Base) (inst : Instance) (sess : Session) (verb : String)
+    (src : System.FilePath) : IO (Except DbError Unit) := do
+  match ← assertSoleWriter (← sess.conn.get) verb with
+  | .error e => return .error e
+  | .ok () =>
   match ← Restore.swapFile inst.path src with
   | .error e => return .error e
   | .ok () =>
@@ -329,7 +340,7 @@ private def replaceFile (b : Base) (inst : Instance) (sess : Session) (src : Sys
 private def restoreJson (b : Base) (inst : Instance) (sess : Session) (src : System.FilePath) :
     IO Json := do
   let before ← (← sess.conn.get) |> instanceInfoOn
-  match ← replaceFile b inst sess src with
+  match ← replaceFile b inst sess "restore" src with
   | .error e => return e.toJson
   | .ok () =>
       let conn ← sess.conn.get
@@ -338,7 +349,10 @@ private def restoreJson (b : Base) (inst : Instance) (sess : Session) (src : Sys
       return Json.mkObj [("ok", Json.bool true), ("restored", Json.str src.toString),
         ("fingerprint", (fp.map Json.str).getD Json.null),
         ("schema_version", (ver.map fun v => Lean.toJson v).getD Json.null),
-        ("in_sync", Json.bool ((← sess.gate.get).isNone))]
+        ("in_sync", Json.bool ((← sess.gate.get).isNone)),
+        ("note", Json.str "the swap refuses while another writer holds the instance \
+write lock; a writer that opens between the lock check and the rename still points \
+at the replaced file — its post-swap writes are lost (#76)")]
 
 private def rollbackJson (b : Base) (inst : Instance) (sess : Session) : IO Json := do
   let conn ← sess.conn.get
@@ -346,7 +360,7 @@ private def rollbackJson (b : Base) (inst : Instance) (sess : Session) : IO Json
   | none => return (DbError.migrate "nothing to roll back: no applied migration has a backup").toJson
   | some (idx, fromVer, backup) =>
       let (_, before) ← instanceInfoOn conn
-      match ← replaceFile b inst sess backup with
+      match ← replaceFile b inst sess "rollback" backup with
       | .error e => return e.toJson
       | .ok () =>
           let conn ← sess.conn.get
@@ -359,7 +373,9 @@ private def rollbackJson (b : Base) (inst : Instance) (sess : Session) : IO Json
             ("schema_version", (ver.map fun v => Lean.toJson v).getD Json.null),
             ("expected_version", (fromVer.map fun v => Lean.toJson v).getD Json.null),
             ("in_sync", Json.bool ((← sess.gate.get).isNone)),
-            ("note", Json.str "writes made after the migration are not in the backup")]
+            ("note", Json.str "writes made after the migration are not in the backup; \
+the swap refuses while another writer holds the write lock, but a writer that opens \
+between the check and the rename still loses its post-swap writes (#76)")]
 
 private def historyJson (sess : Session) (limit : Nat) : IO Json := do
   let rows ← readJournal (← sess.conn.get) limit

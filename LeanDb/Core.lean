@@ -125,6 +125,9 @@ inductive DbError where
   /-- `append` was given a child list that does not continue the stored
       one (LDB-15). That is an `update`. -/
   | notAppend (table detail : String)
+  /-- A restore/rollback swap was refused because another process holds
+      the instance's write lock (#76). -/
+  | busy (message : String)
   deriving Repr
 
 def DbError.code : DbError → String
@@ -145,6 +148,7 @@ def DbError.code : DbError → String
   | .readOnly .. => "read_only"
   | .invariant .. => "invariant"
   | .notAppend .. => "not_append"
+  | .busy .. => "busy"
 
 def DbError.message : DbError → String
   | .decode table field msg => s!"{table}.{field}: {msg}"
@@ -165,6 +169,7 @@ it was not created by this base's history (restore a known version, or migrate b
   | .sqlite msg => msg
   | .transport msg => msg
   | .poisoned msg => s!"connection poisoned: {msg}"
+  | .busy msg => msg
   | .readOnly verb => s!"{verb}: connection is read-only"
   | .invariant table name => s!"{table}: row does not satisfy the invariant {name}"
   | .notAppend table detail => s!"{table}: not an append: {detail}"
