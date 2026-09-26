@@ -120,8 +120,26 @@ private def testIndexNamesInSchemaJson : IO Unit := do
         throw <| IO.userError s!"FAIL: reopening plans {plan.steps.map (·.describe)}"
   | .error e => throw <| IO.userError s!"FAIL: plan: {e}"
 
+/-- `Render.indexLit` of Muggle's index, pasted as `migrate freeze` writes
+    it: the literal must elaborate back to the declared index. -/
+private def muggleIndexFrozen : IndexSpec :=
+  { unique := false, columns := #["name"], name := some ("ix_muggle_by_name"), collate := some (LeanDb.Collate.nocase) }
+
+private def testFrozenCollation : IO Unit := do
+  let some ix := (Entity.spec Muggle).indexes[0]? |
+    throw <| IO.userError "FAIL: Muggle has no index"
+  let lit := Render.indexLit ix
+  unless lit == "{ unique := false, columns := #[\"name\"], name := some (\"ix_muggle_by_name\"), \
+collate := some (LeanDb.Collate.nocase) }" do
+    throw <| IO.userError s!"FAIL: frozen index literal: {lit}"
+  unless muggleIndexFrozen == ix do
+    throw <| IO.userError "FAIL: the frozen literal does not rebuild the index"
+  unless (Render.specsLit (Entity.specs Muggle)).contains "collate := some (LeanDb.Collate.nocase)" do
+    throw <| IO.userError "FAIL: the frozen snapshot dropped the collation"
+
 def run : IO Unit := do
   testTypedWindow
   testIndexNamesInSchemaJson
+  testFrozenCollation
 
 end TestsLdb14

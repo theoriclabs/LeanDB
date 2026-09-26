@@ -85,12 +85,19 @@ def columnLit (c : ColumnSpec) : String :=
     (if c.cascade then ["cascade := true"] else [])
   "{ " ++ String.intercalate ", " fields ++ " }"
 
-/-- An `IndexSpec` as a Lean structure-instance literal. -/
+def collateLit : Collate → String
+  | .binary => "LeanDb.Collate.binary"
+  | .nocase => "LeanDb.Collate.nocase"
+
+/-- An `IndexSpec` as a Lean structure-instance literal. The collation
+    (LDB-14) is fingerprint material, so a snapshot that dropped it would
+    phantom-diff against the declared index. -/
 def indexLit (ix : IndexSpec) : String :=
   let fields : List String :=
     [s!"unique := {ix.unique}", s!"columns := {strArr ix.columns}"] ++
     (if ix.partialWhere.isSome then [s!"partialWhere := {opt String.quote ix.partialWhere}"] else []) ++
-    (if ix.name.isSome then [s!"name := {opt String.quote ix.name}"] else [])
+    (if ix.name.isSome then [s!"name := {opt String.quote ix.name}"] else []) ++
+    (if ix.collate.isSome then [s!"collate := {opt collateLit ix.collate}"] else [])
   "{ " ++ String.intercalate ", " fields ++ " }"
 
 /-- A `TableSpec` as Lean source, one column per line. Named fields, so a
