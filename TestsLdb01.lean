@@ -602,5 +602,6 @@ def run : IO Unit := do
   testPatchInsertManyScan
   testOpenConfigAndLogPolicy
   testPostHocDeriving
+  testReadOnlyGuard
 
 end TestsLdb01
