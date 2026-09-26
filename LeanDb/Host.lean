@@ -18,7 +18,10 @@ open Lean (Json)
 structure Child where
   name : String
   client : Client
-  lock : Std.Mutex Unit
+  /-- The pipe carries one request at a time: the same dispatch gate as
+      `serve --http` (#79), so waiting on a child's `backup` does not pin
+      a host worker thread. -/
+  gate : Http.Gate
   fingerprint : String
 
 /-- Split on raw commas; `\,` is a literal comma and the backslash is
@@ -72,12 +75,12 @@ def spawn (spec : String) (deadlineMs : Nat := handshakeDeadlineMs) : IO (Except
         | some (.error e) => client.close; return .error s!"{name}: could not query {exe}: {e}"
         | some (.ok v) =>
             let fp := (v.getObjValAs? String "code_fingerprint").toOption.getD ""
-            return .ok { name, client := { client with fingerprint := fp }, lock := ← Std.Mutex.new (), fingerprint := fp }
+            return .ok { name, client := { client with fingerprint := fp }, gate := ← Http.Gate.new, fingerprint := fp }
       catch e =>
         return .error s!"{name}: could not start {exe}: {e}"
 
-def Child.call (c : Child) (argv : List String) : IO Json :=
-  c.lock.atomically fun _ => do
+def Child.call (c : Child) : List String → Std.Async.ContextAsync Json :=
+  c.gate.dispatch fun argv => do
     match ← c.client.rpc argv with
     | .ok json => return json
     | .error e => return e.toJson
