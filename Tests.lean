@@ -4044,7 +4044,8 @@ private def testHttpBodyLimits : IO Unit := do
 
 
 /-! ## HTTP dispatch gate (#79): long verbs hold the engine, fast verbs
-    answer 503 instead of pinning a worker -/
+    answer 503 behind them instead of pinning a worker, and queue behind
+    ordinary verbs however long they take -/
 
 private partial def holdUntil (release : IO.Ref Bool) : Std.Async.ContextAsync Unit := do
   unless ← release.get do
@@ -4062,17 +4063,30 @@ private partial def awaitLog (events : IO.Ref (Array String)) (needle : String)
   Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 2)
   awaitLog events needle (tries - 1)
 
+/-- Poll until `n` requests wait in the gate's line (bounded, like
+    `awaitLog`), so a test knows a request is queued before it acts. -/
+private partial def awaitWaiting (gate : Http.Gate) (n : Nat) (tries : Nat := 2500) :
+    Std.Async.ContextAsync Unit := do
+  if (← gate.waiting) == n then
+    return ()
+  if tries == 0 then
+    throw (IO.userError s!"gate test never saw {n} waiting; saw {← gate.waiting}")
+  Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 2)
+  awaitWaiting gate n (tries - 1)
+
 /-- Event position, `size` when absent (so order checks fail loudly). -/
 private def posOf (ev : Array String) (needle : String) : Nat :=
   ev.idxOf? needle |>.getD ev.size
 
 open Std.Async in
 private def testHttpGate : IO Unit := do
-  -- One fake dispatcher behind the real gate: `backup` holds the engine
-  -- until the test releases it, so ordering never depends on wall clocks.
+  -- One fake dispatcher behind the real gate: `backup` (long) and
+  -- `rows slow` (ordinary) hold the engine until the test releases them,
+  -- so ordering never depends on wall clocks.
   let events ← IO.mkRef (#[] : Array String)
   let log : String → IO Unit := fun s => events.modify (·.push s)
   let release ← IO.mkRef false
+  let releaseSlow ← IO.mkRef false
   let gate ← Http.Gate.new (fastTimeoutMs := 30)
   let dispatch : List String → ContextAsync Lean.Json :=
     gate.dispatch <| fun argv => do
@@ -4083,6 +4097,12 @@ private def testHttpGate : IO Unit := do
       else if argv == ["restore", "f"] then
         log "restore start"
         log "restore end"
+      else if argv == ["rows", "slow"] then
+        log "slow start"
+        holdUntil releaseSlow
+        log "slow end"
+      else if let ["rows", t] := argv then
+        log s!"rows {t} ran"
       return Lean.Json.mkObj [("ok", .bool true)]
   let resolve : Http.Resolver := fun segs => return .ok (segs, "test", dispatch)
   let handler := Http.handleRequestWithLimit 64 .open resolve
@@ -4095,6 +4115,11 @@ private def testHttpGate : IO Unit := do
     let res ← client.recv?
     log name
     return res.getD .empty
+  -- a request in the background that logs `<name>: 200` once served
+  let spawn (name raw : String) : ContextAsync Unit :=
+    ContextAsync.background do
+      let text := String.fromUTF8! (← run s!"{name} got" raw)
+      log (if text.startsWith "HTTP/1.1 200" then s!"{name}: 200" else s!"{name}: {text}")
   let backupRaw :=
     "POST /backup HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
   let restoreRaw :=
@@ -4102,6 +4127,8 @@ private def testHttpGate : IO Unit := do
     "Content-Length: 12\r\nConnection: close\r\n\r\n{\"file\":\"f\"}"
   let healthzRaw := "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
   let fastRaw := "GET /tables/t HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+  let getRaw (path : String) :=
+    s!"GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
   let orchestrate : ContextAsync Unit := do
     -- 1. the long verb takes the engine and holds it past any deadline
     ContextAsync.background (run "backup got" backupRaw)
@@ -4115,9 +4142,11 @@ private def testHttpGate : IO Unit := do
     let fastText := String.fromUTF8! fast
     check (fastText.startsWith "HTTP/1.1 503") s!"a fast verb under load gets 503: {fastText}"
     check (fastText.toLower.contains "retry-after") s!"the 503 carries Retry-After: {fastText}"
+    check (fastText.contains "long operation (backup)")
+      s!"the 503 names the long verb it waited behind: {fastText}"
     -- 4. a second long verb queues behind the first and never interleaves
     ContextAsync.background (run "restore got" restoreRaw)
-    Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 20)
+    awaitWaiting gate 1
     check (!((← events.get).contains "restore start"))
       "a queued long verb does not start while the engine is held"
     release.set true
@@ -4135,6 +4164,26 @@ private def testHttpGate : IO Unit := do
     awaitLog events "restore got"
     let ev ← events.get
     check (posOf ev "backup start" < posOf ev "backup got") s!"the long verb completed: {ev}"
+    -- 6. behind a slow *ordinary* verb nothing times out: fast verbs wait
+    --    well past `fastTimeoutMs`, then are served in arrival order
+    ContextAsync.background (run "slow got" (getRaw "/tables/slow"))
+    awaitLog events "slow start"
+    spawn "a" (getRaw "/tables/a")
+    awaitWaiting gate 1
+    spawn "b" (getRaw "/tables/b")
+    awaitWaiting gate 2
+    -- several timeouts' worth: a gate that bounded every wait gives up here
+    Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 100)
+    let ev ← events.get
+    check (!ev.contains "a got" && !ev.contains "b got" && (← gate.waiting) == 2)
+      s!"fast verbs keep waiting behind a slow ordinary verb: {ev}"
+    releaseSlow.set true
+    awaitLog events "a: 200"
+    awaitLog events "b: 200"
+    awaitLog events "slow got"
+    let ev ← events.get
+    check (posOf ev "slow end" < posOf ev "rows a ran" && posOf ev "rows a ran" < posOf ev "rows b ran")
+      s!"waiters are served after the holder, oldest first: {ev}"
   Async.block orchestrate.run
 
 private def testCliLimits : IO Unit := do

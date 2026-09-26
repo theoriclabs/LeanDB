@@ -126,7 +126,8 @@ inductive DbError where
       one (LDB-15). That is an `update`. -/
   | notAppend (table detail : String)
   /-- A restore/rollback swap was refused because another process holds
-      the instance's write lock (#76). -/
+      the instance's write lock (#76), or an HTTP request waited too long
+      behind a long verb at the dispatch gate (#79). Retry later. -/
   | busy (message : String)
   deriving Repr
 

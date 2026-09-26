@@ -183,13 +183,18 @@ a non-loopback address without `--auth-token` / `$LEANDB_TOKEN` is refused
 at startup. On a loopback bind, `Host`/`Origin` must also be loopback, and
 JSON-body routes require `Content-Type: application/json`.
 
-Dispatch is serialized by a bounded gate instead of a raw lock: the long
-file-level verbs — `backup`, `restore`, and the destructive `migrate
-apply` / `migrate rollback` (also through `/rpc`) — hold the engine for
-their whole run, while every other verb waits up to 5 seconds for it and
-then answers HTTP `503` with `Retry-After: 1` instead of queueing
-indefinitely. `/healthz` never waits on the gate, so orchestrator probes
-stay fast while a multi-second backup runs.
+Dispatch is serialized by a gate instead of a raw lock: requests take the
+engine one at a time in arrival order, and a waiting request does not tie
+up a server thread. The long file-level verbs — `backup`, `restore`, and
+the destructive `migrate apply` / `migrate rollback` (also through `/rpc`)
+— hold the engine for their whole run. Any other verb that has waited 5
+seconds behind them answers HTTP `503` with `Retry-After: 1` instead of
+queueing indefinitely; behind an ordinary verb, however slow (a large
+query, `seed`, `migrate status`), it keeps waiting and is served.
+`/healthz` never waits on the gate, so orchestrator probes stay fast while
+a multi-second backup runs. A `restore` or `migrate rollback` refused
+because another process is writing to the database file answers the same
+`503` with `Retry-After`: its error code is also `busy`.
 
 ### Audit log storage and migration impact
 
