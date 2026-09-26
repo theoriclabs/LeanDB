@@ -1114,13 +1114,16 @@ def unixNow (conn : Conn) : IO Nat := do
 
 /-- A full, consistent copy of the instance at `dest` (`VACUUM INTO`),
     after a WAL checkpoint so nothing is left in a `-wal` file. `dest`
-    must not exist. -/
-def backupTo (conn : Conn) (dest : System.FilePath) : IO Unit := do
+    must not exist. `checkpoint := false` is for a read-only connection
+    (LDB-13): it cannot checkpoint the WAL, and `VACUUM INTO` itself
+    reads through it, so the copy is complete without one. -/
+def backupTo (conn : Conn) (dest : System.FilePath) (checkpoint : Bool := true) :
+    IO Unit := do
   if let some parent := dest.parent then
     IO.FS.createDirAll parent
   if ← dest.pathExists then
     throw <| IO.userError s!"backup target already exists: {dest}"
-  conn.raw.exec "PRAGMA wal_checkpoint(TRUNCATE)"
+  if checkpoint then conn.raw.exec "PRAGMA wal_checkpoint(TRUNCATE)"
   let quoted := "'" ++ (dest.toString.replace "'" "''") ++ "'"
   conn.raw.exec s!"VACUUM INTO {quoted}"
 

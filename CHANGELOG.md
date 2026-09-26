@@ -181,6 +181,16 @@ Also in this release:
 
 ## Unreleased
 
+- **LDB-13.** `Runtime.snapshot` runs its `VACUUM INTO` on a pooled
+  reader connection when `Config.readers > 0` — a consistent read
+  snapshot in WAL mode, so the writer keeps serving during the backup —
+  and falls back to the writer connection, logging it, otherwise;
+  `snapshotOn` names the lane (`.reader` / `.writer`). The backup is
+  written to `dest.tmp` and renamed on success, so a failed snapshot
+  leaves no torn output; `restore` waits for a running snapshot, which
+  stands down with a typed error and removes its partial output;
+  `status` reports the running and last snapshot's lane, duration and
+  size.
 
 ## 0.3.1 - 2026-09-14
 
