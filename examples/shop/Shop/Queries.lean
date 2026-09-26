@@ -11,8 +11,9 @@ namespace Shop
 open LeanDb
 
 /-- Purchases the shop still owes work on (placed/paid/shipped), oldest
-    first. `OrderStatus.isActive` is a `match`, so it stays a residual
-    conjunct today — same rows, just no SQL narrowing. -/
+    first. `OrderStatus.isActive` is a `match` on a closed enum, so the
+    planner narrows it into SQL as case splits on the stored variant —
+    the lambda still runs on decoded rows. -/
 def activeOrders : DbM (Array (Stored Purchase)) :=
   select [Purchase] (fun o => o.val.status.isActive) (.key (·.val.placedAt))
 

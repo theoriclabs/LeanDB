@@ -219,6 +219,7 @@ including after restore. Counts must be nonnegative integers below
 | [tickets](examples/tickets/README.md) | An issue tracker with typed references and joins. Start here. |
 | [crm](examples/crm/README.md) | Queries across companies, contacts, and asks. |
 | [shop](examples/shop/README.md) | Basket joins and inventory filtering. |
+| [gpumarket](examples/gpumarket/README.md) | Hardware facts and model-serving estimates at scale. |
 | [eats](examples/eats/README.md) | Menus, opening hours, and configurable offers. |
 | [legacy](examples/legacy/README.md) | Importing SQLite data and writing typed migrations. |
 | [dashboard](examples/dashboard/Main.lean) | Calling typed queries locally, over stdio, and over HTTP. |
