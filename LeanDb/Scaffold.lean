@@ -31,32 +31,74 @@ private def capitalize (s : String) : String :=
 def moduleOf (name : String) : String :=
   (name.splitOn "_").foldl (fun acc seg => acc ++ capitalize seg) ""
 
+/-- The importer refuses struct names that collide with core/engine names
+    (`Import.structNameFor`'s private `blockedNames`, LeanDb/Import.lean);
+    the scaffold's module name claims the same names, so the list is
+    replicated here — keep the two in sync. `Main` is the load-bearing
+    case (issue #69): `leandb new main` mangles to module `Main`, which
+    collapses `{module}.lean` (the lib root) and `Main.lean` (the CLI
+    entrypoint) onto one path, destroying the aggregate and emitting a
+    self-importing package. Refusing is the minimal fix. -/
+private def reservedModules : List String :=
+  ["Option", "Id", "Ref", "Stored", "Entity", "ColCodec", "Col", "SqlType",
+   "TableSpec", "ColumnSpec", "DbError", "Int", "Int64", "Int32", "Nat",
+   "String", "Float", "Bool", "Array", "List", "Except", "Sum", "Prod",
+   "Unit", "Char", "Type", "Prop", "IO", "Json", "Main", "Repr", "Ord",
+   "BEq", "Hashable", "DecidableEq", "SQLite", "LeanDb", "Lean"]
+
+/-- A base name is usable when it is lowercase snake_case AND does not
+    mangle to a reserved module name (see `reservedModules`). -/
 def validName (s : String) : Bool :=
-  !s.isEmpty && s.all (fun c => c.isLower || c.isDigit || c == '_') && (s.get 0).isLower
+  !s.isEmpty && s.all (fun c => c.isLower || c.isDigit || c == '_') && (s.get 0).isLower &&
+    !reservedModules.contains (moduleOf s)
+
+/-- Escape one character for a TOML basic string: TOML allows only
+    `\b \t \n \f \r \" \\` and the `\uXXXX` form — Lean's `String.quote`
+    emits `\xNN` for control characters, which every conforming TOML
+    parser rejects (issue #70). Keep in sync with `tomlEscapeChar` in
+    LeanDb/Import.lean. -/
+private def tomlEscapeChar (c : Char) : String :=
+  match c.toNat with
+  | 0x5c => "\\\\"
+  | 0x22 => "\\\""
+  | 0x08 => "\\b"
+  | 0x09 => "\\t"
+  | 0x0a => "\\n"
+  | 0x0c => "\\f"
+  | 0x0d => "\\r"
+  | n => if n < 0x20 || n == 0x7f then
+      let hex := Nat.toDigits 16 n
+      "\\u" ++ String.mk ((List.replicate (4 - hex.length) '0') ++ hex)
+    else String.singleton c
+
+/-- A string as a TOML basic-string literal, valid by construction
+    (issue #70). Keep in sync with `tomlString` in LeanDb/Import.lean. -/
+def tomlString (s : String) : String :=
+  "\"" ++ s.foldl (fun acc c => acc ++ tomlEscapeChar c) "" ++ "\""
 
 private def lakefile (t : Target) : String :=
   let req := match t.source with
-    | .path p => s!"path = {String.quote p}"
-    | .git url rev => s!"git = {String.quote url}\nrev = {String.quote rev}"
+    | .path p => s!"path = {tomlString p}"
+    | .git url rev => s!"git = {tomlString url}\nrev = {tomlString rev}"
   String.intercalate "\n" [
-    s!"name = {String.quote t.name}",
+    s!"name = {tomlString t.name}",
     "version = \"0.1.0\"",
-    s!"defaultTargets = [{String.quote t.name}, {String.quote (t.name ++ "_tests")}]",
+    s!"defaultTargets = [{tomlString t.name}, {tomlString (t.name ++ "_tests")}]",
     "",
     "[[require]]",
     "name = \"leandb\"",
     req,
     "",
     "[[lean_lib]]",
-    s!"name = {String.quote t.module}",
+    s!"name = {tomlString t.module}",
     "",
     "[[lean_exe]]",
-    s!"name = {String.quote t.name}",
+    s!"name = {tomlString t.name}",
     "root = \"Main\"",
     "",
     "[[lean_exe]]",
-    s!"name = {String.quote (t.name ++ "_tests")}",
-    s!"root = {String.quote (t.module ++ "Tests")}",
+    s!"name = {tomlString (t.name ++ "_tests")}",
+    s!"root = {tomlString (t.module ++ "Tests")}",
     ""]
 
 private def rootFile (t : Target) : String :=

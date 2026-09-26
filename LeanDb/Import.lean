@@ -678,21 +678,45 @@ private def mainFile (p : Plan) : String :=
     s!"  LeanDb.Cli.run {p.moduleName}.base args",
     ""]
 
+/-- Escape one character for a TOML basic string: TOML allows only
+    `\b \t \n \f \r \" \\` and the `\uXXXX` form — Lean's `String.quote`
+    emits `\xNN` for control characters, which every conforming TOML
+    parser rejects (issue #70). Keep in sync with `tomlEscapeChar` in
+    LeanDb/Scaffold.lean. -/
+private def tomlEscapeChar (c : Char) : String :=
+  match c.toNat with
+  | 0x5c => "\\\\"
+  | 0x22 => "\\\""
+  | 0x08 => "\\b"
+  | 0x09 => "\\t"
+  | 0x0a => "\\n"
+  | 0x0c => "\\f"
+  | 0x0d => "\\r"
+  | n => if n < 0x20 || n == 0x7f then
+      let hex := Nat.toDigits 16 n
+      "\\u" ++ String.mk ((List.replicate (4 - hex.length) '0') ++ hex)
+    else String.singleton c
+
+/-- A string as a TOML basic-string literal, valid by construction
+    (issue #70). Keep in sync with `tomlString` in LeanDb/Scaffold.lean. -/
+def tomlString (s : String) : String :=
+  "\"" ++ s.foldl (fun acc c => acc ++ tomlEscapeChar c) "" ++ "\""
+
 private def lakefileFile (p : Plan) (requirePath : String) : String :=
   String.intercalate "\n" [
-    s!"name = {String.quote p.baseName}",
+    s!"name = {tomlString p.baseName}",
     "version = \"0.1.0\"",
-    s!"defaultTargets = [{String.quote p.baseName}]",
+    s!"defaultTargets = [{tomlString p.baseName}]",
     "",
     "[[require]]",
     "name = \"leandb\"",
-    s!"path = {String.quote requirePath}",
+    s!"path = {tomlString requirePath}",
     "",
     "[[lean_lib]]",
-    s!"name = {String.quote p.moduleName}",
+    s!"name = {tomlString p.moduleName}",
     "",
     "[[lean_exe]]",
-    s!"name = {String.quote p.baseName}",
+    s!"name = {tomlString p.baseName}",
     "root = \"Main\"",
     ""]
 
