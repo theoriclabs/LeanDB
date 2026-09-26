@@ -93,6 +93,63 @@ abbrev ClientM := ReaderT Client (ExceptT DbError IO)
 
 def ClientM.run (c : Client) (act : ClientM α) : IO (Except DbError α) := (act c).run
 
+/-- Map one line read from the served base to a response. The protocol
+    has no request ids (issue #62): one stray child-stdout line shifts
+    every later response onto the wrong request, so anything that is not
+    a JSON object line — an invalid-UTF-8 line, a line past the read
+    cap, or a line that parses to something else — is desync, a broken
+    transport, never a silent mis-association. -/
+def Client.processLine (raw : Cli.StdLine) : Except String Json :=
+  match raw with
+  | .eof => .error "the served base closed the connection"
+  | .undecodable =>
+      .error "the served base sent a line that is not valid UTF-8; the protocol is desynced"
+  | .tooLong =>
+      .error s!"the served base sent a line over the {Cli.defaultMaxLineBytes}-byte cap; the protocol is desynced"
+  | .line out =>
+      match Json.parse out.trimAscii.toString with
+      | .ok j@(.obj _) => .ok j
+      | .ok j => .error s!"the served base sent a non-object line (protocol desync): {j.compress}"
+      | .error m => .error s!"unparseable response from the served base: {m}"
+
+/-- One line from a handle, with a byte cap. `IO.FS.Handle.read n` is
+    `fread`: it blocks until `n` bytes or EOF, so a chunked reader
+    (`Cli.LineReader`) wedges on a live pipe that has emitted less than a
+    chunk — a child answering a 34-byte JSON line and waiting would wedge
+    the host forever. Single-byte reads — what `getLine` does under the
+    hood — never wedge, and the cap bounds the buffer `getLine` would
+    grow without limit (issue #62: a newline-less child banner OOM'd the
+    host). An unterminated tail or line whose bytes are not valid UTF-8
+    surfaces as `undecodable` (#57), not a silently emptied string. Past
+    the cap it returns `tooLong` without draining; the caller kills the
+    child, so no resync is needed. -/
+private partial def nextLineLoop (h : IO.FS.Handle) (cap : Nat) (acc : ByteArray) :
+    IO Cli.StdLine := do
+  if acc.size > cap then return .tooLong
+  let chunk ← h.read 1
+  if chunk.size == 0 then
+    if acc.isEmpty then return .eof
+    match String.fromUTF8? acc with
+    | some s => return .line s
+    | none => return .undecodable
+  match chunk[0]! with
+  | 10 =>
+      match String.fromUTF8? acc with
+      | some s => return .line s
+      | none => return .undecodable
+  | b => nextLineLoop h cap (acc.push b)
+
+/-- One capped protocol line from a child's stdout. -/
+def Client.nextLine (h : IO.FS.Handle) (cap : Nat := Cli.defaultMaxLineBytes) :
+    IO Cli.StdLine :=
+  nextLineLoop h cap ByteArray.empty
+
+-- No handshake deadline yet (issue #62, facet 2, open): the read below
+-- blocks until the child writes or closes.
+/-- One rpc over a spawned base's pipes: the request is one JSON argv
+    line, the response one capped line (an uncapped `getLine` OOM'd the
+    host on a newline-less child banner, issue #62). A refused line kills
+    the child: with no ids, a desynced stream cannot be trusted again. -/
 private def processRpc
     (child : IO.Process.Child { stdin := .piped, stdout := .piped, stderr := .inherit })
     (argv : List String) : IO (Except DbError Json) := do
@@ -100,12 +157,13 @@ private def processRpc
     let line := (Json.arr (argv.map Json.str).toArray).compress
     child.stdin.putStrLn line
     child.stdin.flush
-    let out ← child.stdout.getLine
-    if out.isEmpty then
-      return .error (.transport "the served base closed the connection")
-    match Json.parse out.trimAscii.toString with
+    let raw ← Client.nextLine child.stdout
+    match Client.processLine raw with
     | .ok j => return .ok j
-    | .error m => return .error (.transport s!"unparseable response from the served base: {m}")
+    | .error m =>
+        unless raw matches .eof do
+          try child.kill catch _ => pure ()
+        return .error (.transport m)
   catch e =>
     return .error (.transport (toString e))
 
