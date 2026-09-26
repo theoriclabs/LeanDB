@@ -89,6 +89,27 @@ private def testTypedWindow : IO Unit := do
       ["ha1"] "withWindow"
   discard <| expectOk r "typed prefix window"
 
+/-- `patch`'s guard and `scan`'s pages are SQL with no Lean re-check at
+    all, so a case-folding prefix would write, or hand back, `Hagrid`. -/
+private def testGuardAndScan : IO Unit := do
+  fresh dbPath
+  let r ← withDb dbPath specs do
+    let hagrid ← insert Wizard ⟨"Hagrid"⟩
+    for n in ["ha1", "habitat", "Harry"] do
+      discard <| insert Wizard ⟨n⟩
+    let ha : Pred [Wizard] := .prefix (.here Wizard.Field.name) "ha"
+    let res ← patch hagrid.id ⟨#[Assignment.of Wizard.Field.name "Rubeus"]⟩ (guard := ha)
+    check' (res == .guardFailed) s!"patch guarded by a prefix: {repr res}"
+    let some now ← get hagrid.id | throw (.sqlite "FAIL: Hagrid vanished")
+    check' (now.val.name == "Hagrid") s!"the guard wrote {now.val.name}"
+    let seen ← IO.mkRef (#[] : Array String)
+    scan ha (chunk := 1) fun rows => do
+      discard <| (seen.modify (· ++ rows.map (·.val.name)) : IO Unit)
+      return true
+    let seen ← seen.get
+    check' (seen == #["ha1", "habitat"]) s!"scan with a prefix: {seen}"
+  discard <| expectOk r "prefix guard and scan"
+
 /-- `schema_json` keeps every index's name next to its collation: an
     index stored without its name differs from the declared one, so every
     open would plan to drop and re-add it. -/
@@ -212,6 +233,7 @@ private def testCollationChangeRebuildsIndex : IO Unit := do
 
 def run : IO Unit := do
   testTypedWindow
+  testGuardAndScan
   testIndexNamesInSchemaJson
   testFrozenCollation
   testPlansAreTheLambda
