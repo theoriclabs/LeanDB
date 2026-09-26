@@ -143,7 +143,7 @@ def IndexSpec.toJson (ix : IndexSpec) : Json :=
     [("unique", Json.bool ix.unique),
      ("columns", Json.arr (ix.columns.map Json.str))]
     ++ (ix.partialWhere.map fun w => ("where", Json.str w)).toList
-    ++ (ix.name.map fun n => ("name", Json.str n)).toList
+    ++ (ix.collate.map fun k => ("collate", Json.str k.toSql)).toList
 
 def IndexSpec.fromJson? (j : Json) : Except String IndexSpec := do
   let unique ← match j.getObjVal? "unique" with
@@ -156,7 +156,15 @@ def IndexSpec.fromJson? (j : Json) : Except String IndexSpec := do
   let name ← match j.getObjVal? "name" with
     | .ok v => some <$> v.getStr?
     | .error _ => pure none
-  return { unique, columns := cols, partialWhere, name }
+  let collate ← match j.getObjVal? "collate" with
+    | .ok v => do
+        let s ← v.getStr?
+        match s with
+        | "BINARY" => pure (some .binary)
+        | "NOCASE" => pure (some .nocase)
+        | _ => .error s!"unknown index collation {String.quote s}"
+    | .error _ => pure none
+  return { unique, columns := cols, partialWhere, name, collate }
 
 def TableSpec.toJson (t : TableSpec) : Json :=
   Json.mkObj <|

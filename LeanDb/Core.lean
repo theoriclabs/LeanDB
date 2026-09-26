@@ -812,12 +812,29 @@ def columnSpec (name : String) (α : Type) (dflt : Option Col := none)
   cascade := cascade
   boolCodec := ColCodec.boolCodec α
 
-/-- A declared index or composite UNIQUE (LDB-03). -/
+/-- Text collation of an index (LDB-14). SQLite matches `LIKE 'x%'`
+    against an index only when the column's collation agrees with `LIKE`'s
+    ASCII case folding: with the default `case_sensitive_like = OFF`, that
+    is a `COLLATE NOCASE` index. `none` is SQLite's default (BINARY). -/
+inductive Collate where
+  | binary | nocase
+  deriving Repr, DecidableEq
+
+def Collate.toSql : Collate → String
+  | .binary => "BINARY"
+  | .nocase => "NOCASE"
+
 structure IndexSpec where
   unique : Bool := false
   columns : Array String
   partialWhere : Option String := none
   name : Option String := none
+  /-- Text collation applied to every column of the index (LDB-14):
+      `some .nocase` declares the index `COLLATE NOCASE`, which is what
+      lets SQLite use it for a pushed `prefix` (`LIKE 'x%'`). `none`
+      (BINARY) is today's shape and is what the importer emits. DDL and
+      fingerprint material: changing it rebuilds the index. -/
+  collate : Option Collate := none
   deriving Repr, BEq
 
 def IndexSpec.resolvedName (table : String) (ix : IndexSpec) : String :=

@@ -165,6 +165,9 @@ def Pred.extendUnder3 {ε δ γ α β : Type} : Pred (ε :: δ :: γ :: [α]) �
   | .isNull c => .isNull (Col.extendUnder3 c)
   | .isNotNull c => .isNotNull (Col.extendUnder3 c)
   | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extendUnder3 c) a set
+  | .prefix c p => .prefix (Col.extendUnder3 c) p
+  | .contains c p => .contains (Col.extendUnder3 c) p
+  | .icontains c p => .icontains (Col.extendUnder3 c) p
   | .and a b => .and (Pred.extendUnder3 a) (Pred.extendUnder3 b)
   | .or a b => .or (Pred.extendUnder3 a) (Pred.extendUnder3 b)
   | .opaque f => .opaque fun r => f (r.1, (r.2.1, (r.2.2.1, r.2.2.2.1)))
@@ -184,6 +187,9 @@ def Pred.extendUnder2 {δ γ α β : Type} : Pred (δ :: γ :: [α]) → Pred (�
   | .isNull c => .isNull (Col.extendUnder2 c)
   | .isNotNull c => .isNotNull (Col.extendUnder2 c)
   | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extendUnder2 c) a set
+  | .prefix c p => .prefix (Col.extendUnder2 c) p
+  | .contains c p => .contains (Col.extendUnder2 c) p
+  | .icontains c p => .icontains (Col.extendUnder2 c) p
   | .and a b => .and (Pred.extendUnder2 a) (Pred.extendUnder2 b)
   | .or a b => .or (Pred.extendUnder2 a) (Pred.extendUnder2 b)
   | .opaque f => .opaque fun r => f (r.1, (r.2.1, r.2.2.1))
@@ -203,6 +209,9 @@ def Pred.extendUnder {γ α β : Type} : Pred (γ :: [α]) → Pred (γ :: [α, 
   | .isNull c => .isNull (Col.extendUnder c)
   | .isNotNull c => .isNotNull (Col.extendUnder c)
   | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extendUnder c) a set
+  | .prefix c p => .prefix (Col.extendUnder c) p
+  | .contains c p => .contains (Col.extendUnder c) p
+  | .icontains c p => .icontains (Col.extendUnder c) p
   | .and a b => .and (Pred.extendUnder a) (Pred.extendUnder b)
   | .or a b => .or (Pred.extendUnder a) (Pred.extendUnder b)
   | .opaque f => .opaque fun r => f (r.1, r.2.1)
@@ -222,6 +231,9 @@ def Pred.extend {α β : Type} : Pred [α] → Pred [α, β]
   | .isNull c => .isNull (Col.extend c)
   | .isNotNull c => .isNotNull (Col.extend c)
   | .bit (ce := ce) c a set => .bit (ce := ce) (Col.extend c) a set
+  | .prefix c p => .prefix (Col.extend c) p
+  | .contains c p => .contains (Col.extend c) p
+  | .icontains c p => .icontains (Col.extend c) p
   | .and a b => .and (Pred.extend a) (Pred.extend b)
   | .or a b => .or (Pred.extend a) (Pred.extend b)
   | .opaque f => .opaque fun r => f r.1

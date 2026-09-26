@@ -37,7 +37,8 @@ lists also need a defined storage model.
 Add SQL projections for individual fields. `select` currently fetches
 complete entity rows; applications can map the results in Lean.
 Extend pushdown to column arithmetic and aggregates.
-Arithmetic and aggregate calculations currently run in Lean.
+The string predicates `prefix`/`contains`/`icontains` push today
+(LDB-14). Arithmetic and aggregate calculations currently run in Lean.
 
 ### Stronger preservation proofs
 
