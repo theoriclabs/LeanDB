@@ -458,16 +458,13 @@ def serveWith (host : String) (port : UInt16) (auth : Auth) (fingerprint : Strin
 /-- Serve many bases under `/bases/<name>/…`; `GET /bases` lists them.
     `bases name` gives a base's fingerprint and dispatcher. -/
 def serveHosted (host : String) (port : UInt16) (auth : Auth) (list : Json)
-    (bases : String → Option (String × (List String → IO Json))) (banner : Json) : IO UInt32 :=
+    (bases : String → Option (String × (List String → ContextAsync Json))) (banner : Json) : IO UInt32 :=
   serveResolver host port auth (fun segs => do
     match segs with
     | [] | ["bases"] => return .ok ([], "", fun _ => pure list)
     | "bases" :: name :: rest =>
         match bases name with
-        | some (fp, dispatch) =>
-            -- the child pipe lock stays in Host.lean; lift its IO
-            -- dispatcher into the request context untouched
-            return .ok (rest, fp, fun argv => (dispatch argv : ContextAsync Json))
+        | some (fp, dispatch) => return .ok (rest, fp, dispatch)
         | none => return .error (404, s!"no base {name}")
     | _ => return .error (404, "routes live under /bases/<name>/…")) banner
 
