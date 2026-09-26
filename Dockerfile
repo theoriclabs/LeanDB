@@ -3,10 +3,13 @@
 #   docker build --build-arg BASE=tickets -t leandb-tickets .
 #   docker run -p 7411:7411 -v tickets-data:/data -e LEANDB_TOKEN=s3cret leandb-tickets
 #
-# Every example under examples/<BASE> works (kernels requires gpumarket by
-# path, so the whole examples tree is copied). The instance lives in the
-# /data volume (LEANDB_DB); the server binds 0.0.0.0 inside the container,
-# so set LEANDB_TOKEN (or pass --auth-token) before publishing the port.
+# dashboard requires the untracked sibling repo ../../../leandb-http (see
+# RELEASING.md); the other examples build standalone. The instance lives in
+# the /data volume (LEANDB_DB); the server binds 0.0.0.0 inside the
+# container, so set LEANDB_TOKEN (or pass --auth-token) before publishing
+# the port. Named volumes are chown'd to the `leandb` user (created in the
+# runtime stage); bind mounts (-v ./data:/data) must be writable by that
+# uid, or serve dies at startup with a bare SQLite error.
 
 FROM ubuntu:24.04 AS build
 ARG BASE=tickets
@@ -22,6 +25,10 @@ WORKDIR /src
 COPY lean-toolchain lakefile.toml lake-manifest.json LeanDb.lean Main.lean ./
 COPY LeanDb ./LeanDb
 COPY examples ./examples
+# BASE reaches RUN/COPY paths, so validate it before use: only example
+# directory names are allowed (no injection, no ../.. traversal).
+RUN case "${BASE}" in ''|*[!a-z0-9_]*) echo "invalid BASE: '${BASE}'" >&2; exit 1;; esac \
+    && test -d "examples/${BASE}" || { echo "unknown BASE: '${BASE}' (no examples/${BASE} directory)" >&2; exit 1; }
 RUN cd examples/${BASE} && lake build ${BASE}
 
 FROM ubuntu:24.04
@@ -35,6 +42,6 @@ USER leandb
 VOLUME /data
 ENV LEANDB_DB=/data/base.sqlite
 EXPOSE 7411
-HEALTHCHECK --interval=30s --timeout=3s CMD curl -sf http://127.0.0.1:7411/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s CMD curl -sf http://127.0.0.1:7411/healthz || exit 1
 ENTRYPOINT ["/usr/local/bin/base"]
 CMD ["serve", "--http", "7411", "--bind", "0.0.0.0"]
