@@ -16,6 +16,7 @@ import TestsM14b
 import TestsM14c
 import TestsM15a
 import CheckAxioms
+import TestsLdb12
 
 /-! Engine tests: codecs, deriving, the dependent select against a real
 SQLite file, CAS staleness, FK restriction. Fixture types live here — the
@@ -4306,5 +4307,6 @@ def main : IO UInt32 := do
   TestsM14b.run
   TestsM14c.run
   TestsM15a.run
+  TestsLdb12.run
   IO.println "all engine tests passed"
   return 0

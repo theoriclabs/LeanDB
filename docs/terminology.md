@@ -19,6 +19,7 @@ For a worked example, see [Core concepts](core_concepts_and_terminology.md).
 | Inline value | A record with an `Inline` instance. Its fields become prefixed columns in the parent table. |
 | Child list | A `List` of inline records stored in a separate child table. Rows carry a parent reference and a position. |
 | JSON column | A structured value stored in one text column through `ColCodec.json`. Its declared shape is schema metadata. |
+| `DbJson.via` | A codec for a validated nested type: it stores the data representation and re-decides the proofs on read. The schema sees the data representation's shape. |
 | Derived column | A field declared with `:= derived expression`. It is recomputed on write and checked on read. |
 
 ## Packages and execution

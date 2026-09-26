@@ -117,6 +117,12 @@
   builds one positionally (`⟨name, columns, indexes⟩`) adds `, none`, or
   switches to named fields. New `DbError` constructors: `invariant`,
   `notAppend`.
+- **LDB-12.** `DbJson.via encode parse`: a JSON codec for a nested type
+  with proof fields, through its data representation `σ` — `encode`
+  erases the proofs, `parse` re-decides them, and the shape the
+  fingerprint, `schema` and `migrate` see is `σ`'s. A stored value that
+  fails `parse` decodes as `DbError.decode` naming the table and field.
+  The derive's proof-field errors name `DbJson.via` as the way out.
 
 ## 0.4.0 - 2026-09-18
 

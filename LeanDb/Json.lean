@@ -74,12 +74,30 @@ def Col.fromJson (spec : ColumnSpec) (j : Json) : Except String Col :=
 
 /-- A nested value type that lives in one JSON TEXT column: its JSON
     encoding both ways plus its declared shape. Instances come from
-    `deriving LeanDb.DbJson` (see `LeanDb.Derive`), which — unlike Lean's
-    own derive — lets an omitted field with a structure default take the
-    default, so an additive change to a nested type still decodes old rows.
-    (Named `DbJson`, not `Json`: a `LeanDb.Json` would shadow `Lean.Json`
-    in every engine module that opens it.) -/
+    `deriving LeanDb.DbJson` (see `LeanDb.Derive`) or from `DbJson.via`,
+    and — unlike Lean's own derive — an omitted field with a structure
+    default takes the default, so an additive change to a nested type
+    still decodes old rows. (Named `DbJson`, not `Json`: a `LeanDb.Json`
+    would shadow `Lean.Json` in every engine module that opens it.) -/
 class DbJson (α : Type) extends ToJson α, Lean.FromJson α, JsonShape α
+
+/-- A `DbJson` codec for `α` through a data representation `σ` that has
+    one — how a type with proof fields (whose Lean type depends on an
+    earlier field, so a derive cannot walk it) is stored after all:
+    `encode` erases the proofs, `parse` re-decides them, and the JSON —
+    and therefore the `JsonShape` the fingerprint and `migrate` see — is
+    `σ`'s, never an opaque blob. Declared as
+    `instance : DbJson Text := DbJson.via encode parse`; because `DbJson`
+    extends `JsonShape`, the instance also registers `JsonShape α`, so a
+    parent `deriving LeanDb.DbJson` resolves the field as `σ`'s data
+    shape. A stored value that fails `parse` decodes as the typed
+    `DbError.decode table field` with the `parse` message, the same way a
+    `ColCodec.via` scalar's validator fails. -/
+@[reducible] def DbJson.via [Lean.ToJson σ] [Lean.FromJson σ] [JsonShape σ]
+    (encode : α → σ) (parse : σ → Except String α) : DbJson α where
+  toJson a := Lean.toJson (encode a)
+  fromJson? j := (Lean.fromJson? (α := σ) j) >>= parse
+  shape := JsonShape.shape σ
 
 /-- The codec of a JSON column: compressed JSON in a TEXT column, decoded
     through `validate` (a smart constructor over the whole value, so a

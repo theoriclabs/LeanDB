@@ -17,6 +17,10 @@ name = "LeanDb"
 [[lean_lib]]
 name = "TestsLdb01"
 
+
+[[lean_lib]]
+name = "TestsLdb12"
+
 [[lean_lib]]
 name = "TestsLdb15"
 

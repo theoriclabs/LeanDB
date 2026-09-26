@@ -53,8 +53,9 @@ codec of its own, `Option (List R)`, a list inside an `Inline` record
 `parent` or `position`.
 
 Not supported (typed error, not a runtime surprise): parameterized
-structures, and fields whose types depend on earlier fields (proof fields —
-planned, Architecture §4.3).
+structures, and fields whose types depend on earlier fields (proof fields).
+A proof-carrying *nested* type is stored through its data representation
+with `LeanDb.DbJson.via` instead.
 
 # `deriving LeanDb.Inline`
 
@@ -73,6 +74,8 @@ encoding Lean's own derive produces — objects for structures,
 constructor-tagged objects for inductives — except that an omitted
 structure field with a default takes the default; plus `JsonShape`, the
 canonical description of the type that the fingerprint and `migrate` see.
+A type the derive cannot walk (proof fields) gets `DbJson.via` over its
+data representation instead; the parent derive then sees the data shape.
 -/
 
 namespace LeanDb.Derive
@@ -303,7 +306,7 @@ private def walkFields (who : String) (declName : Name) (entity : Bool)
       let fname := fields[i]!
       let ftype := (← instantiateMVars (← inferType xs[i]!)).consumeMData
       if (Array.ofSubarray xs[0:i]).any (fun x => ftype.containsFVar x.fvarId!) then
-        throwError "{who}: field '{fname}' of {declName} depends on an earlier field; proof/dependent fields are not supported yet"
+        throwError "{who}: field '{fname}' of {declName} depends on an earlier field; proof/dependent fields are not stored — persist the data representation instead and re-decide the proofs on decode with `LeanDb.DbJson.via`"
       let tyStx ← delab ftype
       -- `Option` of an inline value is refused: "every sub-column NULL" is
       -- ambiguous once a sub-field is itself nullable
@@ -1028,7 +1031,7 @@ def deriveDbJson (declName : Name) : CommandElabM Bool := do
           let proj ← mkProjection x f
           let fty ← inferType proj
           if fty.containsFVar x.fvarId! then
-            throwError "deriving LeanDb.DbJson: field '{f}' of {declName} depends on another field; dependent fields are not supported"
+            throwError "deriving LeanDb.DbJson: field '{f}' of {declName} depends on another field; dependent fields are not stored — declare `instance : LeanDb.DbJson … := LeanDb.DbJson.via encode parse` for the field's type over its data representation"
           let key := quote f.toString
           let fId := mkIdent f
           let ftyStx ← delabFull fty
@@ -1072,7 +1075,7 @@ def deriveDbJson (declName : Name) : CommandElabM Bool := do
             let x := xs[i]!
             let decl ← x.fvarId!.getDecl
             if (Array.ofSubarray xs[0:i]).any (fun y => decl.type.containsFVar y.fvarId!) then
-              throwError "deriving LeanDb.DbJson: constructor '{ctorName}' has a dependent field; not supported"
+              throwError "deriving LeanDb.DbJson: constructor '{ctorName}' has a dependent field; dependent fields are not stored — declare `instance : LeanDb.DbJson … := LeanDb.DbJson.via encode parse` for the field's type over its data representation"
             unless decl.userName.hasMacroScopes do
               userNames := userNames.push decl.userName
             binders := binders.push (mkIdent (← mkFreshUserName `a))

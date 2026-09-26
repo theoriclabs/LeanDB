@@ -54,6 +54,40 @@ A codec defines how a Lean value becomes a SQL column and how it is read
 back. Decoding returns either a value or an error. Custom codecs are
 responsible for their validation and encoding rules.
 
+### Derive the data, store the validation with it
+
+A closed enum or a plain record — a type that *is* its data — derives its
+codec: `LeanDb.ClosedEnum` for enums, `LeanDb.DbJson` for nested JSON
+values. Both work in the declaration and, when the portable package must
+stay LeanDB-free, post-hoc in the native package with
+`deriving instance LeanDb.DbJson for Doc`.
+
+A validated type cannot derive: its Lean type carries proofs that depend
+on its data, and a derive has nothing to walk. Store the data
+representation and re-decide the proof when reading:
+
+- a validated scalar uses `ColCodec.via`;
+- a validated nested type uses `DbJson.via`. It stores and reads the
+  data representation and registers that representation's `JsonShape`,
+  so the parent derive, the schema fingerprint, and `migrate` all see the
+  data shape — and a stored value that no longer passes `parse` fails as
+  a typed `DbError.decode` naming the table and field.
+
+```lean
+-- Portable package: the proof stays, LeanDB is not imported.
+structure Text where
+  s : String
+  nonempty : 0 < s.length
+
+def Text.make (s : String) : Except String Text :=
+  if h : 0 < s.length then .ok ⟨s, h⟩ else .error "text: empty"
+
+-- Native package: store `s`, re-decide `nonempty` on every read.
+instance : DbJson Text := DbJson.via (·.s) Text.make
+deriving instance LeanDb.DbJson for Run, Paragraph, Doc
+```
+
+
 ## Rows and references
 
 `Note` is the value you insert. `Stored Note` is a saved note with its ID.
