@@ -1152,6 +1152,23 @@ private def testMigrations : IO Unit := do
   expectErr (← migrate migDbPath [v1] (apply := true)) "migrate" "destructive needs flag"
   discard <| expectOk (← migrate migDbPath [v1] (apply := true) (allowDestructive := true))
     "destructive with flag"
+  -- R3 idempotence: a migrate at the head is a typed no-op — the report
+  -- says so, carries the code fingerprint, and the journal gains no row
+  let journalRows : IO Nat := do
+    let st ← (← SQLite.open migDbPath).prepare "SELECT COUNT(*) FROM _leandb_migrations"
+    if ← st.step then return (← st.columnInt64 0).toNatClampNeg else return 0
+  let journaled ← journalRows
+  let (_, head?) ← expectOk (← migrate migDbPath [v1] (apply := true)) "migrate at the head"
+  check (((head?.map (·.applied)).getD []).isEmpty) "no steps at the head"
+  check (((head?.map (·.notes)).getD []) == ["schema already up to date"])
+    "the head migrate reports the no-op"
+  check (((head?.map (·.fingerprint)).getD "") == fingerprint [v1])
+    "the head migrate reports the code fingerprint"
+  check ((← journalRows) == journaled) "the head migrate leaves the journal alone"
+  -- verify after migrate: the verdict is stable, and no journal row appears
+  let vconn ← expectOk (← openDbRaw migDbPath) "reopen for verify"
+  discard <| expectOk (← vconn.verify [v1]) "verify stays in sync after migrate"
+  check ((← journalRows) == journaled) "verify writes no journal row"
   -- closed-world rebuild: grow, then a shrink that data refuses
   if ← migDbPath.pathExists then IO.FS.removeFile migDbPath
   let small := ⟨"todo", #[col "title" .text, col "status" .text (enum := some #["a", "b"])], #[], none⟩
@@ -3618,6 +3635,17 @@ private def testChain : IO Unit := do
     if ← st.step then rows := rows.push (← st.columnInt64 0, ← st.columnText 1, ← st.columnText 2)
     else break
   check (rows == #[(1, "Ada", "young"), (2, "Grace", "senior")]) s!"rows transformed with ids kept: {rows}"
+  -- R3 idempotence: reopening the migrated instance adopts nothing — the
+  -- fingerprint is already stamped, so adopt is none, the version stays
+  -- V1, and verify holds its verdict without a new journal row
+  let reopened ← expectOk (← openDbRaw chainDbPath) "reopen the migrated instance"
+  check ((← chain.adopt reopened).isNone) "a stamped instance adopts nothing"
+  let (fp2, ver2) ← instanceInfoOn reopened
+  check (fp2 == some (fingerprint v1) && ver2 == some 1) "same version, no re-stamp"
+  discard <| expectOk (← reopened.verify v1) "verify holds the verdict after adopt"
+  let jst ← (← SQLite.open chainDbPath).prepare "SELECT COUNT(*) FROM _leandb_migrations"
+  discard <| jst.step
+  check ((← jst.columnInt64 0) == 1) "the journal still names only the applied migration"
   -- a rejecting transform aborts the whole migration: nothing changes
   if ← chainDbPath.pathExists then IO.FS.removeFile chainDbPath
   discard <| expectOk (← withDb chainDbPath v0 do
