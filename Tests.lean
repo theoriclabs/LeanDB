@@ -3187,6 +3187,98 @@ private def testMigration : IO Unit := do
   db.exec "DELETE FROM \"order\" WHERE id = 1"
   check ((← childCount db 1) == 0 && (← childCount db 2) == 1) "the cascade still fires after the rebuild"
 
+/-! ## Custom steps nest with the engine's transaction (#75) -/
+
+private def customStepDbPath : System.FilePath := ".lake" / "leandb_test_custom_step.sqlite"
+
+/-- A migration whose snapshot is unchanged: only custom steps run. -/
+private def customStepMigration (specs : List TableSpec) (steps : List Step) : Migration := {
+  fromFingerprint := fingerprint specs
+  toFingerprint := fingerprint specs
+  snapshot := specs
+  steps := steps }
+
+/-- The nested verb's error, rethrown so `applyOn` sees it. -/
+private def viaVerb (α : Type) (act : DbM α) (conn : Conn) : IO α := do
+  match ← act.run conn with
+  | .ok a => pure a
+  | .error e => throw <| IO.userError (toString e)
+
+/-- A custom step inside `Migration.applyOn`'s transaction can use the
+    engine verbs: inserting a child-list entity opens the engine's
+    transaction, which nests as a savepoint instead of failing with
+    `cannot start a transaction within a transaction`. -/
+private def testCustomStepNestedVerb : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Author ⟨"Ada", 36⟩) "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let mig := customStepMigration childSchema
+    [Step.custom "insert order via verb" (fun conn =>
+      discard <| viaVerb _ (insert Order (order "nested" [item "p" 1, item "q" 2])) conn)]
+  match ← mig.applyOn conn childSchema 2 (allowDestructive := true) none with
+  | .error e => throw <| IO.userError s!"FAIL: custom step with a nested verb: {e}"
+  | .ok report =>
+      check (report.applied.contains "insert order via verb") s!"custom step journaled: {report.applied}"
+  let db ← SQLite.open customStepDbPath
+  check ((← childCount db 1) == 2) "the nested verb's child rows are present"
+  let st ← db.prepare "SELECT customer FROM \"order\" WHERE id = 1"
+  discard <| st.step
+  check ((← st.columnText 0) == "nested") "the nested verb's parent row is present"
+  -- top-level behavior is unchanged: a verb still opens its transaction
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Order (order "top" [])) "top-level verb after the migration"
+
+/-- A small child-list entity of the failure test: the child rows carry
+    a REAL column, so a NaN fails the nested verb at the write boundary
+    (`bindCol` refuses it) no matter what PRAGMAs the migration holds —
+    unlike an FK violation, which `applyOn` defers with
+    `foreign_keys = OFF`. -/
+structure Recipe.Step where
+  name : String
+  grams : Float := 1
+  deriving Repr, LeanDb.Inline
+structure Recipe where
+  title : String
+  steps : List Recipe.Step
+  deriving Repr, LeanDb.Entity
+
+private def recipeSchema : List TableSpec := Entity.specs Recipe
+
+/-- The failure path: a nested verb that fails (a NaN REAL in a child
+    row) rolls back its own savepoint — no orphan parent row — and the
+    migration's rollback dissolves the earlier custom step's rows too.
+    The failure is the verb's real error, not BEGIN-inside-BEGIN, and the
+    instance stays usable. -/
+private def testCustomStepNestedVerbFails : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath recipeSchema do
+    discard <| insert Recipe { title := "keeper", steps := [{ name := "mix", grams := 100 }] })
+    "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let good := Step.custom "insert recipe via verb" (fun conn =>
+    discard <| viaVerb _ (insert Recipe { title := "good", steps := [{ name := "stir", grams := 2 }] }) conn)
+  let bad := Step.custom "insert recipe with a NaN gram" (fun conn =>
+    discard <| viaVerb _ (insert Recipe { title := "bad", steps := [{ name := "x", grams := 0.0 / 0.0 }] }) conn)
+  match ← (customStepMigration recipeSchema [good, bad]).applyOn conn recipeSchema 2 (allowDestructive := true) none with
+  | .ok _ => throw <| IO.userError "FAIL: a failing nested verb must abort the migration"
+  | .error e =>
+      check ((e.message.splitOn "REAL value is NaN").length > 1)
+        s!"the failure is the verb's real error: {e}"
+      check ((e.message.splitOn "cannot start a transaction within a transaction").length == 1)
+        s!"no nested-BEGIN confusion: {e}"
+  -- everything is gone: the failed verb's work and the earlier step's rows
+  let db ← SQLite.open customStepDbPath
+  let st ← db.prepare "SELECT count(*) FROM recipe"
+  discard <| st.step
+  check ((← st.columnInt64 0) == 1) "only the seeded recipe survived the abort"
+  let st ← db.prepare "SELECT count(*) FROM recipe_steps"
+  discard <| st.step
+  check ((← st.columnInt64 0) == 1) "only the seeded recipe's step survived the abort"
+  -- the instance is usable: verbs work again
+  discard <| expectOk (← withDb customStepDbPath recipeSchema do
+    discard <| insert Recipe { title := "after", steps := [] }) "instance usable after the abort"
+
 def run : IO Unit := do
   testDerived
   testJson
@@ -3194,6 +3286,8 @@ def run : IO Unit := do
   testEndToEnd
   testChunking
   testMigration
+  testCustomStepNestedVerb
+  testCustomStepNestedVerbFails
 
 end ChildD
 
