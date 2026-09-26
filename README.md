@@ -183,6 +183,14 @@ a non-loopback address without `--auth-token` / `$LEANDB_TOKEN` is refused
 at startup. On a loopback bind, `Host`/`Origin` must also be loopback, and
 JSON-body routes require `Content-Type: application/json`.
 
+Dispatch is serialized by a bounded gate instead of a raw lock: the long
+file-level verbs — `backup`, `restore`, and the destructive `migrate
+apply` / `migrate rollback` (also through `/rpc`) — hold the engine for
+their whole run, while every other verb waits up to 5 seconds for it and
+then answers HTTP `503` with `Retry-After: 1` instead of queueing
+indefinitely. `/healthz` never waits on the gate, so orchestrator probes
+stay fast while a multi-second backup runs.
+
 ### Audit log storage and migration impact
 
 The audit log is **unbounded by default** and is included in database backups.

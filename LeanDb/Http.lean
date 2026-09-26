@@ -1,5 +1,6 @@
 import Std.Http
-import Std.Sync.Mutex
+import Std.Sync.Semaphore
+import Std.Async.Timer
 import LeanDb.Cli
 
 namespace LeanDb.Http
@@ -12,7 +13,12 @@ typed routes below and `POST /rpc` (a JSON array of argv strings) reach
 the same function, so the surface is exactly the CLI's. Responses are
 the handler's JSON; the status code derives from the response `code`.
 The connection is one SQLite handle, so requests run one at a time
-behind a mutex. A client that sends `X-LeanDb-Fingerprint` is refused
+through a dispatch gate (`Gate`): the long file-level verbs — `backup`,
+`restore`, and the destructive `migrate apply` / `migrate rollback` —
+hold it for their whole run, while every other verb waits at most a
+bounded timeout and then answers `503` with `Retry-After` instead of
+pinning a worker thread on a native lock. `/healthz` never touches the
+gate. A client that sends `X-LeanDb-Fingerprint` is refused
 with `schema_mismatch` (409) when it was compiled against another
 schema. -/
 
@@ -29,10 +35,12 @@ def statusOf (j : Json) : Status :=
     | some "stale" | some "restricted" | some "duplicate" | some "missing_ref"
     | some "schema_mismatch" | some "unknown_lineage" | some "migrate" => .conflict
     | some "read_only" => .forbidden
+    | some "busy" => .serviceUnavailable
     | some "poisoned" => .internalServerError
     | _ => .internalServerError
 
 private def usage (m : String) : Nat × String := (400, m)
+
 
 /-- Resolve a request to argv. `segs` are the decoded path segments,
     `query` the decoded query pairs, `body` the request body if any. -/
@@ -96,7 +104,8 @@ private def respond (status : Status) (j : Json) : ContextAsync (Response Body.A
 /-- Where a request goes: the segments to route, the fingerprint of the
     schema behind them, and the argv dispatcher. A single served base
     resolves everything to itself; a host resolves `/bases/<name>/…`. -/
-abbrev Resolver := List String → IO (Except (Nat × String) (List String × String × (List String → IO Json)))
+abbrev Resolver := List String → IO (Except (Nat × String)
+  (List String × String × (List String → ContextAsync Json)))
 
 /-- Access policy for a served base: open, or a bearer token every
     request must carry (`Authorization: Bearer <token>`). `/healthz` is
@@ -257,12 +266,92 @@ def handleRequestWithLimit (maxBodyBytes : Nat) (auth : Auth) (resolve : Resolve
       | .error (_, m) => respond .badRequest (errJson "usage" m)
       | .ok argv =>
           let j ← dispatch argv
-          respond (statusOf j) j
+          let r ← respond (statusOf j) j
+          -- the gate timed a fast verb out: tell the client to retry
+          if (j.getObjValAs? String "code").toOption == some "busy" then
+            let headers :=
+              r.line.headers.insert (Header.Name.ofString! "retry-after")
+                (Header.Value.ofString! "1")
+            return { r with line := { r.line with headers } }
+          return r
 
 /-- One request with the default body budget, for direct handler callers. -/
 def handleRequest (auth : Auth) (resolve : Resolver) (req : Request Body.Stream) :
     ContextAsync (Response Body.Any) :=
   handleRequestWithLimit defaultMaxBodyBytes auth resolve req
+
+
+/-- The verbs that hold the engine for their whole run (#79): `backup`
+    vacuums the whole instance into a copy, `restore` swaps the instance
+    file and reopens, and the destructive migration steps rewrite it.
+    Nothing else may observe the instance mid-flight, so these cannot
+    yield; `POST /rpc` argv is classified by the same rule. -/
+def longVerb (argv : List String) : Bool :=
+  match argv with
+  | "backup" :: _ | "restore" :: _
+  | "migrate" :: "apply" :: _ | "migrate" :: "rollback" :: _ => true
+  | _ => false
+
+/-- The dispatch gate (#79): one permit == the engine. `serve` used to
+    hold a native `Std.Mutex` across the whole handler, so a multi-second
+    `backup` pinned every queued request's worker thread and starved
+    `/healthz`. Now long verbs hold the gate for their whole handler —
+    the instance must not be observed mid-copy or mid-swap — while every
+    other verb acquires with a bounded wait: it polls
+    `Std.Semaphore.tryAcquire`, the gate's single acquisition path, and
+    sleeps between attempts with `Std.Async.sleep`, which yields the
+    worker instead of blocking it. On timeout the verb answers `busy`
+    (mapped to `503` + `Retry-After`); the permit is always returned in a
+    `finally`, so even a throwing handler cannot take the gate down, and
+    fast verbs still serialize against long verbs because both pass
+    through the one permit. -/
+structure Gate where
+  /-- One permit == the engine. -/
+  sem : Std.Semaphore
+  /-- How long a fast verb waits for the engine before answering 503. -/
+  fastTimeoutMs : Nat := 5000
+  /-- Sleep between acquisition attempts. -/
+  pollMs : Nat := 5
+
+def Gate.new (fastTimeoutMs : Nat := 5000) : BaseIO Gate :=
+  return { sem := ← Std.Semaphore.new 1, fastTimeoutMs }
+
+/-- Try to take the engine, giving up after `fastTimeoutMs`: poll
+    `tryAcquire`, sleeping (and yielding the worker) between attempts. -/
+private partial def Gate.tryLoop (g : Gate) (left : Nat) : ContextAsync Bool := do
+  if ← g.sem.tryAcquire then
+    return true
+  if left == 0 then
+    return false
+  let step := min left g.pollMs
+  Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat step)
+  g.tryLoop (left - step)
+
+/-- Bounded acquisition for fast verbs. -/
+private def Gate.tryLock (g : Gate) : ContextAsync Bool :=
+  g.tryLoop g.fastTimeoutMs
+
+/-- Wait as long as it takes for the engine (long verbs only). -/
+private partial def Gate.lock (g : Gate) : ContextAsync Unit := do
+  unless ← g.sem.tryAcquire do
+    Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat g.pollMs)
+    g.lock
+
+/-- Run one argv behind the gate. Long verbs wait without a deadline;
+    fast verbs wait `fastTimeoutMs` and then get `busy`. The permit is
+    released in a `finally` on every path that took it. -/
+def Gate.dispatch (g : Gate) (h : List String → ContextAsync Json) :
+    List String → ContextAsync Json := fun argv => do
+  if longVerb argv then
+    g.lock
+  else
+    unless ← g.tryLock do
+      return errJson "busy"
+        "the engine is busy with a long operation (backup, restore, or migration); retry shortly"
+  try
+    h argv
+  finally
+    g.sem.release
 
 private def parseHost (host : String) : Except String Net.IPv4Addr :=
   match host.splitOn "." |>.map (·.toNat?) with
@@ -312,7 +401,7 @@ def serveResolver (host : String) (port : UInt16) (auth : Auth) (resolve : Resol
 
 /-- Serve one dispatcher (a single base). -/
 def serveWith (host : String) (port : UInt16) (auth : Auth) (fingerprint : String)
-    (dispatch : List String → IO Json) (banner : Json) : IO UInt32 :=
+    (dispatch : List String → ContextAsync Json) (banner : Json) : IO UInt32 :=
   serveResolver host port auth (fun segs => return .ok (segs, fingerprint, dispatch)) banner
 
 /-- Serve many bases under `/bases/<name>/…`; `GET /bases` lists them.
@@ -324,7 +413,10 @@ def serveHosted (host : String) (port : UInt16) (auth : Auth) (list : Json)
     | [] | ["bases"] => return .ok ([], "", fun _ => pure list)
     | "bases" :: name :: rest =>
         match bases name with
-        | some (fp, dispatch) => return .ok (rest, fp, dispatch)
+        | some (fp, dispatch) =>
+            -- the child pipe lock stays in Host.lean; lift its IO
+            -- dispatcher into the request context untouched
+            return .ok (rest, fp, fun argv => (dispatch argv : ContextAsync Json))
         | none => return .error (404, s!"no base {name}")
     | _ => return .error (404, "routes live under /bases/<name>/…")) banner
 
@@ -335,10 +427,13 @@ def serve (b : Base) (inst : Instance) (host : String) (port : UInt16) (auth : A
       IO.eprintln e.toJson.compress
       return e.exitCode
   | .ok sess =>
-      let lock ← Std.Mutex.new sess
+      -- #79: the session value is immutable (the connection and the
+      -- drift gate live in IO.Refs inside it), so the gate is the only
+      -- thing that must serialize dispatch.
+      let gate ← Gate.new
       let fp := fingerprint b.specs
-      let dispatch := fun (argv : List String) =>
-        (lock.atomically (fun ref => do b.handle inst (← ref.get) argv) : IO Json)
+      let dispatch := gate.dispatch fun argv =>
+        (b.handle inst sess argv : ContextAsync Json)
       serveWith host port auth fp dispatch <| Json.mkObj [("ok", Json.bool true),
         ("serving", Json.str s!"http://{host}:{port}"), ("base", Json.str b.name),
         ("instance", Json.str inst.path.toString), ("fingerprint", Json.str fp)]

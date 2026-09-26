@@ -4042,6 +4042,101 @@ private def testHttpBodyLimits : IO Unit := do
   runOpen "missing content-type" "POST /rpc HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\nConnection: close\r\n\r\n[\"help\"]" "415"
   check ((← calls.get) == 1) "Host/Origin/Content-Type refusals never dispatch"
 
+
+/-! ## HTTP dispatch gate (#79): long verbs hold the engine, fast verbs
+    answer 503 instead of pinning a worker -/
+
+private partial def holdUntil (release : IO.Ref Bool) : Std.Async.ContextAsync Unit := do
+  unless ← release.get do
+    Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 2)
+    holdUntil release
+
+/-- Poll the event log until `needle` shows up (bounded, so a broken
+    gate fails the test instead of hanging it). -/
+private partial def awaitLog (events : IO.Ref (Array String)) (needle : String)
+    (tries : Nat := 2500) : Std.Async.ContextAsync Unit := do
+  if (← events.get).contains needle then
+    return ()
+  if tries == 0 then
+    throw (IO.userError s!"gate test never observed {needle}; events: {(← events.get)}")
+  Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 2)
+  awaitLog events needle (tries - 1)
+
+/-- Event position, `size` when absent (so order checks fail loudly). -/
+private def posOf (ev : Array String) (needle : String) : Nat :=
+  ev.idxOf? needle |>.getD ev.size
+
+open Std.Async in
+private def testHttpGate : IO Unit := do
+  -- One fake dispatcher behind the real gate: `backup` holds the engine
+  -- until the test releases it, so ordering never depends on wall clocks.
+  let events ← IO.mkRef (#[] : Array String)
+  let log : String → IO Unit := fun s => events.modify (·.push s)
+  let release ← IO.mkRef false
+  let gate ← Http.Gate.new (fastTimeoutMs := 30)
+  let dispatch : List String → ContextAsync Lean.Json :=
+    gate.dispatch <| fun argv => do
+      if argv == ["backup"] then
+        log "backup start"
+        holdUntil release
+        log "backup end"
+      else if argv == ["restore", "f"] then
+        log "restore start"
+        log "restore end"
+      return Lean.Json.mkObj [("ok", .bool true)]
+  let resolve : Http.Resolver := fun segs => return .ok (segs, "test", dispatch)
+  let handler := Http.handleRequestWithLimit 64 .open resolve
+  let cfg := Http.serverConfig 64
+  -- one mock connection, one raw request, the response bytes back
+  let run (name raw : String) : ContextAsync ByteArray := do
+    let (client, server) ← Std.Http.Internal.Mock.new
+    client.send raw.toUTF8
+    Std.Http.Server.serveConnection server handler cfg
+    let res ← client.recv?
+    log name
+    return res.getD .empty
+  let backupRaw :=
+    "POST /backup HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+  let restoreRaw :=
+    "POST /restore HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n" ++
+    "Content-Length: 12\r\nConnection: close\r\n\r\n{\"file\":\"f\"}"
+  let healthzRaw := "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+  let fastRaw := "GET /tables/t HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+  let orchestrate : ContextAsync Unit := do
+    -- 1. the long verb takes the engine and holds it past any deadline
+    ContextAsync.background (run "backup got" backupRaw)
+    awaitLog events "backup start"
+    -- 2. /healthz answers while the engine is held
+    let hz ← run "healthz got" healthzRaw
+    check ((String.fromUTF8! hz).startsWith "HTTP/1.1 200")
+      s!"/healthz answers during the long op: {String.fromUTF8! hz}"
+    -- 3. a fast verb times out at the gate: 503 + Retry-After, promptly
+    let fast ← run "fast 503 got" fastRaw
+    let fastText := String.fromUTF8! fast
+    check (fastText.startsWith "HTTP/1.1 503") s!"a fast verb under load gets 503: {fastText}"
+    check (fastText.toLower.contains "retry-after") s!"the 503 carries Retry-After: {fastText}"
+    -- 4. a second long verb queues behind the first and never interleaves
+    ContextAsync.background (run "restore got" restoreRaw)
+    Std.Async.sleep (Std.Time.Millisecond.Offset.ofNat 20)
+    check (!((← events.get).contains "restore start"))
+      "a queued long verb does not start while the engine is held"
+    release.set true
+    awaitLog events "restore end"
+    let ev ← events.get
+    check (posOf ev "backup end" < posOf ev "restore start") s!"long verbs serialize: {ev}"
+    check (posOf ev "healthz got" < posOf ev "backup end") s!"/healthz ran during the long op: {ev}"
+    check (posOf ev "fast 503 got" < posOf ev "backup end") s!"the fast verb gave up during the long op: {ev}"
+    -- 5. a fast verb is served again once the long verb is done
+    let fast2 ← run "fast ok got" fastRaw
+    check ((String.fromUTF8! fast2).startsWith "HTTP/1.1 200")
+      s!"a fast verb is served after the long verb: {String.fromUTF8! fast2}"
+    -- both long verbs drained: the long one itself never saw a 503
+    awaitLog events "backup got"
+    awaitLog events "restore got"
+    let ev ← events.get
+    check (posOf ev "backup start" < posOf ev "backup got") s!"the long verb completed: {ev}"
+  Async.block orchestrate.run
+
 private def testCliLimits : IO Unit := do
   check ((Cli.limitOf "50").toOption == some 50) "ordinary limit parses"
   check ((Cli.limitOf "9223372036854775807").toOption == some 9223372036854775807)
@@ -4465,6 +4560,7 @@ def main : IO UInt32 := do
   testScaffoldReservedModule
   testTomlString
   testHttpBodyLimits
+  testHttpGate
   testWalOpen
   testLogPolicy
   testCodecs
