@@ -1,10 +1,15 @@
 import LeanDb
 
-/-! LDB-14 review regressions. A pushed `prefix` must be exact, not just a
-    widening the lambda re-checks: `selectP`, `Query.exec` and the typed
+/-! LDB-14 review regressions.
+
+    A pushed `prefix` must be exact, not just a widening the lambda
+    re-checks: `selectP`, `Query.exec` and the typed
     `first`/`page`/`count`/`exists` push LIMIT/OFFSET/COUNT/EXISTS for
-    every plan without an opaque leaf, so a `LIKE` that also matched
-    `Hagrid` for `"ha"` took a window slot the re-check then emptied. -/
+    every plan without an opaque leaf, and `patch`/`scan` never re-check,
+    so a `LIKE` that also matched `Hagrid` for `"ha"` took a window slot
+    the re-check then emptied, or was written. Also: the string plans are
+    their lambdas, index names and collations survive `schema_json` and
+    `migrate freeze`, and a collation change rebuilds its index. -/
 
 namespace TestsLdb14
 
@@ -104,7 +109,7 @@ private def testGuardAndScan : IO Unit := do
     check' (now.val.name == "Hagrid") s!"the guard wrote {now.val.name}"
     let seen ← IO.mkRef (#[] : Array String)
     scan ha (chunk := 1) fun rows => do
-      discard <| (seen.modify (· ++ rows.map (·.val.name)) : IO Unit)
+      (seen.modify (· ++ rows.map (·.val.name)) : IO Unit)
       return true
     let seen ← seen.get
     check' (seen == #["ha1", "habitat"]) s!"scan with a prefix: {seen}"
@@ -144,7 +149,8 @@ private def testIndexNamesInSchemaJson : IO Unit := do
 /-- `Render.indexLit` of Muggle's index, pasted as `migrate freeze` writes
     it: the literal must elaborate back to the declared index. -/
 private def muggleIndexFrozen : IndexSpec :=
-  { unique := false, columns := #["name"], name := some ("ix_muggle_by_name"), collate := some (LeanDb.Collate.nocase) }
+  { unique := false, columns := #["name"], name := some ("ix_muggle_by_name"),
+    collate := some (LeanDb.Collate.nocase) }
 
 private def testFrozenCollation : IO Unit := do
   let some ix := (Entity.spec Muggle).indexes[0]? |
@@ -212,7 +218,8 @@ private def indexSql (path : System.FilePath) (name : String) : IO (Option Strin
     then removes the index the schema says exists. -/
 private def testCollationChangeRebuildsIndex : IO Unit := do
   let binary : TableSpec :=
-    { Entity.spec Muggle with indexes := #[{ columns := #["name"], name := some "ix_muggle_by_name" }] }
+    { Entity.spec Muggle with
+      indexes := #[{ columns := #["name"], name := some "ix_muggle_by_name" }] }
   fresh dbPath
   discard <| expectOk (← withDb dbPath [binary] (insert Muggle ⟨"Dursley"⟩)) "open with BINARY"
   let some before ← indexSql dbPath "ix_muggle_by_name" |
@@ -221,7 +228,8 @@ private def testCollationChangeRebuildsIndex : IO Unit := do
     throw <| IO.userError s!"FAIL: the BINARY index is NOCASE: {before}"
   let (plan, _) ← expectOk (← migrate dbPath (Entity.specs Muggle) (apply := true)) "migrate"
   unless (plan.map (·.steps.length)) == some 2 do
-    throw <| IO.userError s!"FAIL: expected a drop and an add, got {plan.map (·.steps.map (·.describe))}"
+    throw <| IO.userError
+      s!"FAIL: expected a drop and an add, got {plan.map (·.steps.map (·.describe))}"
   match ← indexSql dbPath "ix_muggle_by_name" with
   | some after =>
       unless after.contains "COLLATE NOCASE" do
