@@ -590,6 +590,40 @@ private def testRestoreDuringSnapshot : IO Unit := do
   | .ok (.error e) | .error e => throw <| IO.userError s!"FAIL: read after restore-during-snapshot: {repr e}"
   svc.close
 
+/-- `restore` reopens the reader pool, not only the writer: `withReader`
+    and a reader-lane snapshot after a restore see the restored file, not
+    the one it replaced. A gated service refuses a snapshot, as the
+    writer-lane `withConnection` always did. -/
+private def testSnapshotAfterRestore : IO Unit := do
+  fresh snapDbPath
+  for p in [snapDest, snapDest2] do
+    if ← p.pathExists then IO.FS.removeFile p
+    try IO.FS.removeFile (snapTmpOf p) catch _ => pure ()
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve true
+    { readers := 1 }
+  discard <| seedRows svc 5
+  let r ← svc.snapshot snapDest
+  check r.isOk s!"snapshot before restore: {repr r}"
+  discard <| seedRows svc 10 "later"
+  let r ← svc.restore snapDest
+  check r.isOk s!"restore: {repr r}"
+  let n ← svc.withReader fun conn => DbM.run conn do return (← fetchAll SnapRow).size
+  check (n matches .ok (.ok 5)) s!"withReader after restore sees the restored rows: {repr n}"
+  let r ← svc.snapshot snapDest2
+  check r.isOk s!"snapshot after restore: {repr r}"
+  let copy ← expectOk (← openDbRaw snapDest2) "open the snapshot taken after restore"
+  let rows ← expectOk (← DbM.run copy (fetchAll SnapRow)) "read the snapshot taken after restore"
+  check (rows.size == 5) s!"snapshot after restore copies the restored instance, got {rows.size} rows"
+  svc.close
+  -- unverified, so gated: no snapshot on either lane
+  IO.FS.removeFile snapDest2
+  let svc ← Runtime.Service.new snapBase (Instance.ofPath snapDbPath) .serve false
+  for lane in [Runtime.SnapshotLane.reader, .writer] do
+    let r ← svc.snapshotOn lane snapDest2
+    check (r matches .error (.gated _)) s!"gated service refuses a {lane.name} snapshot: {repr r}"
+  check (!(← snapDest2.pathExists)) "no snapshot of a gated instance"
+  svc.close
+
 def run : IO Unit := do
   testAbort
   testNestedSavepoint
@@ -602,6 +636,7 @@ def run : IO Unit := do
   testSnapshotNoReaders
   testSnapshotWriterLane
   testRestoreDuringSnapshot
+  testSnapshotAfterRestore
   testInspectSession
   testIndexes
   testCountExists

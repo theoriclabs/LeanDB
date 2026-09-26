@@ -33,7 +33,9 @@ so there is no writer fallback; `snapshotOn .writer` asks for the writer
 explicitly. A snapshot writes to `dest.tmp` and renames on success, so a
 failed snapshot leaves no torn output. `restore` waits for a running
 snapshot: it stands down before its rename with a typed error, so the
-swap never happens under a reader's `VACUUM INTO`.
+swap never happens under a reader's `VACUUM INTO`. `restore` reopens the
+reader pool with the writer, so a later snapshot copies the restored
+file, and a gated instance is not snapshotted on either lane.
 
 The callback contract: `f` must not retain the `Conn` past return. The
 connection enforces synchronous ownership; nothing stops a callback from
@@ -156,6 +158,18 @@ private def gateOf (b : Base) (conn : Conn) : IO (Option DbError) := do
   | .ok () => return none
   | .error e => return some e
 
+/-- Open the reader pool (LDB-09, LDB-19): `readers := 0` still opens one
+    dedicated read-only connection, so the writer is never a reader. -/
+private def openReaders (b : Base) (path : System.FilePath) (config : Config) :
+    IO (Except DbError (Array (Std.Mutex Conn))) := do
+  let mut readers : Array (Std.Mutex Conn) := #[]
+  for _ in [0:max config.readers 1] do
+    match ← openDbRaw path b.log
+        { b.openConfig with busyTimeoutMs := config.readerBusyTimeoutMs } (readOnly := true) with
+    | .ok c => readers := readers.push (← Std.Mutex.new c)
+    | .error e => return .error e
+  return .ok readers
+
 def new (b : Base) (inst : Instance) (session : SessionMode) (verify : Bool := true)
     (config : Config := {}) : IO Service := do
   if let .error e := b.check then throw <| IO.userError e.message
@@ -166,14 +180,9 @@ def new (b : Base) (inst : Instance) (session : SessionMode) (verify : Bool := t
     | .error e => throw <| IO.userError e.message
   try applyAuxiliary conn.raw b.auxiliary catch e => throw e
   let gate ← if verify then gateOf b conn else pure (some (.schemaInvalid "unverified"))
-  let nReaders := max config.readers 1
-  let mut readers : Array (Std.Mutex Conn) := #[]
-  for _ in [0:nReaders] do
-    let rc ← match ← openDbRaw inst.path b.log
-        { b.openConfig with busyTimeoutMs := config.readerBusyTimeoutMs } (readOnly := true) with
-      | .ok c => pure c
-      | .error e => throw <| IO.userError e.message
-    readers := readers.push (← Std.Mutex.new rc)
+  let readers ← match ← openReaders b inst.path config with
+    | .ok readers => pure readers
+    | .error e => throw <| IO.userError e.message
   let slot ← Std.RecursiveMutex.new { conn, state := State.ready, gate, readers }
   return { base := b, inst, session, config, slot }
 
@@ -288,6 +297,10 @@ def snapshotOn (s : Service) (lane : SnapshotLane) (dest : System.FilePath) :
   let reg : Except RuntimeError (SnapshotJob × Option (Std.Mutex Conn)) ← s.slot.atomically do
     let st ← getThe Slot
     if st.state != .ready then return .error (.notReady st.state)
+    -- a gated instance is not backed up, as `withConnection` refuses it
+    -- on the writer lane; after a failed `restore` reopen the pool still
+    -- reads the file that was replaced
+    if let some e := st.gate then return .error (.gated e)
     if st.snapshotJob.isSome then return .error .snapshotBusy
     -- the reader lane takes the next pool slot, the same round-robin as
     -- `withReader`; `new` always opens at least one, so an empty pool is
@@ -353,17 +366,19 @@ def snapshot (s : Service) (dest : System.FilePath) : IO (Except RuntimeError Un
   s.snapshotOn .reader dest
 
 /-- Replace the instance file with `src` and reopen: drain, swap under a
-    temporary name (`Restore.swapFile` validates first), reopen, re-verify.
-    A reopen failure leaves the service gated rather than serving a file
-    it could not open. Waits for a running snapshot first: the snapshot is
-    asked to stand down before its rename — it fails typed
-    (`.snapshotAborted`) and its partial output is removed — so the swap
-    never happens under a reader's `VACUUM INTO` (LDB-13). -/
+    temporary name (`Restore.swapFile` validates first), reopen the writer
+    and the reader pool, re-verify. A reopen failure leaves the service
+    gated rather than serving a file it could not open. Waits for a
+    running snapshot first: the snapshot is asked to stand down before
+    its rename — it fails typed (`.snapshotAborted`) and its partial
+    output is removed — so the swap never happens under a reader's
+    `VACUUM INTO` (LDB-13). -/
 def restore (s : Service) (src : System.FilePath) : IO (Except RuntimeError Unit) := do
   -- claim the connection: refuse closed, mark restoring (new admissions
   -- are refused with `.notReady .restoring`), and learn whether a
-  -- snapshot is mid-flight. The writer lane holds the same lock, so what
-  -- is found here can only be a reader-lane snapshot.
+  -- snapshot is mid-flight. A writer-lane one found here has either not
+  -- reached the writer lock yet (its `withConnection` is now refused) or
+  -- finished its backup under it; either way it clears its job.
   let claimed : Except RuntimeError (Option SnapshotJob) ← s.slot.atomically do
     let st ← getThe Slot
     if st.state == .closed then return Except.error (.notReady .closed)
@@ -395,8 +410,16 @@ def restore (s : Service) (src : System.FilePath) : IO (Except RuntimeError Unit
     match ← openDbRaw s.inst.path s.base.log with
     | .ok conn =>
         let gate ← gateOf s.base conn
-        set { (← getThe Slot) with conn, state := .ready, gate }
-        return .ok ()
+        -- the pool still reads the replaced file, and `snapshot` runs on
+        -- it (LDB-13): open a fresh one. A `withReader` in flight finishes
+        -- on its old slot; no snapshot is in flight (waited for above).
+        match ← openReaders s.base s.inst.path s.config with
+        | .ok readers =>
+            set { (← getThe Slot) with conn, state := .ready, gate, readers }
+            return .ok ()
+        | .error e =>
+            set { (← getThe Slot) with conn, state := .ready, gate := some e }
+            return .error (.gated e)
     | .error e =>
         -- the swap succeeded but the file did not open: gate loudly
         -- instead of serving whatever the old connection still sees (#77)
