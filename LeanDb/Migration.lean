@@ -317,9 +317,18 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
             | _ =>
                 for sql in step.sql do db.exec sql
                 applied := applied ++ [step.describe]
-          for step in m.steps do
-            if let .custom d run := step then
+          for h : i in [0:m.steps.length] do
+            if let .custom d run := m.steps[i] then
               run conn
+              -- A step that COMMITs or ROLLBACKs dissolves the engine's
+              -- transaction (#75 hazard b): every later statement would then
+              -- autocommit and the final COMMIT would fail confusingly. Refuse
+              -- immediately, before any further step or journal write, with
+              -- guidance for the operator.
+              if ← db.inAutocommit then
+                throw <| IO.userError s!"step {i + 1} (\"{d}\") COMMITted or ROLLBACKed out \
+from under the engine's migration transaction: data changes before the rogue \
+COMMIT may have been committed; inspect the journal"
               applied := applied ++ [d]
           let stmt ← db.prepare "PRAGMA foreign_key_check"
           if ← stmt.step then
@@ -349,10 +358,17 @@ VALUES (?, ?, 1, ?, ?, ?)"
           return .ok report
         catch e =>
           -- only a transaction that actually began can roll back; a failed
-          -- ROLLBACK must not skip the restore (it poisons instead, #72)
+          -- ROLLBACK must not skip the restore (it poisons instead, #72).
+          -- A rogue custom step (#75 hazard b) may have ended the transaction
+          -- under us: autocommit is then back on, there is nothing to roll
+          -- back, and the failed-rollback poison contract does not apply —
+          -- the connection sits in a well-defined state, so the catch skips
+          -- both rollback and poison and the caller gets a clean typed
+          -- .error.
           if ← began.get then
             began.set false
-            try db.exec "ROLLBACK" catch rb => conn.poison (toString rb)
+            unless (← db.inAutocommit) do
+              try db.exec "ROLLBACK" catch rb => conn.poison (toString rb)
           return .error (.migrate s!"V{toVersion}: {e}")
       runTxn
     catch e =>

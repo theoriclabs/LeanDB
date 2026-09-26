@@ -1209,12 +1209,85 @@ private def testMigrationErrorPragmas : IO Unit := do
   let lat ← conn.raw.prepare "PRAGMA legacy_alter_table"
   discard <| lat.step
   check ((← lat.columnInt64 0) == 0) "legacy_alter_table restored after a failed migration"
-  -- the failed ROLLBACK poisoned the connection (#72): later verbs refuse
-  match ← (insert Author ⟨"Ada", 36⟩).run conn with
+  -- the rogue COMMIT dissolved the transaction, so the catch skipped both
+  -- the ROLLBACK and the poison (#72/#75): the connection sits in a
+  -- well-defined autocommit state and later verbs run normally
+  check ((← conn.poisoned.get).isNone) "connection not poisoned"
+  let alive ← conn.raw.prepare "SELECT COUNT(*) FROM author"
+  discard <| alive.step
+  check ((← alive.columnInt64 0) == 0) "a later verb works on the clean connection"
+
+/-! ## A custom step may not end the engine's migration transaction (#75) -/
+
+private def rogueDbPath : System.FilePath := ".lake" / "leandb_test_rogue.sqlite"
+
+private def testCustomStepTxGuard : IO Unit := do
+  -- a migration whose steps are all custom: the snapshot is unchanged, so
+  -- the mechanical plan is empty and the steps run raw inside the engine's
+  -- BEGIN..COMMIT span
+  let v0 : List TableSpec := [Entity.spec Author]
+  let mig (steps : List Step) : Migration :=
+    { fromFingerprint := fingerprint v0, toFingerprint := fingerprint v0,
+      snapshot := v0, steps := steps }
+  -- a step that COMMITs out from under the engine: the guard fires naming
+  -- the step, the migration is a typed migrate error (not the confusing
+  -- cannot-rollback sqlite failure), and the data written before the rogue
+  -- COMMIT is — as the message warns — already committed
+  if ← rogueDbPath.pathExists then IO.FS.removeFile rogueDbPath
+  discard <| expectOk (← withDb rogueDbPath v0 do
+    discard <| insert Author ⟨"Ada", 36⟩) "seed rogue instance"
+  let conn ← expectOk (← openDbRaw rogueDbPath) "open rogue raw"
+  let before ← instanceInfoOn conn
+  let rogue : Migration := mig [
+    .custom "add a row" fun conn =>
+      conn.raw.exec "INSERT INTO author (name, age) VALUES ('Pre', 1)",
+    .custom "commit out from under the engine" fun conn => conn.raw.exec "COMMIT"]
+  match ← rogue.applyOn conn v0 1 false none with
+  | .ok _ => throw <| IO.userError "FAIL: a rogue COMMIT must abort the migration"
   | .error e =>
-      check ((e.message.splitOn "poisoned").length > 1)
-        s!"the refusal names the poison: {e.message}"
-  | .ok _ => throw <| IO.userError "FAIL: a poisoned connection must refuse insert"
+      check (e.code == "migrate") s!"typed migrate error, got [{e.code}] {e.message}"
+      check ((e.message.splitOn "step 2 (\"commit out from under the engine\")").length == 2)
+        s!"names the step: {e.message}"
+      check ((e.message.splitOn "may have been committed; inspect the journal").length == 2)
+        s!"warns about the partial commit: {e.message}"
+      check ((e.message.splitOn "cannot rollback").length == 1)
+        s!"not the confusing rollback failure: {e.message}"
+  -- the version metadata was not advanced and nothing was journaled, but
+  -- the pre-rogue write is committed (exactly what the message warns of)
+  check ((← instanceInfoOn conn) == before) "instance version untouched"
+  let j ← conn.raw.prepare "SELECT COUNT(*) FROM _leandb_migrations"
+  discard <| j.step
+  check ((← j.columnInt64 0) == 0) "no journal entry for the failed migration"
+  check ((← rogueCount) == 2) "data before the rogue COMMIT is committed"
+  -- the aftermath is a clean refusal, not a poisoned connection: the
+  -- engine never attempted the doomed ROLLBACK, and the connection sits
+  -- in a well-defined autocommit state
+  check ((← conn.poisoned.get).isNone) "connection not poisoned"
+  -- the same guard catches a rogue ROLLBACK
+  if ← rogueDbPath.pathExists then IO.FS.removeFile rogueDbPath
+  discard <| expectOk (← withDb rogueDbPath v0 (pure ())) "recreate rogue instance"
+  let conn ← expectOk (← openDbRaw rogueDbPath) "reopen rogue raw"
+  let rollback : Migration := mig
+    [.custom "rollback out from under the engine" fun conn => conn.raw.exec "ROLLBACK"]
+  match ← rollback.applyOn conn v0 1 false none with
+  | .ok _ => throw <| IO.userError "FAIL: a rogue ROLLBACK must abort the migration"
+  | .error e =>
+      check (e.code == "migrate" && (e.message.splitOn "step 1 (\"rollback out from under the engine\")").length == 2)
+        s!"rogue ROLLBACK named: [{e.code}] {e.message}"
+  -- a savepoint-safe nested transaction in a custom step still applies
+  let safe : Migration := mig [
+    .custom "savepoint-safe write" fun conn => do
+      conn.raw.exec "SAVEPOINT step_sp"
+      conn.raw.exec "INSERT INTO author (name, age) VALUES ('Safe', 40)"
+      conn.raw.exec "RELEASE SAVEPOINT step_sp"]
+  let r ← expectOk (← safe.applyOn conn v0 1 false none) "savepoint-safe step applies"
+  check (r.applied == ["savepoint-safe write"]) s!"step journaled: {r.applied}"
+  check ((← rogueCount) == 1) "the savepoint-safe write survived"
+where
+  rogueCount : IO Nat := do
+    let st ← (← SQLite.open rogueDbPath).prepare "SELECT COUNT(*) FROM author"
+    if ← st.step then return (← st.columnInt64 0).toNatClampNeg else return 0
+
 
 
 private def quoteDbPath : System.FilePath := ".lake" / "leandb_test_quote.sqlite"
@@ -4398,6 +4471,7 @@ def main : IO UInt32 := do
   testQuantifiersEndToEnd
   testMigrations
   testMigrationErrorPragmas
+  testCustomStepTxGuard
   testSqlQuoting
   testEmptyEntity
   testBlobColumn
