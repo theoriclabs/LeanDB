@@ -50,14 +50,14 @@ its SQL-translatable approximation. It is not an end-to-end proof of the
 query compiler or SQLite executor. The original predicate still runs on
 decoded rows, and tests compare planned and unplanned execution.
 
-The pushdown correspondence has a first fully-stated instance: the
-predicate IR documents `approx` as the SQL-shippable abstraction of a
-plan, `approx_sound` as its machine-checked soundness lemma, and the
-planned-versus-unplanned differential tests as the agreement check
-against the reference semantics. String predicates follow the widening
-rule: a leaf whose SQL rendering accepts more rows than its Lean
-meaning is counted and kept off deciding paths such as count and
-exists, where the lambda's re-check restores exactness.
+The pushdown correspondence is stated in the predicate IR: `approx` is
+the SQL-shippable abstraction of a plan, `approx_sound` its
+machine-checked soundness lemma, `approx_eq_denote` the exactness law
+for plans with no opaque leaf, and the planned-versus-unplanned
+differential tests the agreement check against the reference semantics
+(`selectSpec`). Every pushed leaf renders exactly or stays in Lean. The
+string predicates (LDB-14) are exact, so windows, counts and existence
+checks over them are decided in SQL.
 
 ### Configurable products
 
