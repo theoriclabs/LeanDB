@@ -3279,6 +3279,85 @@ private def testCustomStepNestedVerbFails : IO Unit := do
   discard <| expectOk (← withDb customStepDbPath recipeSchema do
     discard <| insert Recipe { title := "after", steps := [] }) "instance usable after the abort"
 
+/-- Rows of one table, on a fresh connection to the custom-step instance. -/
+private def customStepRows (table : String) : IO Int64 := do
+  let st ← (← SQLite.open customStepDbPath).prepare s!"SELECT count(*) FROM {quoteIdent table}"
+  discard <| st.step
+  st.columnInt64 0
+
+/-- A custom step whose verb already ran, then fails: the verb's savepoint
+    was released into the migration's transaction, so the migration's
+    rollback takes the verb's rows with it. The transaction depth is back
+    at the top level afterwards, on the rollback path and on the rogue
+    COMMIT guard's path (#126) alike. -/
+private def testCustomStepVerbThenFails : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Order (order "keeper" [item "k" 1])) "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let mig := customStepMigration childSchema
+    [Step.custom "insert order via verb, then fail" (fun conn => do
+      discard <| viaVerb _ (insert Order (order "doomed" [item "p" 1, item "q" 2])) conn
+      throw <| IO.userError "the step fails after its verb")]
+  match ← mig.applyOn conn childSchema 2 (allowDestructive := true) none with
+  | .ok _ => throw <| IO.userError "FAIL: a failing custom step must abort the migration"
+  | .error e =>
+      check ((e.message.splitOn "the step fails after its verb").length > 1)
+        s!"the failure is the step's own error: {e}"
+  check ((← customStepRows "order") == 1) "the verb's parent row rolled back with the migration"
+  check ((← customStepRows "order_items") == 1) "the verb's child rows rolled back with the migration"
+  check ((← conn.txDepth.get) == 0) "transaction depth restored after the rollback"
+  check ((← conn.poisoned.get).isNone) "connection not poisoned"
+  -- the same connection is back at the top level: `append` opens its own
+  -- BEGIN IMMEDIATE transaction and commits
+  discard <| expectOk (← DbM.run conn do
+    let kept := (← fetchAll Order)[0]!
+    append kept (order "keeper" [item "k" 1, item "k2" 2])) "append on the same connection"
+  check ((← customStepRows "order_items") == 2) "the top-level append committed"
+  -- a verb then a rogue COMMIT: the savepoint's RELEASE did not trip the
+  -- guard, the COMMIT does, and the depth is restored on that path too
+  let rogue := customStepMigration childSchema
+    [Step.custom "insert order via verb, then commit" (fun conn => do
+      discard <| viaVerb _ (insert Order (order "early" [item "e" 1])) conn
+      conn.raw.exec "COMMIT")]
+  match ← rogue.applyOn conn childSchema 2 (allowDestructive := true) none with
+  | .ok _ => throw <| IO.userError "FAIL: a rogue COMMIT after a verb must abort the migration"
+  | .error e =>
+      check ((e.message.splitOn "step 1 (\"insert order via verb, then commit\")").length == 2)
+        s!"the guard names the rogue step: {e}"
+  check ((← conn.txDepth.get) == 0) "transaction depth restored after the rogue COMMIT"
+  check ((← conn.poisoned.get).isNone) "connection not poisoned by the rogue COMMIT"
+
+/-- The public combinators nest the same way: inside a custom step,
+    `withTransaction` and `append` (`BEGIN IMMEDIATE` at the top level)
+    open a SAVEPOINT, and a nested `transaction` that aborts rolls back
+    only its own scope while the migration commits the rest. -/
+private def testCustomStepTransactions : IO Unit := do
+  if ← customStepDbPath.pathExists then IO.FS.removeFile customStepDbPath
+  discard <| expectOk (← withDb customStepDbPath childSchema do
+    discard <| insert Order (order "keeper" [item "k" 1])) "seed"
+  let conn ← expectOk (← openDbRaw customStepDbPath) "open raw"
+  let mig := customStepMigration childSchema [
+    Step.custom "insert via withTransaction" (fun conn =>
+      discard <| viaVerb _ (withTransaction do insert Order (order "wt" [item "w" 1])) conn),
+    Step.custom "abort a nested transaction" (fun conn => do
+      let r ← viaVerb _ (transaction do
+        discard <| insert Order (order "aborted" [item "a" 1])
+        return (Tx.abort "no" : Tx String Unit)) conn
+      unless r matches .error "no" do
+        throw <| IO.userError "FAIL: the nested abort returns its value"),
+    Step.custom "append via verb" (fun conn =>
+      discard <| viaVerb _ (do
+        let kept := (← fetchAll Order)[0]!
+        append kept (order "keeper" [item "k" 1, item "k2" 2])) conn)]
+  let r ← expectOk (← mig.applyOn conn childSchema 2 (allowDestructive := true) none)
+    "custom steps running the public combinators"
+  check (r.applied.length == 3) s!"every step journaled: {r.applied}"
+  check ((← conn.txDepth.get) == 0) "transaction depth restored after the commit"
+  let rows ← expectOk (← DbM.run conn (fetchAll Order)) "read back"
+  check (customers rows == #["keeper", "wt"]) s!"the aborted scope alone rolled back: {customers rows}"
+  check (rows[0]!.val.items.length == 2) "the nested append committed with the migration"
+
 def run : IO Unit := do
   testDerived
   testJson
@@ -3288,6 +3367,8 @@ def run : IO Unit := do
   testMigration
   testCustomStepNestedVerb
   testCustomStepNestedVerbFails
+  testCustomStepVerbThenFails
+  testCustomStepTransactions
 
 end ChildD
 
