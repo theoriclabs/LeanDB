@@ -143,6 +143,8 @@ def introspect (path : System.FilePath) : IO RawSchema := do
           pure (iname, uniq != 0, origin, part != 0)
       let mut tblIndexes : Array RawIndex := #[]
       for (iname, isUnique, origin, isPartial) in indexList do
+        -- Engine-owned access paths (`_leandb_fk_*`) are not the file's schema.
+        if iname.startsWith "_leandb_" then continue
         let cols ← collectRows db s!"PRAGMA index_info({quoteIdent iname})"
           fun stmt => do
             -- An indexed expression has a NULL column name.
@@ -158,7 +160,7 @@ def introspect (path : System.FilePath) : IO RawSchema := do
     else if ty == "trigger" then
       triggers := triggers.push name
     else if ty == "index" then
-      indexes := indexes.push name
+      unless name.startsWith "_leandb_" do indexes := indexes.push name
   return { tables, views, triggers, indexes }
 
 /-! ## Name mangling -/

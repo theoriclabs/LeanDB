@@ -30,3 +30,8 @@ import LeanDb.Typed.Write
 import LeanDb.Typed.Txn
 import LeanDb.Typed.Harness
 import LeanDb.Typed.Laws
+import LeanDb.Typed.Members
+import LeanDb.Typed.Constraint
+import LeanDb.Typed.Rollback
+import LeanDb.Typed.Link
+import LeanDb.Typed.Gate

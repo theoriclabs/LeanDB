@@ -2,6 +2,12 @@ import LeanDb.Core
 
 namespace LeanDb
 
+/-- Adapter metadata for a declaration-only member field. It occupies no row
+    column and is reconstructed as the portable empty declaration marker. -/
+class MemberDeclaration (α : Type) where
+  Target : Type
+  empty : α
+
 /-! # Entities
 
 An entity is a flat structure whose fields are `ColCodec` scalars, `Option`s
@@ -320,6 +326,38 @@ def TableSpec.indexDdl (t : TableSpec) : Array String :=
       | none => ""
     s!"CREATE {kind} IF NOT EXISTS {quoteIdent (ix.resolvedName t.name)} ON {quoteIdent t.name} ({cols}){where?}"
 
+/-- The engine-owned index on one reference column: `_leandb_fk_<table>_<column>`.
+    The reserved prefix keeps it apart from declared index names. -/
+def TableSpec.fkIndexName (table column : String) : String :=
+  s!"_leandb_fk_{table}_{column}"
+
+/-- Is `column` the leading column of a declared full (non-partial) index?
+    Such an index already answers `column = ?`. -/
+def TableSpec.leadsIndex (t : TableSpec) (column : String) : Bool :=
+  t.indexes.any fun ix => ix.partialWhere.isNone && ix.columns[0]? == some column
+
+/-- Access paths for foreign keys. Every reference column that no declared
+    full index leads gets `fkIndexName`, so the restrict count of a delete,
+    SQLite's own `ON DELETE` CASCADE/RESTRICT enforcement and reverse lookups
+    (`loan WHERE member = ?`) search instead of scanning. These indexes are
+    derived from the spec but are not declared and not part of the
+    fingerprint: they hold no data and change no answer, so adding them is
+    never schema drift. `Conn.verify` creates them on every open, idempotently,
+    and migrations create them with the table. -/
+def TableSpec.fkIndexDdl (t : TableSpec) : Array String :=
+  t.columns.filterMap fun c =>
+    if c.fkTable.isNone || t.leadsIndex c.name then none
+    else some s!"CREATE INDEX IF NOT EXISTS {quoteIdent (TableSpec.fkIndexName t.name c.name)} \
+ON {quoteIdent t.name} ({quoteIdent c.name})"
+
+/-- Drop engine FK indexes made redundant by a declared index that now leads
+    the column. -/
+def TableSpec.fkIndexCleanupDdl (t : TableSpec) : Array String :=
+  t.columns.filterMap fun c =>
+    if c.fkTable.isSome && t.leadsIndex c.name then
+      some s!"DROP INDEX IF EXISTS {quoteIdent (TableSpec.fkIndexName t.name c.name)}"
+    else none
+
 /-- Table DDL plus every index, joined for fingerprinting. -/
 def TableSpec.fullDdl (t : TableSpec) : String :=
   String.intercalate ";\n" (t.ddl :: t.indexDdl.toList)
@@ -375,6 +413,10 @@ EnumSet supports at most {EnumSet.maxVariants}")
     for ix in spec.indexes do
       if ix.columns.isEmpty then
         throw (.schemaInvalid s!"table {String.quote spec.name} declares an index with no columns")
+      -- Engine-owned indexes (foreign-key access paths) use this prefix.
+      if (ix.resolvedName spec.name).startsWith "_leandb_" then
+        throw (.schemaInvalid s!"table {String.quote spec.name}: index {ix.resolvedName spec.name} \
+uses the reserved _leandb_ prefix")
       for col in ix.columns do
         unless col == "id" || columnNames.contains col do
           throw (.schemaInvalid s!"table {String.quote spec.name}: index {ix.resolvedName spec.name} \

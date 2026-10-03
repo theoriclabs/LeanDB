@@ -282,6 +282,7 @@ private def transformTable (conn : Conn) (old new : TableSpec)
       ins.exec
       n := n + 1
     else break
+  for sql in carrySequenceSql old.name tmp do db.exec sql
   db.exec s!"DROP TABLE {quoteIdent old.name}"
   db.exec s!"ALTER TABLE {quoteIdent tmp} RENAME TO {quoteIdent new.name}"
   return n
@@ -338,6 +339,13 @@ def Migration.applyOn (conn : Conn) (prev : List TableSpec) (m : Migration)
                 match m.steps.find? (·.table? == some spec.name), prev.find? (·.name == spec.name) with
                 | some (.transform _ d run), some old =>
                     let n ← transformTable conn old spec run
+                    -- The scratch table was created without indexes and the
+                    -- old ones went with the dropped table. Create them here,
+                    -- inside this transaction: a unique index that the
+                    -- rewritten rows violate aborts the whole migration
+                    -- instead of surfacing at the next open, after commit.
+                    for sql in spec.indexDdl do db.exec sql
+                    for sql in spec.fkIndexDdl do db.exec sql
                     applied := applied ++ [s!"{d}: {n} rows"]
                 | _, _ =>
                     for sql in step.sql do db.exec sql

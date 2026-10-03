@@ -64,8 +64,21 @@ def MigStep.destructive : MigStep → Bool
   | .dropColumn .. | .dropTable .. => true
   | _ => false
 
+/-- Carry `old`'s AUTOINCREMENT counter to the scratch table `tmp` that is
+    about to replace it, before `old` is dropped. Copying rows gives `tmp`
+    only `max(id)`; a table whose newest rows were deleted had a higher
+    counter, and without this a rebuild would hand those ids out again. Run
+    after `tmp` exists (so `sqlite_sequence` does) and after the copy. -/
+def carrySequenceSql (old tmp : String) : List String :=
+  let o := (Col.text old).sqlLit
+  let t := (Col.text tmp).sqlLit
+  [ s!"INSERT INTO sqlite_sequence (name, seq) SELECT {t}, seq FROM sqlite_sequence \
+WHERE name = {o} AND NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = {t})",
+    s!"UPDATE sqlite_sequence SET seq = (SELECT MAX(seq) FROM sqlite_sequence \
+WHERE name IN ({o}, {t})) WHERE name = {t}" ]
+
 def MigStep.sql : MigStep → List String
-  | .createTable spec => spec.ddl :: spec.indexDdl.toList
+  | .createTable spec => spec.ddl :: spec.indexDdl.toList ++ spec.fkIndexDdl.toList
   | .addColumn t c => [s!"ALTER TABLE {quoteIdent t} ADD COLUMN {c.ddlFragment}"]
   | .dropColumn t c => [s!"ALTER TABLE {quoteIdent t} DROP COLUMN {quoteIdent c}"]
   | .dropTable t => [s!"DROP TABLE {quoteIdent t}"]
@@ -73,10 +86,11 @@ def MigStep.sql : MigStep → List String
       let tmp := s!"_leandb_new_{spec.name}"
       let cols := String.intercalate ", " ("id" :: copyCols.map quoteIdent)
       [ spec.ddlNamed tmp (ifNotExists := false),
-        s!"INSERT INTO {quoteIdent tmp} ({cols}) SELECT {cols} FROM {quoteIdent spec.name}",
-        s!"DROP TABLE {quoteIdent spec.name}",
+        s!"INSERT INTO {quoteIdent tmp} ({cols}) SELECT {cols} FROM {quoteIdent spec.name}" ]
+      ++ carrySequenceSql spec.name tmp ++
+      [ s!"DROP TABLE {quoteIdent spec.name}",
         s!"ALTER TABLE {quoteIdent tmp} RENAME TO {quoteIdent spec.name}" ]
-      ++ spec.indexDdl.toList
+      ++ spec.indexDdl.toList ++ spec.fkIndexDdl.toList
   | .restampShape .. => []
   | .addIndex t ix =>
       ({ name := t, columns := #[], indexes := #[ix] } : TableSpec).indexDdl.toList
@@ -430,6 +444,11 @@ private def readStoredSchemaRaw (db : SQLite) : IO (Except String (Option (List 
     | .error e => return .error s!"stored schema metadata is invalid: {e}"
   else
     return .ok none
+
+/-- The schema the instance was last shaped to: `.ok none` when it records
+    none, `.error` (naming why) when the record is unreadable. -/
+def readStoredSchemaChecked (conn : Conn) : IO (Except String (Option (List TableSpec))) :=
+  readStoredSchemaRaw conn.raw
 
 /-- The schema the instance was last shaped to, if readable. -/
 def readStoredSchema (conn : Conn) : IO (Option (List TableSpec)) := do
