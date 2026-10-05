@@ -1000,11 +1000,213 @@ No `Slot` is built other than through its codec.
 as Lean does. An `import` inside a doc comment, such as in `LeanApp/Core.lean`,
 had made a module "import itself". The script also guards against cycles.
 
+## M3: LeanDb.Model
+
+LeanDB now owns the data model. It no longer depends on LeanReact: the old bridge
+(`adapters/domain`, `scripts/ddd_bridge.py`, `scripts/ddd_compile_portable.py`)
+is gone. LeanReact was only read during this phase, never edited.
+
+### Layout
+
+- `lakefile.toml` requires `leanontology` as a path dependency (`../leanontology`).
+  `lake-manifest.json` has the matching `path` entry; nothing was downloaded.
+- The `LeanDb` library has three roots: `LeanDb` (native, unchanged API), `LeanDb.Model`
+  (portable) and `LeanDb.Native` (the model on SQLite).
+- `LeanDbModel` is a separate library holding `LeanDb.Model` alone.
+- `scripts/ModelClosure.lean` checks that the import closure of `LeanDb.Model` is
+  only `LeanDb.Model.*`, `LeanOntology.*`, `Lean`, `Std` and `Init`. Today that is
+  1449 modules.
+
+**Decision: fold the bridge into LeanDB proper as `LeanDb.Native.*`.** The bridge
+used to compile out of tree against a peer checkout. Now it is ordinary LeanDB
+code, built and tested by Lake with everything else. Keeping it separate had no
+remaining benefit, because both its imports (the core and the model) live in this
+repo.
+
+### Modules
+
+`open LeanDb.Model` exports:
+
+| Module | What it provides |
+| --- | --- |
+| `LeanDb.Model.Metadata` | `Domain`, `Entity`, `FieldType`, `FieldKind`/`FieldMetadata`/`EditorMetadata`, `StorageCodec`, `HasRecord`, `EditableField`, `NamedField`, `Change` (`set`/`andThen`/`replace`), `UniqueKey`, `Unique`, `LinkKey`, `Constraint`, `Time`, `recordCodec`/`enumCodec`/`variantCodec`. It also re-exports from `Ontology`: `Ref`, `Name`, `Title`, `Text`, `Email`, `Password`, `PasswordHash`, `Session`, `Instant`, with their parsers (`Name.parse`, …). |
+| `LeanDb.Model.Represent` | `Representation`, `RepresentationCheck`, and `represent T as R by enc checked dec`. |
+| `LeanDb.Model.Resources` | `StorageResources` (fields `entity`, `unique`, `link`, `column`), `Has{Entity,Unique,Link,Column}Resource`, `portableStorage`, and the named instances `portableEntity`/`Unique`/`Link`/`Column`. |
+| `LeanDb.Model.Request` | `Access` (`query`/`command`), `OpScope`, `Row Scope T` with `Trusted.row`, `StorageRequest`, `Program`, `Interpreter`, `Program.run`, `Program.toCommand`, `Interpreter.toQuery`, `MonadStorage`, `Program.lift`. |
+| `LeanDb.Model.DB` | `DB`, `Query`, `MonadLift Query DB`, and lifts into any `MonadStorage` monad. Also `HasRow`, `Changes`, the generic steps `DB.insert/insertTotal/update/updateTotal/patch/patchTotal/delete` and `Query.find/findBy/select/linkField`, and the scoped `Row T` syntax. |
+| `LeanDb.Model.Deriving` | `deriving Domain`/`Entity`, payload variants, `ensureWire`, the env extensions, and the generation helpers. |
+| `LeanDb.Model.Entities` | `constraint T.c : unique f` / `unique (f, g)` / `: cascade f`, `private constraint`, `internal T.op, …`, `link E.a E.b`, `entity_operations`, `deriving Changes` and `deriving instance Changes (except := […]) for T`, and the `#print T.Conflict` override. |
+| `LeanDb.Model.Requirements` | `derive_requirements f, …` and the generalization machinery (see below). |
+| `LeanDb.Model.Memory` | The in-memory backend. |
+
+`LeanDb.Native` exports:
+
+- `storageResources S`, and the evidence types: `EntityStorage`, `UniqueStorage`,
+  `LinkStorage`, `LinkEvidence`, `FieldStorage`, `ColumnEvidence`, `SameStorage`.
+- The column codecs: the scalars, `Ref`, `PasswordHash`, and `storageColCodec` for
+  structured values.
+- `native_schema%`, `StorageFault`, and the hooks (`EntityStorage.find/select/findBy/insert/update/delete`,
+  `LinkStorage.project/projectIf`, `LinkEvidence.project`).
+- The interpreters (`commandRequest`/`commandInterpreter`, `queryRequest`/`queryInterpreter`),
+  `Program.toTxn`/`toRead`, and `runCommand`/`runQuery`.
+
+### Storage IR
+
+`StorageRequest (resources : StorageResources) (Scope : Type) : Access → Type → Type 1` has
+these constructors:
+
+- `find` (`Option (Row Scope T)`), any access.
+- `findBy storage (unique : UniqueKey T K) (lookup : resources.unique storage unique) key`, any access.
+- `select`, any access.
+- `linkField edges key link targets field column parent` (`List V`), any access.
+- `insert storage value (conflicts : List (Constraint C))` (`Except C (Ref T)`), `.command` only.
+- `update storage row (patch : Change T) conflicts` (`Except C Unit`), `.command` only.
+- `delete storage row` (`Unit`), `.command` only.
+
+How it is used:
+
+- `T.update` and `T.patch` both lower to `update`: `T.update` with `Change.replace`,
+  `T.patch` with a lens patch. Conflicts are values. Every other failure belongs to
+  the backend.
+- `Program resources access Scope` is the free monad over these requests
+  (`pure`/`bind`/`request`).
+- `DB α := Program portableStorage .command OpScope α`, and `Query α` is the same at
+  `.query`.
+- A write inside a `Query` is a type error (see the `QueryWrite` fixture).
+
+Extension points for LeanAPI:
+
+- **Embedding.** LeanAPI's operation request type gets one constructor carrying a
+  `StorageRequest resources.toStorageResources Scope (accessOf kind) A`. Then
+  `instance : MonadStorage portableStorage .command OpScope (Op ε)` makes `DB`
+  lift into `Op` (and likewise `Query` into `ReadOp`). The lift is `Program.lift`,
+  which is generic, so publication leaves it unfolded.
+- **Family.** `structure Resources extends LeanDb.Model.StorageResources where auth : …`.
+- **Commands.** `credential C.p C.h` is one more
+  `@[command_elab LeanDb.Model.Entities.entityFieldPair]` elaborator. The model's
+  elaborator claims only `link` and throws `throwUnsupportedSyntax` for any other
+  keyword.
+- **Not defined in LeanDB.** `Op`/`ReadOp`, `require`, `Clock`/`Now`, `Principal`,
+  `Domain`/`Wire` instances for `Empty`, and `RouteInput`.
+
+### Interpreter interface
+
+- `structure Interpreter (m) resources access Scope where request : StorageRequest … A → m A`.
+- `Program.run interpreter program` is the single semantics.
+- Backends:
+  - In memory: `Memory.interpreter` (any family, `Memory.Engine = StateT Store (Except Fault)`)
+    and `Memory.run`. It now enforces references as SQLite does: `missingReference`
+    and `restricted` faults, and `Fault.code` uses the same codes as `StorageFault.code`.
+  - SQLite: `LeanDb.Native.commandInterpreter fault : Interpreter (Txn σ S ε) (storageResources S) .command σ`
+    and `queryInterpreter : Interpreter (ExceptT StorageFault (Read S)) … .query Scope`.
+- `Memory.Store` no longer has `now`, `sessions` or `kdfRuns`. Those are operation
+  state: LeanAPI wraps the store.
+
+### Requirements and inference
+
+`derive_requirements f` generates, for a `DB`/`Query` definition `f`:
+
+- `f.Requirements : StorageResources → Type 1`
+- `f.Requirements.infer : [capabilities…] → f.Requirements r`
+- `f.portableRequirements`
+- `f.withResources : {r} → f.Requirements r → {Scope} → args → Program r access Scope α`
+
+The machinery is parameterized by `Requirements.Targets`, with these fields:
+
+- `familyType`
+- `portable` (the family constant)
+- `derived` (`portableStorage ↦ r.toStorageResources` for an extended family)
+- `instances` (`Requirements.portableInstances` plus LeanAPI's own)
+- `scope`
+- `root`
+
+It exposes `inline`, `collectInstances`, `abstractTargets`, `dependencyOrder`,
+`withCapabilityBinders`, `generalize targets f body` (LeanAPI passes
+`f.flowWithResources` as `body`), `addDefinition`, and `storageNode?`/`storageNodes`. The last two read the kind,
+access, entity and constraint identities of each `StorageRequest` in an unfolded
+body. That replaces the `RequestF` scan in `#domain_inspect`.
+
+### Dropped (milestone 1)
+
+- **Portable surface:** `Members`, the `member`/`projection`/`auth` family slots,
+  `credential` (it moves to LeanAPI), `Principal`, the `<entity>Url` alias,
+  `@[entity]`, portable `unique%`, and `Flow`/`Policy`/`Projection`/`SignedIn`/`Viewer`.
+- **Bridge:** `MemberStorage`, `HasMemberStorage`, `HasFieldProjection`,
+  `ProjectionStorage`, `FieldStorage.project`, and `MemberStorage.contains/project/includeActor`.
+- **Bridge fixtures:** `Access`, `Storage`, `ProjectionEvolution`,
+  `PartifulProjection`, `MissingProjection`, and `WrongProjection{Target,Getter,Lens}`.
+- **Kept:** native `members%` and `unique%` are unchanged.
+
+### Fixes made on the way
+
+- **Unique instance names.** Generated `T.Field`/`T.Conflict` instances, and the
+  native `T.Field` `DecidableEq`/`Repr` (`Derive.declareSymbols`), are now named in
+  the entity's own namespace. A `deriving` clause had named them `instReprField`
+  in the current namespace, so two modules that declared entities at the same level
+  could not be imported together.
+- **Name resolution.** `native_schema%` now resolves type names the usual way, so
+  `open` applies.
+- **Exports.** An exported type does not export its namespace, so
+  `export Ontology (Name)` alone breaks `Name.parse`. Each function is therefore
+  exported explicitly.
+
+### Tests
+
+These are in `TestsModel/`; `leandb_model_tests` runs them.
+
+**Ported from LeanReact (model parts):**
+
+- `Represent` (`Interval`/`SortedList`)
+- `Loans`
+- `Post` (the post's entities, rules, `Changes`, the requirement inference
+  `#guard_msgs`, and `storageNodes` checks)
+- `Commands` (new): every declaration command on its own line, a represented
+  type with a lambda encoder (`represent Board as List Move by (·.moves) checked
+  Board.replay`). The identifier-led commands are wrapped in
+  `withPosition(… colGt …)`, so `internal Game.insert` no longer takes the next
+  line's `link` as its third identifier. Before the fix it did, and the LeanReact
+  syntax still does.
+
+**Run on both backends (`Twin`):**
+
+- `LoansRun`, `PostRun` and `RepresentRun`. Each step runs in memory (the
+  portable `f args`) and on SQLite (`f.withResources f.Requirements.infer args`).
+- After every step:
+  - the answers or fault codes must be equal;
+  - SQLite must equal its pure meaning;
+  - every table (ids, row JSON, identity counter) must be equal across the two
+    backends.
+
+**Ported from the old bridge (SQLite only):**
+
+- `LibraryRuntime` (migration, EXPLAIN plans, `PasswordHash` column)
+- `JsonColumns`
+- `RepresentNative`
+- `GateEvolution`
+- `UniqueSources`
+
+**Negative fixtures (`fixtures/model/`, 16):**
+
+- Model: `MissingConflictCase`, `ConstraintAfterUse`, `PrivateFindBy`,
+  `InternalSelect`, `ChangesExcludesField`, `RepresentMissing`, and
+  `Unsupported{Dependent,Inherited,Payload}`.
+- Programs: `QueryWrite`, `ScopeEscape`, `WrongFindId`.
+- Native evidence: `UniqueEvolution`, `WrongFieldStorage`, `WrongUniqueGetter`,
+  `UndeclaredUniqueKey`.
+
+| Command | Result |
+| --- | --- |
+| `lake build LeanDb leandb_tests leandb_ddd_tests leandb_model_tests` | exit 0 |
+| `.lake/build/bin/leandb_tests` | exit 0 |
+| `.lake/build/bin/leandb_ddd_tests` | exit 0 |
+| `python3 scripts/ddd_negative.py` | exit 0 (9 rejections) |
+| `python3 scripts/ddd_model.py` (replaces `ddd_bridge.py`) | exit 0: closure portable, 8 scenarios, 16 rejections |
+| `git diff --check` | clean |
+
 ## Next step
 
-1. When LeanReact adds the join request and `onDelete := cascade`, call
-   `LinkStorage.project`/`projectIf` from the `link` slot and
-   `Derive.declareCascade` from `native_schema%`. Then re-run `PostRuntime`
-   with the post's real `Party.guests`.
-2. LeanAPI wires the hooks into `Native.readRequest`/`commandRequest`.
-3. Switch the bridge to live LeanReact when told, and re-run every gate.
+1. LeanAPI (phase 3) embeds `StorageRequest` in its operation IR, as described
+   in "M3: LeanDb.Model". It uses `Requirements.generalize` with its own `Targets`
+   and runs `LeanDb.Native.commandInterpreter` natively.
+2. LeanReact (phase 4) imports `LeanDb.Model` in place of `LeanApp.Domain`'s model
+   half.

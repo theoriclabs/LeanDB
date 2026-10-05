@@ -17,12 +17,15 @@ Install [elan](https://github.com/leanprover/elan), the Lean toolchain manager.
 Then build LeanDB:
 
 ```bash
+git clone https://github.com/theoriclabs/leanontology.git leanontology
 git clone https://github.com/theoriclabs/LeanDB.git leandb
 cd leandb
 lake build leandb
 ```
 
-SQLite is bundled. The first build takes a few minutes.
+SQLite is bundled. The first build takes a few minutes. During development,
+LeanDB requires [leanontology](https://github.com/theoriclabs/leanontology) as
+a path dependency, checked out next to it (`../leanontology`).
 Start with the [tickets example](examples/tickets/README.md).
 
 ## Typed data
@@ -224,6 +227,31 @@ on `LeanDb.Base`; library callers can pass the same `LogConfig` to `openDb` or
 `openDbRaw`. Environment settings override those defaults at connection open,
 including after restore. Counts must be nonnegative integers below
 `9223372036854775807`; invalid settings fail before the database is opened.
+
+## A portable data model
+
+`LeanDb.Model` describes a domain once: entities, checked value types, unique
+and cascade constraints, links, and storage programs (`DB`, `Query`). It does
+not use SQLite, so it also compiles for the browser.
+
+```lean
+import LeanDb.Model
+open LeanDb.Model
+
+structure Member where
+  name  : Name
+  email : Email
+  deriving Entity
+
+constraint Member.uniqueEmail : unique email
+
+def join (name : Name) (email : Email) : DB (Except Member.Conflict (Ref Member)) :=
+  Member.insert { name, email }
+```
+
+The same programs run in memory (`LeanDb.Model.Memory`) and on SQLite
+(`LeanDb.Native`, with `native_schema%` and `derive_requirements`).
+`python3 scripts/ddd_model.py` runs the model tests on both backends.
 
 ## Examples
 

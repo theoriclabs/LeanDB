@@ -9,8 +9,23 @@ name = "leansqlite"
 git = "https://github.com/leanprover/leansqlite"
 rev = "0be4df908d1a8e75b58961041e2b4973692623df"
 
+# Wire codecs and checked value types for `LeanDb.Model`. A path dependency on
+# the sibling checkout during development (a pinned git require is DDD-LAPI-04).
+[[require]]
+name = "leanontology"
+path = "../leanontology"
+
+# `LeanDb` is the native library (SQLite). `LeanDb.Model` is the portable data
+# model (no SQLite, no native code; LeanJS-compilable): its import closure is
+# LeanOntology, Lean and itself only. `LeanDb.Native` runs the model on SQLite.
 [[lean_lib]]
 name = "LeanDb"
+roots = ["LeanDb", "LeanDb.Model", "LeanDb.Native"]
+
+# The portable model alone: `lake build LeanDbModel` never compiles SQLite.
+[[lean_lib]]
+name = "LeanDbModel"
+roots = ["LeanDb.Model"]
 
 
 # Per-ticket test modules (TestsLdbNN) the `leandb_tests` exe imports.
@@ -77,6 +92,15 @@ name = "TestsDddM2"
 [[lean_exe]]
 name = "leandb_ddd_tests"
 root = "TestsDdd"
+
+# `LeanDb.Model` tests: the data model (represent, entities, constraints, links,
+# Changes) and its programs run in memory and on SQLite (`LeanDb.Native`).
+[[lean_lib]]
+name = "TestsModel"
+
+[[lean_exe]]
+name = "leandb_model_tests"
+root = "TestsModel"
 
 [[lean_lib]]
 name = "CheckAxioms"
