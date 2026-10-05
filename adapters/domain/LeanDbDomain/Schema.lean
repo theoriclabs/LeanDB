@@ -42,19 +42,31 @@ def elabNativeSchema : CommandElab := fun stx => do
         if entry.owner == type then
           LeanDb.Derive.declareCascade entry.owner entry.field
       -- Closed enum storage is derived from the same enum, never a duplicate.
+      -- Any other field type with a portable `StorageCodec` and no native codec
+      -- (a list, a record, a variant with payloads, a represented type) is one
+      -- TEXT column of its canonical JSON (`storageColCodec`).
       for field in getStructureFields (← getEnv) type do
         let ty ← fieldType type field
-        let enum? ← liftTermElabM do
+        let storage? ← liftTermElabM do
           let ty ← whnf ty
           if (← synthInstance? (mkApp (mkConst ``LeanDb.ColCodec) ty)).isSome then return none
-          match ty with
-          | .const name _ =>
-              let info ← getConstInfo name
-              if info matches .inductInfo _ then
-                if !(isStructure (← getEnv) name) then return some name
-              return none
-          | _ => return none
-        if let some enum := enum? then discard <| LeanDb.Derive.deriveClosedEnum enum
+          if (← synthInstance? (mkApp (mkConst ``LeanDb.MemberDeclaration) ty)).isSome then return none
+          if let .const name _ := ty then
+            if let .inductInfo info ← getConstInfo name then
+              if !(isStructure (← getEnv) name) then
+                let payloadFree ← info.ctors.allM fun ctor => do
+                  return (← getConstInfoCtor ctor).numFields == 0
+                if payloadFree then return some (Sum.inl name)
+          if (← synthInstance? (mkApp (mkConst ``LeanApp.Domain.StorageCodec) ty)).isSome then
+            return some (Sum.inr ty)
+          return none
+        match storage? with
+        | some (.inl enum) => discard <| LeanDb.Derive.deriveClosedEnum enum
+        | some (.inr valueType) =>
+            let valueStx ← liftTermElabM do
+              withOptions (fun options => options.setBool `pp.fullNames true) (PrettyPrinter.delab valueType)
+            elabCommand (← `(instance : LeanDb.ColCodec $valueStx := LeanDb.Domain.storageColCodec $valueStx))
+        | none => pure ()
       -- Portable derivation owns T.Field. Native symbols are separate storage
       -- evidence derived from the same fields, with no duplicate record type.
       discard <| LeanDb.Derive.deriveEntityCore type (fieldTyName := type ++ `DbField)

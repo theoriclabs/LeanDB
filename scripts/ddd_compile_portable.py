@@ -21,18 +21,41 @@ a.output = a.output.resolve()
 seen = set()
 env = dict(os.environ, LEAN_PATH=os.pathsep.join(filter(None, [str(a.output), a.search_path])), LEAN_NUM_THREADS='2')
 
+def header_imports(source):
+    """Imports of the module header only, as Lean reads them: an `import` in a
+    later doc comment or code block is not one."""
+    imports, in_block = [], False
+    for line in source.splitlines():
+        stripped = line.strip()
+        if in_block:
+            in_block = '-/' not in stripped
+            continue
+        if not stripped or stripped.startswith('--'):
+            continue
+        if stripped.startswith('/-'):
+            in_block = '-/' not in stripped[2:]
+            continue
+        match = re.match(r'^(?:public\s+)?import\s+(.+?)\s*$', stripped)
+        if match:
+            imports.extend(match[1].split())
+        elif stripped == 'prelude' or stripped.startswith('module'):
+            continue
+        else:
+            break
+    return imports
+
+in_progress = set()
+
 def build(module):
-    if module in seen:
+    if module in seen or module in in_progress:
         return
     src = a.source / (module.replace('.', '/') + '.lean')
     if not src.exists():
         return  # Toolchain-provided import.
+    in_progress.add(module)
     source = src.read_text()
-    for line in source.splitlines():
-        match = re.match(r'^\s*(?:public\s+)?import\s+(.+?)\s*$', line)
-        if match:
-            for dep in match[1].split():
-                build(dep)
+    for dep in header_imports(source):
+        build(dep)
     out = a.output / (module.replace('.', '/') + '.olean')
     out.parent.mkdir(parents=True, exist_ok=True)
     print(module, flush=True)

@@ -67,6 +67,11 @@ run_fixture("ProjectionEvolution")
 run_fixture("GateEvolution")
 # Generality fixture: an unrelated library-loans domain from public API only.
 run_fixture("LibraryRuntime")
+# Structured values (lists, records) stored as one canonical-JSON column.
+run_fixture("JsonColumnRuntime")
+# A `represent`ed private-constructor type as a field (needs LeanReact's `represent`).
+if (args.portable.resolve() / "engine/LeanApp/Domain/Represent.lean").exists():
+    run_fixture("RepresentRuntime")
 for fixture, expected, error_count in [
     ("MissingProjection", ("failed to synthesize", "HasProjectionResource", "alias"), 1),
     ("WrongProjectionTarget", ("type mismatch", "FieldStorage", "relation.target.entity", "HasProjectionResource"), 2),

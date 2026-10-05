@@ -1,6 +1,7 @@
 import LeanApp.Domain.Metadata
 import LeanDb.Typed.Members
 import LeanDb.Typed.Constraint
+import LeanDb.Migrate
 
 /-! Optional portable/native storage bridge. Build with BOTH packages on the
     import path; core LeanDB does not depend on LeanApp or the browser compiler.
@@ -110,6 +111,24 @@ instance [Ontology.HasTypeId T] : ColCodec (LeanApp.Domain.Ref T) where
 
 instance [Ontology.HasTypeId T] [LeanDb.Entity T] : RefTarget (LeanApp.Domain.Ref T) where
   target := some (LeanDb.Entity.tableName T)
+
+/-- A structured portable value (a list, a record, a variant with payloads, a
+    represented type) stored as ONE TEXT column holding the canonical JSON of its
+    `StorageCodec`. Every read decodes through the same codec, including its
+    checks; a stored text that is not JSON, or that the codec refuses, is a typed
+    `decode` failure naming the table and column (a `DbFault.corruption` for a
+    read), never a substitute value. The schema is recorded as the column's
+    `wire:` shape, so a changed schema changes the fingerprint and a migration
+    over it is refused by name. No SQL `CHECK` is declared: the codec's decode is
+    the authoritative check, and a `json_valid` CHECK would only catch a subset. -/
+@[reducible] def storageColCodec (α : Type) [codec : LeanApp.Domain.StorageCodec α] : ColCodec α where
+  sqlType := .text
+  toCol := fun value => .text (codec.codec.encode value).compress
+  fromCol := fun col => do
+    let text ← fromCol (α := String) col
+    let json ← (Lean.Json.parse text).mapError fun why => s!"stored value is not JSON: {why}"
+    (codec.codec.decode json).mapError validationMessage
+  shape := some (externalShapePrefix ++ codec.codec.schema.toJson.compress)
 
 /-- A `PasswordHash` column (e.g. `Credential.hash`): TEXT, the hash's sealed storage text
     (`Trusted.passwordHashText`/`passwordHash`, the adapter boundary). A

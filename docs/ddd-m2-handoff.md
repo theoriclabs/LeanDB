@@ -922,6 +922,84 @@ The gates are run by `.lake/ddd-m2-scratch/leandb-gates-cp3.sh`, with logs in
 
 The protected files are byte-identical to the baseline.
 
+## Structured values in one column
+
+**Investigation** (against `frozen-w2/leanreact-cp4`, before the change): the
+portable layer accepts `structure Basket where items : List Item; deriving Entity`
+(`Item` a record of two payload-free enums) and a record field `extra : Item`.
+`native_schema%` refused both:
+
+- The list was refused with: `field 'items' of Basket is 'List Item' but Item is
+  not an Inline record; a child table needs 'deriving LeanDb.Inline' … (or give
+  'List Item' a ColCodec of its own to store it as one column)`.
+- The record was refused with: `failed to synthesize LeanDb.ColCodec Item`.
+
+**Rule.** In `native_schema%`, a field type with a portable `StorageCodec`, no
+native `ColCodec`, and that is not a payload-free enum (those stay closed-world
+TEXT with a CHECK, as before) gets `storageColCodec` (in
+`LeanDbDomain.Storage`). This covers a list, a record, a variant with payloads,
+and a represented type. The rule is type-directed and covers no app names.
+
+- **Storage** is one TEXT column holding the canonical JSON of the codec's
+  `encode` (`Lean.Json.compress`, keys in order).
+- **Reads** parse the text and decode it through the same codec, checks
+  included, on every read. Text that isn't JSON, or a value the codec refuses,
+  is a typed `DbError.decode table column`. A read reports it as
+  `DbFault.corruption "<table>.<column>: …"`; it is never a substitute value.
+- **Fingerprint.** The column's shape is `wire:<schema JSON>`, so it is in the
+  fingerprint. The engine refuses a migration across a changed stored schema by
+  name (`externalShapePrefix`, in core `Migrate.lean`), because old values may
+  not decode.
+- **Decision: no SQL CHECK** (no `json_valid`). The codec's decode, including
+  checked constructors, is the authoritative check and runs on every read. A
+  `json_valid` CHECK would catch only a subset, change the DDL of every such
+  column, and stand in the way of raw-SQL repair.
+- **Migrations.** Adding such a field needs a fill, as for any required field:
+  `migration% addDelivery := Order.addField deliverTo (fill := Address.mk .pickup 0)`.
+  The fill is stored through the same codec.
+- **Payload-carrying inductives** are no longer sent to `deriveClosedEnum`
+  (which refused them). They take the JSON column when they have a
+  `StorageCodec`.
+
+**Test: `adapters/domain/Tests/JsonColumnRuntime.lean`.** This is a kitchen
+domain from public API only, run on SQLite. Each step is compared with
+`Txn.denote`/`Read.denote` on the full state and counters, with WF checked:
+
+- `Order.lines : List Line`, a list of records of two enums.
+- `Order.deliverTo : Address`, a record with an enum and a `Nat`.
+- An old database without `deliverTo`: the gate refuses, then backfills, and
+  the old lines are kept.
+- A changed `Line` schema (a new field) is refused by name.
+- The stored text equals the canonical wire JSON.
+- `placeOrder` and `orderLines` through `Flow.run`.
+- `Order.update` round-trips the whole list.
+- Corruption written with raw SQL is a `corruption` fault naming the column:
+  - `not json`
+  - an unknown constructor
+  - a missing record field
+  - an unknown key in a record
+
+**Represented private-constructor types: `adapters/domain/Tests/RepresentRuntime.lean`.**
+This test builds against the committed live LeanReact (`1a25ecf`, read-only)
+and uses `represent Slot as Nat × Nat by Slot.toPair checked Slot.check`.
+`Slot` has a private constructor and needs `start < finish`, and is a field of a
+`Booking` alongside `seats : List Seat` (a list of records). No LeanDB change
+was needed: `represent` gives `Slot` a `StorageCodec`, and the rule above
+applies unchanged. The test checks:
+
+- the stored text is the representation's canonical JSON (`[9,11]`)
+- reads go through `Slot.check`
+- `moveTo` (`Booking.update`) round-trips
+- a stored `[16,14]`, which fails the check, and a stored `"noon"`, which has
+  the wrong shape, are both `booking.slot:` corruption faults
+- a seat with an unknown aisle is a `booking.seats:` fault
+
+No `Slot` is built other than through its codec.
+
+`scripts/ddd_compile_portable.py` now reads imports only from a module header,
+as Lean does. An `import` inside a doc comment, such as in `LeanApp/Core.lean`,
+had made a module "import itself". The script also guards against cycles.
+
 ## Next step
 
 1. When LeanReact adds the join request and `onDelete := cascade`, call
