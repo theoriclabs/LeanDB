@@ -703,6 +703,20 @@ def delete [Entity α] (id : Id α) : DbM Unit := withLog "delete" (Entity.table
     db.changes
   if changed == 0 then throw (.notFound table id.toInt64)
 
+/-- The statement `fetchFiltered` prepares for `pred` and `order`, without
+    its LIMIT/OFFSET tail, and the values bound to it. `fetchFiltered` builds
+    its SQL through this function, so a caller can ask SQLite for the plan
+    of exactly that statement (`EXPLAIN QUERY PLAN`). -/
+def filteredSelectSql (α : Type) [Entity α] {ts : List Type} (pred : Pred ts)
+    (order : Array (Order ts) := #[]) : String × Array LeanDb.Col :=
+  let (whereSql, binds) := pred.render fun _ => "t0"
+  let orderSql :=
+    if order.isEmpty then " ORDER BY id"
+    else
+      let keys := order.toList.map fun o => s!"{quoteId o.column} {o.dir.sql}"
+      s!" ORDER BY {String.intercalate ", " keys}, id ASC"
+  (s!"SELECT {columnList α} FROM {quoteId (Entity.tableName α)} AS t0 WHERE {whereSql}{orderSql}", binds)
+
 /-- Rows of `α`'s table matching a pushed predicate, in id order. The
     table is aliased `t0` and every index of the predicate renders as
     `t0` — only conjuncts over `α`'s own columns may reach here
@@ -728,12 +742,7 @@ def fetchFiltered (α : Type) [Entity α] {ts : List Type} (pred : Pred ts)
   let cap := window.limit <|> limit
   if pred.isTrivial && cap.isNone && window.offset == 0 && order.isEmpty then
     return ← fetchAll α
-  let (whereSql, binds) := pred.render fun _ => "t0"
-  let orderSql :=
-    if order.isEmpty then " ORDER BY id"
-    else
-      let keys := order.toList.map fun o => s!"{quoteId o.column} {o.dir.sql}"
-      s!" ORDER BY {String.intercalate ", " keys}, id ASC"
+  let (base, binds) := filteredSelectSql α pred order
   let mut tail := ""
   let mut extra : Array LeanDb.Col := #[]
   if let some n := cap then
@@ -742,7 +751,7 @@ def fetchFiltered (α : Type) [Entity α] {ts : List Type} (pred : Pred ts)
   if window.offset != 0 then
     tail := tail ++ " OFFSET ?"
     extra := extra.push (.int (Int64.ofNat window.offset))
-  let sql := s!"SELECT {columnList α} FROM {quoteId (Entity.tableName α)} AS t0 WHERE {whereSql}{orderSql}{tail}"
+  let sql := base ++ tail
   let rows ← sqlite fun db => do
     let stmt ← db.prepare sql
     bindCols stmt 1 binds
@@ -1286,6 +1295,10 @@ but records no LeanDB schema: it was not created by this base. Adopt it with \
     for spec in specs do
       db.exec spec.ddl
       for sql in spec.indexDdl do db.exec sql
+      -- Engine-owned foreign-key access paths (not fingerprinted): an
+      -- instance created before they existed gains them here.
+      for sql in spec.fkIndexCleanupDdl do db.exec sql
+      for sql in spec.fkIndexDdl do db.exec sql
     -- CHECK guards new writes; this guards data written under an older world.
     for spec in specs do
       for c in spec.columns do

@@ -148,5 +148,24 @@ elab "#check_m15_axioms" : command => do
   assertAxioms ``LeanDb.LawfulEntity.children_attach
   assertAxioms ``LeanDb.DbState.loadWF
   assertAxioms ``LeanDb.natToSql_of_le
+  -- DDD native associations and payload-free denial laws.
+  assertAxioms ``LeanDb.Txn.includeMember_existing
+  assertAxioms ``LeanDb.Txn.includeMember_idempotent
+  assertAxioms ``LeanDb.Txn.includeMember_wf
+  assertAxioms ``LeanDb.Read.discloseWith_hidden
+  assertAxioms ``LeanDb.Read.discloseWith_denied_equal
+  assertAxioms ``LeanDb.Read.memberField_provenance
+  assertAxioms ``LeanDb.Txn.denote_go_error_restores
+  assertAxioms ``LeanDb.Txn.denote_abort_restores
+  assertAxioms ``LeanDb.Txn.observed_postcondition
+  -- DDD milestone 2: named unique conflicts, proof-carrying disclosure,
+  -- ordinary-entity semi-join provenance.
+  assertAxioms ``LeanDb.Id.eq_of_beq
+  assertAxioms ``LeanDb.Txn.insertUnique_duplicate
+  assertAxioms ``LeanDb.Txn.insertUnique_missingRef
+  assertAxioms ``LeanDb.Read.discloseIf_denied
+  assertAxioms ``LeanDb.Read.discloseIf_allowed
+  assertAxioms ``LeanDb.Read.discloseIf_denied_equal
+  assertAxioms ``LeanDb.Read.linkField_provenance
 
 #check_m15_axioms

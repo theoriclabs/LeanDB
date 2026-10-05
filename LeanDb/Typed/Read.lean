@@ -68,12 +68,144 @@ inductive Read (s : Type) [IsSchema s] : Type → Type 1 where
       Query s ts ρ → Read s Nat
   | existsQ : {ts : List Type} → {ρ : Type} → [GatherState s ts] →
       Query s ts ρ → Read s Bool
+  /-- Indexed existence on a generated unique association, without hydration. -/
+  | memberContains {p t e : Type} [Entity p] [Entity t] [Entity e]
+      [HasUnique e] [HasForeignKey e] [IsSchema.Has s e]
+      (relation : MemberRelation p t e) (parent : Id p) (target : Id t) : Read s Bool
+  /-- Native/admin column projection. Protected adapters expose this only
+      through their policy-first capability. SQL selects this column alone. -/
+  | memberField {p t e : Type} [Entity p] [Entity t] [Entity e]
+      [HasUnique e] [HasForeignKey e] [IsSchema.Has s e] [IsSchema.Has s t]
+      (relation : MemberRelation p t e) (parent : Id p)
+      (field : Entity.Field t) : Read s (List (Entity.fieldTy field))
+  /-- Native/admin column projection through an ordinary link entity (a
+      typed semi-join, e.g. `Loan ⋈ Member`): one target column for every target
+      some edge relates to `parent`, each target once, in target-ID order.
+      SQL selects this column alone; the target row is never hydrated. -/
+  | linkField {p t e : Type} [Entity p] [Entity t] [Entity e]
+      [IsSchema.Has s e] [IsSchema.Has s t]
+      (relation : LinkRelation p t e) (parent : Id p)
+      (field : Entity.Field t) : Read s (List (Entity.fieldTy field))
 
 instance {s : Type} [IsSchema s] : Monad (Read s) where
   pure := .pure
   bind := .bind
 
 namespace Read
+
+/-- Policy and projection execute under `Read.run`'s one snapshot. The hidden
+    branch does not evaluate the projection. The caller supplies the portable
+    disclosure constructors; LeanDB does not own a second disclosure type. -/
+def discloseWith {s α β} [IsSchema s] (policy : Read s Bool)
+    (projection : Read s α) (visible : α → β) (hidden : β) : Read s β := do
+  if ← policy then return visible (← projection) else return hidden
+
+def memberContainsDenote {s p t e} [IsSchema s] [Entity p] [Entity t] [Entity e]
+    [HasUnique e] [HasForeignKey e] [IsSchema.Has s e]
+    (relation : MemberRelation p t e) (parent : Id p) (target : Id t)
+    (st : DbState s) : Bool :=
+  (st.get (α := e)).rows.any fun edge =>
+    relation.getParent edge.val == parent && relation.getTarget edge.val == target
+
+def memberFieldDenote {s p t e} [IsSchema s] [Entity p] [Entity t] [Entity e]
+    [HasUnique e] [HasForeignKey e] [IsSchema.Has s e] [IsSchema.Has s t]
+    (relation : MemberRelation p t e) (parent : Id p) (field : Entity.Field t)
+    (st : DbState s) : List (Entity.fieldTy field) :=
+  ((st.get (α := t)).rows.filter fun target =>
+    memberContainsDenote relation parent target.id st).map fun target => Entity.get field target.val
+
+def memberContainsSql {p t e} [Entity p] [Entity t] [Entity e]
+    [HasUnique e] [HasForeignKey e] (relation : MemberRelation p t e) : String :=
+  s!"SELECT EXISTS(SELECT 1 FROM {quoteIdent (Entity.tableName e)} WHERE {quoteIdent (Entity.fieldName relation.parentField)} = ? AND {quoteIdent (Entity.fieldName relation.targetField)} = ?)"
+
+def memberContainsExec {p t e} [Entity p] [Entity t] [Entity e]
+    [HasUnique e] [HasForeignKey e]
+    (relation : MemberRelation p t e) (parent : Id p) (target : Id t) : Db Bool :=
+  untrackedSqlite fun db => do
+    let stmt ← db.prepare (memberContainsSql relation)
+    stmt.bindInt64 1 parent.toInt64
+    stmt.bindInt64 2 target.toInt64
+    discard stmt.step
+    return (← stmt.columnInt64 0) != 0
+
+def memberFieldSql {p t e} [Entity p] [Entity t] [Entity e]
+    [HasUnique e] [HasForeignKey e]
+    (relation : MemberRelation p t e) (field : Entity.Field t) : String :=
+  s!"SELECT t.{quoteIdent (Entity.fieldName field)} FROM {quoteIdent (Entity.tableName t)} AS t JOIN {quoteIdent (Entity.tableName e)} AS e ON e.{quoteIdent (Entity.fieldName relation.targetField)} = t.id WHERE e.{quoteIdent (Entity.fieldName relation.parentField)} = ? ORDER BY t.id ASC"
+
+def memberFieldExec {p t e} [Entity p] [Entity t] [Entity e]
+    [HasUnique e] [HasForeignKey e]
+    (relation : MemberRelation p t e) (parent : Id p) (field : Entity.Field t) :
+    Db (List (Entity.fieldTy field)) := do
+  let cols ← untrackedSqlite fun db => do
+    let stmt ← db.prepare (memberFieldSql relation field)
+    stmt.bindInt64 1 parent.toInt64
+    let mut cols : List (Option Col) := []
+    while ← stmt.step do cols := (← readCol stmt 0) :: cols
+    return cols.reverse
+  cols.mapM fun col => do
+    let some col := col | throw (.decode (Entity.tableName t) (Entity.fieldName field) "unsupported SQLite value")
+    match (Entity.codec field).fromCol col with
+    | .ok value => return value
+    | .error why => throw (.decode (Entity.tableName t) (Entity.fieldName field) why)
+
+/-- Proof-carrying disclosure. The projection can only be built from a proof
+    of `allowed`; the decision is made first. When it is negative the program
+    *is* `pure hidden` (`Read.discloseIf_denied`), so the executor prepares no
+    statement at all — the protected table need not even exist. -/
+def discloseIf {s α β} [IsSchema s] (allowed : Prop) [Decidable allowed]
+    (projection : allowed → Read s α) (visible : α → β) (hidden : β) : Read s β :=
+  if h : allowed then .bind (projection h) (fun a => .pure (visible a)) else .pure hidden
+
+def linkContainsDenote {s p t e} [IsSchema s] [Entity p] [Entity t] [Entity e]
+    [IsSchema.Has s e] (relation : LinkRelation p t e) (parent : Id p) (target : Id t)
+    (st : DbState s) : Bool :=
+  (st.get (α := e)).rows.any fun edge =>
+    relation.getParent edge.val == parent && relation.getTarget edge.val == target
+
+def linkFieldDenote {s p t e} [IsSchema s] [Entity p] [Entity t] [Entity e]
+    [IsSchema.Has s e] [IsSchema.Has s t]
+    (relation : LinkRelation p t e) (parent : Id p) (field : Entity.Field t)
+    (st : DbState s) : List (Entity.fieldTy field) :=
+  ((st.get (α := t)).rows.filter fun target =>
+    linkContainsDenote relation parent target.id st).map fun target => Entity.get field target.val
+
+/-- The one statement `linkField` prepares. `IN` keeps each target once even
+    when several edges relate it, so the answer is the meaning's on any
+    state; the edge side is answered from an index that starts with the
+    parent column (for `Loan`, a `(book, member)` unique index covers it). -/
+def linkFieldSql {p t e} [Entity p] [Entity t] [Entity e]
+    (relation : LinkRelation p t e) (field : Entity.Field t) : String :=
+  s!"SELECT t.{quoteIdent (Entity.fieldName field)} FROM {quoteIdent (Entity.tableName t)} AS t WHERE t.id IN (SELECT e.{quoteIdent (Entity.fieldName relation.targetField)} FROM {quoteIdent (Entity.tableName e)} AS e WHERE e.{quoteIdent (Entity.fieldName relation.parentField)} = ?) ORDER BY t.id ASC"
+
+def linkFieldExec {p t e} [Entity p] [Entity t] [Entity e]
+    (relation : LinkRelation p t e) (parent : Id p) (field : Entity.Field t) :
+    Db (List (Entity.fieldTy field)) := do
+  let cols ← untrackedSqlite fun db => do
+    let stmt ← db.prepare (linkFieldSql relation field)
+    stmt.bindInt64 1 parent.toInt64
+    let mut cols : List (Option Col) := []
+    while ← stmt.step do cols := (← readCol stmt 0) :: cols
+    return cols.reverse
+  cols.mapM fun col => do
+    let some col := col | throw (.decode (Entity.tableName t) (Entity.fieldName field) "unsupported SQLite value")
+    match (Entity.codec field).fromCol col with
+    | .ok value => return value
+    | .error why => throw (.decode (Entity.tableName t) (Entity.fieldName field) why)
+
+/-- Row by one declared unique key of `α`: a single field or a composite.
+    The same program as `lookup`; it executes as an equality lookup on that
+    unique index (`lookupSql`). Backs portable `T.findBy`. -/
+abbrev findBy {s} [IsSchema s] (α : Type) [Entity α] [HasUnique α] [IsSchema.Has s α]
+    (ix : Unique α) (key : Unique.Key ix) : Read s (Option (Valid α)) :=
+  .lookup α ix key
+
+/-- The statement `lookup`/`findBy` (and `Txn.lookup`) prepare for `ix`, with
+    its bound key: `selectP` routes the equality plan through `fetchFiltered`
+    for table 0. For `EXPLAIN QUERY PLAN`. -/
+def lookupSql {α} [Entity α] [HasUnique α] (ix : Unique α) (key : Unique.Key ix) :
+    String × Array Col :=
+  filteredSelectSql α ((Unique.predOf ix key).approx.forTable 0)
 
 /-- `exists q` — `exists` is a Lean keyword. Requires an exact plan. -/
 def «exists» {s ts ρ} [IsSchema s] [GatherState s ts] (q : Query s ts ρ)
@@ -132,6 +264,12 @@ def denote {s : Type} [IsSchema s] : {α : Type} → Read s α → DbState s →
       (@Query.denote s ts ρ inferInstance _gs { q with window := {} } st).size
   | _, @Read.existsQ _ _ ts ρ _gs q, st =>
       !(@Query.denote s ts ρ inferInstance _gs { q with window := { limit := some 1 } } st).isEmpty
+  | _, @Read.memberContains _ _ p t e ep et ee hu hf he relation parent target, st =>
+      @memberContainsDenote s p t e inferInstance ep et ee hu hf he relation parent target st
+  | _, @Read.memberField _ _ p t e ep et ee hu hf he ht relation parent field, st =>
+      @memberFieldDenote s p t e inferInstance ep et ee hu hf he ht relation parent field st
+  | _, @Read.linkField _ _ p t e ep et ee he ht relation parent field, st =>
+      @linkFieldDenote s p t e inferInstance ep et ee he ht relation parent field st
 
 /-- Execute against SQLite. `get`/`lookup` use the engine verbs;
     `first`/`all`/`page`/`count`/`exists` go through `Query.exec`, which
@@ -175,13 +313,23 @@ def exec {s : Type} [IsSchema s] : {α : Type} → Read s α → Db α
       return { items, total }
   | _, @Read.countQ _ _ ts _ρ _gs q => Query.execCount (s := s) (ts := ts) { q with window := {} }
   | _, @Read.existsQ _ _ ts _ρ _gs q => Query.execExists (s := s) (ts := ts) { q with window := {} }
+  | _, @Read.memberContains _ _ p t e ep et ee hu hf _he relation parent target =>
+      @memberContainsExec p t e ep et ee hu hf relation parent target
+  | _, @Read.memberField _ _ p t e ep et ee hu hf _he _ht relation parent field =>
+      @memberFieldExec p t e ep et ee hu hf relation parent field
+  | _, @Read.linkField _ _ p t e ep et ee _he _ht relation parent field =>
+      @linkFieldExec p t e ep et ee relation parent field
 
 /-- One deferred snapshot on this connection. Faults, not domain errors. -/
-def run {s α} [IsSchema s] (r : Read s α) : Db (Except DbFault α) :=
+def runPrepared {s α env} [IsSchema s] (prepare : Db env) (build : env → Read s α) :
+    Db (Except DbFault α) :=
   fun conn => ExceptT.mk do
-    match ← (readSnapshot (exec r) conn).run with
+    match ← (readSnapshot (do let environment ← prepare; exec (build environment)) conn).run with
     | .ok a => return .ok (.ok a)
     | .error e => return .ok (.error (DbFault.ofDbError e))
+
+def run {s α} [IsSchema s] (r : Read s α) : Db (Except DbFault α) :=
+  runPrepared (Pure.pure (f := Db) ()) (fun _ => r)
 
 end Read
 

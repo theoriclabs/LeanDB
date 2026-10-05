@@ -67,6 +67,18 @@ name = "TestsM14c"
 name = "TestsM15a"
 
 [[lean_lib]]
+name = "TestsDdd"
+
+# DDD milestone 2 native checks (migration gate, Rsvp entity); run by
+# `leandb_ddd_tests` after the milestone 1 checks.
+[[lean_lib]]
+name = "TestsDddM2"
+
+[[lean_exe]]
+name = "leandb_ddd_tests"
+root = "TestsDdd"
+
+[[lean_lib]]
 name = "CheckAxioms"
 srcDir = "scripts"
 

@@ -204,6 +204,19 @@ def Id.toNat (id : Id α) : Nat := id.toInt64.toNatClampNeg
     `Ref` field compares directly against a fetched row's id. -/
 abbrev Ref (α : Type) := Id α
 
+/-- Native adapter hook for nominal reference codecs. The portable reference
+    representation stays owned by its package; typed FK metadata uses this
+    mapping instead of mistaking a reference for an ordinary INTEGER scalar. -/
+class ReferenceValue (α : Type) where
+  Target : Type
+  id : α → Id Target
+
+@[reducible] instance : ReferenceValue (Id α) where
+  Target := α
+  id := fun value => value
+
+attribute [reducible] ReferenceValue.Target ReferenceValue.id
+
 /-- A row as it exists in the database: its identity plus its value. -/
 structure Stored (α : Type) where
   id : Id α

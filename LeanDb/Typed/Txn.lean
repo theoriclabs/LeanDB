@@ -448,11 +448,21 @@ def firstMissingWithinDb {α} [Entity α] [HasForeignKey α]
   else
     (Pure.pure (f := Db) none)
 
+/-- The restrict count a delete runs for one inbound key (for `EXPLAIN QUERY
+    PLAN`; it is answered from the key's index, `TableSpec.fkIndexDdl`). -/
+def _root_.LeanDb.ReferencedBy.countSql {s α} [IsSchema s] [HasReferencedBy s α] (r : ReferencedBy s α) : String :=
+  s!"SELECT COUNT(*) FROM {quoteIdent (ReferencedBy.sourceName r)} WHERE {quoteIdent (ReferencedBy.columnName r)} = ?"
+
+/-- The statement SQLite runs for a cascading inbound key when the referenced
+    row is deleted (`ON DELETE CASCADE` deletes `WHERE <key> = old.id`). The
+    executor does not prepare it; it exists so tests can ask for its plan. -/
+def _root_.LeanDb.ReferencedBy.cascadeSql {s α} [IsSchema s] [HasReferencedBy s α] (r : ReferencedBy s α) : String :=
+  s!"DELETE FROM {quoteIdent (ReferencedBy.sourceName r)} WHERE {quoteIdent (ReferencedBy.columnName r)} = ?"
+
 def countRefsDb {s α} [IsSchema s] [HasReferencedBy s α]
     (r : ReferencedBy s α) (id : Id α) : Db Nat :=
   untrackedSqlite fun db => do
-    let sql :=
-      s!"SELECT COUNT(*) FROM {quoteIdent (ReferencedBy.sourceName r)} WHERE {quoteIdent (ReferencedBy.columnName r)} = ?"
+    let sql := ReferencedBy.countSql r
     let stmt ← db.prepare sql
     stmt.bindInt64 1 id.toInt64
     if ← stmt.step then
@@ -629,37 +639,98 @@ def exec.go {σ s ε : Type} [IsSchema s] :
 
 /-- `BEGIN IMMEDIATE`; a SAVEPOINT around each write. Domain abort rolls
     back. Infrastructure problems are `DbFault`, not `ε`. -/
-def run {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) :
+def runPrepared {s ε α env} [IsSchema s] (prepare : Db env)
+    (build : {σ : Type} → env → Txn σ s ε α) :
     Db (Except DbFault (Except ε α)) :=
   fun conn => ExceptT.mk do
     let body : DbM (Tx ε α) := do
-      match ← exec.go (σ := Unit) (s := s) (ε := ε) (p (σ := Unit)) with
+      -- `transaction` has acquired BEGIN IMMEDIATE before entering this body.
+      let environment ← prepare
+      match ← exec.go (σ := Unit) (s := s) (ε := ε) (build (σ := Unit) environment) with
       | .ok a => return Tx.commit a
       | .error e => return Tx.abort e
     match ← (LeanDb.transaction body conn).run with
     | .ok r => return .ok (.ok r)
     | .error e => return .ok (.error (DbFault.ofDbError e))
 
+/-- Existing runner, specialized to an environment-free program. -/
+def run {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) :
+    Db (Except DbFault (Except ε α)) :=
+  runPrepared (Pure.pure (f := Db) ()) (fun _ => p)
+
 end Txn
 
-/-- When `Read.run` / `Txn.run` complete without a `DbFault` on a
-    well-formed loaded state, the answer (including the typed failure
-    constructor and its payload) and the final tables (`load` / `get`)
-    equal `denote`, and `checkWF` holds afterwards.
+/-- Instrument the actual read executor with before/after loads in the same
+    deferred snapshot. A successful observation includes successful snapshot
+    completion; infrastructure faults are not observations of correspondence. -/
+def Read.observe {s α} [IsSchema s] (r : Read s α) :
+    Db (DbState s × α × DbState s) := readSnapshot do
+  let before ← DbState.load (s := s)
+  let result ← Read.exec r
+  let after ← DbState.load (s := s)
+  return (before, result, after)
 
-    This is a named `Prop` for LeanAPI to take as a hypothesis (LAPI-06).
-    It is **not** an `axiom` and is **not** proved: it is a statement
-    about SQLite. The evidence is the M15a harness (`TestsM15a.lean`):
-    572 fixed-seed cases over a schema with child lists, a nullable
-    `Ref`, a closed enum used in `orderBy`, a two-level cascade, a
-    restrict key, unique indexes and foreign keys; random
-    `insert` / `update` / `set` / `patch` / `append` / `delete` /
-    `orElse` / `throw` and reads inside a `Txn` after writes; states of
-    up to about 30 rows per table. Each case compares answer, failure
-    payload, and tables, and asserts `checkWF` before and after.
+/-- Instrument `Txn.run` inside an admitted writer transaction. The inner
+    executor savepoint has committed/rolled back before the final load, and
+    writer admission prevents another connection changing the observed state.
+    A fault is re-raised and the outer transaction rolls back. -/
+def Txn.observe {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) :
+    Db (DbState s × Except ε α × DbState s) := withTransaction do
+  let before ← DbState.load (s := s)
+  match ← Txn.run p with
+  | .error fault => DbM.ofExcept (.error (.transport fault.message))
+  | .ok result =>
+      let after ← DbState.load (s := s)
+      return (before, result, after)
 
-    There is no instance: a client assumes `ExecutesAsMeaning s`. -/
-class ExecutesAsMeaning (s : Type) [IsSchema s] : Prop
+/-- Declared trusted execution boundary: an observation is an actual successful
+    `IO` transition of the named SQLite/FFI action, on Lean's opaque world token.
+    There is no caller-supplied predicate and no correctness axiom/instance.
+    Relating those opaque extern transitions to a physical SQLite engine is
+    trusted, as is any use of Lean's `IO` semantics at a native boundary. -/
+def ObservedIO {α : Type} (action : IO α) (result : α) : Prop :=
+  ∃ before after : Void IO.RealWorld, action before = .ok result after
+
+def Read.Observed {s α} [IsSchema s] (r : Read s α) (conn : Conn)
+    (before : DbState s) (result : α) (after : DbState s) : Prop :=
+  ObservedIO (Read.observe r conn).run (.ok (before, result, after))
+
+def Txn.Observed {s ε α} [IsSchema s] (p : {σ : Type} → Txn σ s ε α) (conn : Conn)
+    (before : DbState s) (result : Except ε α) (after : DbState s) : Prop :=
+  ObservedIO (Txn.observe p conn).run (.ok (before, result, after))
+
+/-- Substantive, conditional execution correspondence. No automatic instance is
+    provided: SQLite/FFI correctness is assumed explicitly by consumers, while
+    differential harnesses only test it. Equality includes typed failure
+    constructors/payloads and every schema table and AUTOINCREMENT counter.
+    Faulting, locked, failed-commit and failed-rollback executions cannot satisfy
+    the successful observation premises. -/
+class ExecutesAsMeaning (s : Type) [IsSchema s] : Prop where
+  read_agrees : ∀ {α} (r : Read s α) (conn : Conn) (before after : DbState s) (result : α),
+    before.WF → Read.Observed r conn before result after →
+    result = Read.denote r before ∧ after = before ∧ after.WF
+  txn_agrees : ∀ {ε α} (p : {σ : Type} → Txn σ s ε α) (conn : Conn)
+    (before after : DbState s) (result : Except ε α),
+    before.WF → Txn.Observed p conn before result after →
+    (result, after) = Txn.denote (p (σ := Unit)) before ∧ after.WF
+  rollback : ∀ {ε α} (p : {σ : Type} → Txn σ s ε α) (conn : Conn)
+    (before after : DbState s) (error : ε),
+    before.WF → Txn.Observed p conn before (.error error) after → after = before
+
+/-- API carry-over must supply both correspondence and a concrete successful
+    engine observation; neither a `DbFault` nor a marker is sufficient. -/
+theorem Txn.observed_postcondition {s ε α} [IsSchema s] [ExecutesAsMeaning s]
+    (p : {σ : Type} → Txn σ s ε α) (conn : Conn)
+    (before after : DbState s) (result : Except ε α)
+    (wf : before.WF) (observed : Txn.Observed p conn before result after)
+    (post : Except ε α → DbState s → Prop)
+    (pureFact : post (Txn.denote (p (σ := Unit)) before).1
+      (Txn.denote (p (σ := Unit)) before).2) : post result after := by
+  have agreement := (ExecutesAsMeaning.txn_agrees p conn before after result wf observed).1
+  have resultEq : result = (Txn.denote (p (σ := Unit)) before).1 := congrArg Prod.fst agreement
+  have stateEq : after = (Txn.denote (p (σ := Unit)) before).2 := congrArg Prod.snd agreement
+  rw [resultEq, stateEq]
+  exact pureFact
 
 /-- Run a `Txn` on the writer connection under `BEGIN IMMEDIATE`. -/
 def Runtime.Service.runTxn {s ε α} [IsSchema s] (svc : Runtime.Service)

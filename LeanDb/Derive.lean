@@ -213,6 +213,8 @@ private inductive FieldEnc where
   /-- A child list (LEP-0003 D): no columns of its own; `decode` leaves it
       empty and the parent's `ChildLink` attaches it. -/
   | child (elemTy : Expr) (elemTyStx : Term)
+  /-- A declaration marker for an independent member association. -/
+  | relation (tyStx : Term)
   deriving Inhabited
 
 private def FieldEnc.isChild : FieldEnc → Bool
@@ -224,7 +226,9 @@ private partial def tyCanRefuse (ty : Expr) : Bool :=
   let ty := ty.consumeMData
   if ty.isConstOf ``Nat then true
   else if ty.isAppOfArity ``Option 1 then tyCanRefuse (ty.getArg! 0)
-  else false
+  else if ty.isAppOf ``LeanDb.Id || ty.isAppOf ``LeanDb.Ref then false
+  else if [``String, ``Int64, ``Int, ``Bool, ``Float, ``UInt8, ``UInt16, ``UInt32, ``UInt64].contains ty.getAppFn.constName! then false
+  else true -- custom scalar/reference adapters may reject invalid values
 
 /-- A declared field with the columns it contributes. -/
 private structure FieldGen where
@@ -319,6 +323,11 @@ private def walkFields (who : String) (declName : Name) (entity : Bool)
           if ← isInlineTy (inner.getArg! 0) then
             throwError "{who}: field '{fname}' of {declName} is `Option (List {inner.getArg! 0})` where {inner.getArg! 0} is an Inline record; an optional child list is not supported (an absent list and an empty one would be the same rows) — use `List {inner.getArg! 0}` and let empty mean none"
       let dflt? ← defaultInfo? declName fname fields
+      if (← synthInstance? (mkApp (mkConst ``LeanDb.MemberDeclaration) ftype)).isSome then
+        unless entity do throwError "{who}: member relations belong on entities"
+        if dflt?.any (·.isDerived) then throwError "{who}: a member relation cannot be a derived column"
+        gens := gens.push { fname, cols := #[], enc := .relation tyStx }
+        continue
       -- a child list (LEP-0003 D): `List R` with `R` an Inline record
       if ftype.isAppOfArity ``List 1 then
         let elem := (ftype.getArg! 0).consumeMData
@@ -452,8 +461,8 @@ private structure Built where
   /-- Number of columns. -/
   n : Nat
 
-private def buildShared (declName : Name) (gens : Array FieldGen) : TermElabM Built := do
-  let fieldTyName := declName ++ `Field
+private def buildShared (declName : Name) (gens : Array FieldGen)
+    (fieldTyName : Name := declName ++ `Field) : TermElabM Built := do
   let cols := gens.foldl (fun acc g => acc ++ g.cols) #[]
   let mut tyAlts : Array (TSyntax ``Lean.Parser.Term.matchAlt) := #[]
   let mut getAlts : Array (TSyntax ``Lean.Parser.Term.matchAlt) := #[]
@@ -487,7 +496,7 @@ private def buildShared (declName : Name) (gens : Array FieldGen) : TermElabM Bu
     | .inline tyStx _ _ =>
         unless run.isEmpty do pieces := pieces.push (← `(#[$run,*])); run := #[]
         pieces := pieces.push (← `(LeanDb.Inline.encode (α := $tyStx) ($(mkCIdent (declName ++ g.fname)) r)))
-    | .child .. => pure ()   -- a child list is not a column
+    | .child .. | .relation .. => pure ()   -- relationships are not columns
   if pieces.isEmpty || !run.isEmpty then pieces := pieces.push (← `(#[$run,*]))
   let mut encode := pieces[0]!
   for p in pieces[1:] do encode ← `($encode ++ $p)
@@ -540,6 +549,8 @@ private def mkDecodeBody (declName : Name) (gens : Array FieldGen) (table : Opti
     match g.enc, table with
     | .child .., _ =>
         body ← `(let $(fieldBinder i) := []; $body)
+    | .relation tyStx, _ =>
+        body ← `(let $(fieldBinder i) := LeanDb.MemberDeclaration.empty (α := $tyStx); $body)
     | .inline tyStx start len, some tbl =>
         body ← `(Except.mapError (LeanDb.inlineDecodeError $(quote tbl) $(quote g.fname.toString))
                    (LeanDb.Inline.decode (α := $tyStx) (row.extract $(quote start) $(quote (start + len))))
@@ -565,9 +576,8 @@ private def mkDecodeBody (declName : Name) (gens : Array FieldGen) (table : Opti
     generated column. Under `_root_` so the current namespace is not
     prepended; a private structure gets a private symbol type (re-mangled
     to exactly `declName ++ Field` — same module). -/
-private def declareSymbols (who : String) (declName : Name) (gens : Array FieldGen) :
-    CommandElabM Unit := do
-  let fieldTyName := declName ++ `Field
+private def declareSymbols (who : String) (declName : Name) (gens : Array FieldGen)
+    (fieldTyName : Name := declName ++ `Field) : CommandElabM Unit := do
   let symId := rootIdent fieldTyName
   let cols := gens.foldl (fun acc g => acc ++ g.cols) #[]
   let ctors ← cols.mapM fun c => `(Lean.Parser.Command.ctor| | $(mkIdent c.symName):ident)
@@ -581,14 +591,14 @@ private def declareSymbols (who : String) (declName : Name) (gens : Array FieldG
     throwError "{who}: failed to declare '{fieldTyName}'"
 
 /-- The checks both derives make before anything is declared. -/
-private def checkStructure (who : String) (declName : Name) : CommandElabM Unit := do
+private def checkStructure (who : String) (declName : Name)
+    (fieldTyName : Name := declName ++ `Field) : CommandElabM Unit := do
   let env ← getEnv
   unless isStructure env declName do
     throwError "{who}: {declName} is not a structure"
   let indVal ← getConstInfoInduct declName
   unless indVal.numParams == 0 && indVal.numIndices == 0 do
     throwError "{who}: {declName} must not have type parameters"
-  let fieldTyName := declName ++ `Field
   if env.contains fieldTyName then
     throwError "{who}: {declName} already declares '{fieldTyName}'; LeanDB generates the field symbols under that name"
 
@@ -793,14 +803,33 @@ def elabCascade : CommandElab := fun stx => do
     throwError "cascade%: {n} is already declared"
   modifyEnv (cascadeExt.modifyState · (·.push { typeName, field }))
 
+/-- The programmatic form of `cascade%`, for an adapter that reads the delete
+    action from another declaration (a portable `onDelete := cascade` on a
+    reference) before it derives the native entity. `typeName` is resolved.
+    Idempotent: repeating a declaration is not an error here. -/
+def declareCascade (typeName field : Name) : CommandElabM Unit := do
+  let env ← getEnv
+  unless isStructure env typeName do
+    throwError "cascade: {typeName} is not a structure"
+  unless (getStructureFields env typeName).any (· == field) do
+    throwError "cascade: {typeName} has no field '{field}'"
+  let has ← liftTermElabM do
+    return (← Meta.synthInstance?
+      (mkApp (mkConst ``LeanDb.Entity) (mkConst typeName))).isSome
+  if has then
+    throwError "cascade: LeanDb.Entity {typeName} already exists; the delete action of {typeName}.{field} must be declared before the entity is derived"
+  unless (cascadeExt.getState env).any fun e => e.typeName == typeName && e.field == field do
+    modifyEnv (cascadeExt.modifyState · (·.push { typeName, field }))
+
 /-- `deriving LeanDb.Entity` for `declName`. `tableName?` overrides the
     table name (a generated child's `<parent>_<field>`); `cascade` names
     the `Ref` fields whose FK cascades and the table each references (a
     child's `parent`). -/
 partial def deriveEntityCore (declName : Name) (tableName? : Option String := none)
-    (cascade : Array (Name × String) := #[]) : CommandElabM Bool := do
+    (cascade : Array (Name × String) := #[])
+    (fieldTyName : Name := declName ++ `Field) : CommandElabM Bool := do
   let who := "deriving LeanDb.Entity"
-  checkStructure who declName
+  checkStructure who declName fieldTyName
   let env ← getEnv
   let fields := getStructureFields env declName
   let tblName := tableName?.getD (tableNameOf declName)
@@ -808,14 +837,13 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
     throwError "{who}: table name '{tblName}' uses the reserved _leandb_ prefix"
   if fields.any (·.getString! == "id") then
     throwError "{who}: field 'id' is reserved for LeanDB row identity"
-  let fieldTyName := declName ++ `Field
   -- 1. The walk, then the field symbols (one per column: an inline field
   --    contributes `field_sub` for each of its sub-fields; a child list none).
   let gens ← liftTermElabM (walkFields who declName (entity := true) cascade
     ((cascadeExt.getState env).filterMap fun e =>
       if e.typeName == declName then some e.field else none))
   liftTermElabM (checkSymNames who declName gens)
-  declareSymbols who declName gens
+  declareSymbols who declName gens fieldTyName
   -- 2. The child entities, one per child list, each with its own symbols
   --    and instance — declared before the parent's instance names them.
   let mut childNames : Array (Nat × Name) := #[]
@@ -828,7 +856,7 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
   let invName := declName ++ `invariant
   let hasInvariant := invariantAttr.hasTag (← getEnv) invName
   let cmds ← liftTermElabM do
-    let b ← buildShared declName gens
+    let b ← buildShared declName gens fieldTyName
     let invariant : Term ←
       if hasInvariant then `(some ($(quote (toString invName)), $(mkCIdent invName)))
       else `(none)

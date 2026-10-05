@@ -47,6 +47,10 @@ class HasUnique (α : Type) [Entity α] where
   predOf : (ix : Unique) → Key ix → Pred [α]
   /-- Every unique index, in declaration order. -/
   all : Array Unique
+  /-- Stable identity of THIS typed alternative. Matching only columns is
+      ambiguous when two declared indexes cover the same fields. -/
+  identity : Unique → String := fun ix =>
+    Entity.tableName α ++ ".unique." ++ String.intercalate "." (columns ix).toList
 
 /-- Empty unique-index type: a table that declared none. `IsEmpty` is found. -/
 @[reducible] instance (priority := low) {α : Type} [Entity α] : HasUnique α where
@@ -99,6 +103,9 @@ def Unique.predOf {α : Type} [Entity α] [HasUnique α] (ix : Unique α) (k : U
 def Unique.all (α : Type) [Entity α] [HasUnique α] : Array (Unique α) :=
   HasUnique.all (α := α)
 
+def Unique.identity {α : Type} [Entity α] [HasUnique α] (ix : Unique α) : String :=
+  HasUnique.identity ix
+
 /-- Equality of `HasUnique` after transporting along `ty_eq` / `entity_eq`.
     Reduces to `u = u'` on `rfl`. Not an instance. -/
 def HasUnique.eqAfter {α β : Type} {ea : Entity α} {eb : Entity β}
@@ -120,6 +127,8 @@ class HasForeignKey (α : Type) [Entity α] where
   get : (fk : ForeignKey) → α → Option (Id (Target fk))
   /-- Every foreign key, in field-declaration order. -/
   all : Array ForeignKey
+
+attribute [reducible] HasUnique.Unique HasUnique.Key HasForeignKey.ForeignKey HasForeignKey.Target
 
 @[reducible] instance (priority := low) {α : Type} [Entity α] : HasForeignKey α where
   ForeignKey := Empty
@@ -467,6 +476,60 @@ class LawfulEntity (α : Type) [Entity α] : Prop where
       let pairs := (link.rows v).zipIdx.map fun (cols, i) => (i, cols)
       (link.attach pairs v).isOk
 
+/-- Native description of a generated member association. This is storage
+    metadata, not a portable member-set value. Only the exact pair constraint
+    can be discharged by an idempotent include. -/
+structure MemberRelation (parent target edge : Type)
+    [Entity parent] [Entity target] [Entity edge]
+    [HasUnique edge] [HasForeignKey edge] where
+  sourceField : String
+  parentField : Entity.Field edge
+  targetField : Entity.Field edge
+  getParent : edge → Id parent
+  getTarget : edge → Id target
+  row : Id parent → Id target → Checked edge
+  pairIndex : Unique edge
+  onlyPair : ∀ ix : Unique edge, ix = pairIndex
+  pairAll : Unique.all edge = #[pairIndex]
+  pairKey : ∀ p t, Unique.encodeKey pairIndex (Unique.keyOf pairIndex (row p t).val) =
+    #[toCol p, toCol t]
+
+/-- An ordinary entity `edge` read as a link from a parent row to a target
+    row through two of its reference fields, e.g.
+    `Loan { book : Id Book, member : Id Member }` read as `Book → Member`
+    ("who borrowed this book"). Unlike `MemberRelation`
+    nothing is generated and nothing is assumed about the edge's other
+    fields or unique constraints; it is plain data plus two coherence laws.
+    The laws tie each SQL column to the getter the pure meaning reads. For a
+    relation written from the same field they are `rfl`; a swapped column
+    (`parentField := .member` with `getParent := (·.book)`) does not
+    type-check. Only the edge's dictionary is a parameter: the relation names
+    edge columns and ids, so it can be used with any target storage. -/
+structure LinkRelation (parent target edge : Type) [Entity edge] where
+  parentField : Entity.Field edge
+  targetField : Entity.Field edge
+  getParent : edge → Id parent
+  getTarget : edge → Id target
+  parentColumn : ∀ v : edge,
+    @toCol _ (Entity.codec parentField) (Entity.get parentField v) = toCol (getParent v)
+  targetColumn : ∀ v : edge,
+    @toCol _ (Entity.codec targetField) (Entity.get targetField v) = toCol (getTarget v)
+
+/-- Generated associations are added to `schema%` whenever their parent is
+    present. Targets must be declared in that schema too. -/
+structure MemberEntry where
+  parent : Name
+  target : Name
+  edge : Name
+  sourceField : String
+  deriving Inhabited, Repr
+
+initialize memberExt : SimplePersistentEnvExtension MemberEntry (Array MemberEntry) ←
+  registerSimplePersistentEnvExtension {
+    addEntryFn := Array.push
+    addImportedFn := fun entries => entries.foldl Array.append #[]
+  }
+
 /-! ## `unique` / `schema` commands -/
 
 structure UniqueEntry where
@@ -482,6 +545,7 @@ private def rootIdent (n : Name) : Ident :=
   mkIdent (`_root_ ++ (privateToUserName? n).getD n)
 
 private def resolveInNs (n : Name) : CommandElabM Name := do
+  let n := if n.getRoot == `_root_ then n.replacePrefix `_root_ .anonymous else n
   let env ← getEnv
   if env.contains n then return n
   let cand := (← getCurrNamespace) ++ n
@@ -590,11 +654,30 @@ private def mkTupleIdents (xs : Array (TSyntax `ident)) : CommandElabM Term := d
   let ts : Array Term ← xs.mapM fun x => `($x:ident)
   mkTuple ts
 
-private def fieldSym (typeName field : Name) : Term :=
-  mkIdent (`_root_ ++ typeName ++ `Field ++ field)
+private def fieldSym (typeName field : Name) : CommandElabM Term := do
+  let symbols ← liftTermElabM do
+    let type := mkConst typeName
+    let entity ← synthInstance (mkApp (mkConst ``LeanDb.Entity) type)
+    let .const symbols _ ← whnf (mkApp2 (mkConst ``LeanDb.Entity.Field) type entity)
+      | throwError "typed: {typeName} must have a declared field symbol type"
+    pure symbols
+  return mkIdent (`_root_ ++ symbols ++ field)
 
 private def typeIdent (typeName : Name) : Ident :=
   rootIdent typeName
+
+/-- Read the actual stored FK action. Command-local cascade annotations do
+    not survive imports; the generated Entity's ColumnSpec does. -/
+private def fieldCascades (typeName field : Name) : CommandElabM Bool := do
+  let symbol ← fieldSym typeName field
+  let typeId := typeIdent typeName
+  liftTermElabM do
+    let action ← Term.elabTerm (← `((LeanDb.Entity.fieldSpec (α := $typeId) $symbol).cascade))
+      (some (mkConst ``Bool))
+    let action ← withTransparency .all (whnf action)
+    if action.isConstOf ``Bool.true then return true
+    if action.isConstOf ``Bool.false then return false
+    throwError "typed: {typeName}.{field} FK action must reduce to a Boolean literal"
 
 private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandElabM Unit := do
   if entries.isEmpty then return
@@ -613,6 +696,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
   let mut encAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut predAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut ixLits : Array Term := #[]
+  let mut identityAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   for e in entries do
     let ctorId := mkIdent e.ctor
     let tys ← e.fields.mapM (fieldTypeStx typeName)
@@ -622,11 +706,11 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
     let keyOfRhs ← mkTuple proj
     keyOfAlts := keyOfAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => $keyOfRhs))
-    let colTerms : Array Term ← e.fields.mapM fun f =>
-      `(LeanDb.Entity.fieldName (α := $typeId) $(fieldSym typeName f))
+    let colTerms : Array Term ← e.fields.mapM fun f => do
+      `(LeanDb.Entity.fieldName (α := $typeId) $(← fieldSym typeName f))
     colAlts := colAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => #[$colTerms,*]))
-    let fieldTerms : Array Term := e.fields.map fun f => fieldSym typeName f
+    let fieldTerms : Array Term ← e.fields.mapM (fieldSym typeName)
     fieldAlts := fieldAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => #[$fieldTerms,*]))
     let encBinders : Array (TSyntax `ident) :=
@@ -640,7 +724,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
       e.fields.mapIdx fun i _ => mkIdent (Name.mkSimple s!"p{i}")
     let eqs : Array Term ← e.fields.mapIdxM fun i f => do
       let b := mkIdent (Name.mkSimple s!"p{i}")
-      `(LeanDb.Pred.eq (LeanDb.Pred.Col.here ($(fieldSym typeName f))) LeanDb.EqOp.eq $b)
+      `(LeanDb.Pred.eq (LeanDb.Pred.Col.here ($(← fieldSym typeName f))) LeanDb.EqOp.eq $b)
     let predRhs ←
       if eqs.size == 1 then pure eqs[0]!
       else
@@ -654,9 +738,15 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, $predPat => $predRhs))
     let cols : Array Term := e.fields.map fun f =>
       ⟨Syntax.mkStrLit f.getString!⟩
-    let tbl := LeanDb.Derive.tableNameOf typeName
+    let tbl ← liftTermElabM do
+      let e ← Term.elabTerm (← `(LeanDb.Entity.tableName $typeId)) (some (mkConst ``String))
+      let .lit (.strVal name) ← withTransparency .all (whnf e)
+        | throwError "typed: native table name must reduce to a string literal"
+      pure name
     let ixName := s!"uq_{tbl}_{e.ctor.getString!}"
     let nameStx : Term := ⟨Syntax.mkStrLit ixName⟩
+    identityAlts := identityAlts.push
+      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $nameStx))
     ixLits := ixLits.push
       (← `(term| (⟨true, #[$cols,*], none, some $nameStx, none⟩ : LeanDb.IndexSpec)))
   let allLits : Array Term ← entries.mapM fun e =>
@@ -671,6 +761,7 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
       encodeKey := fun $encAlts:matchAlt*
       predOf := fun $predAlts:matchAlt*
       all := #[$allLits,*]
+      identity := fun $identityAlts:matchAlt*
   ))
   elabCommand (← `(command|
     instance (priority := high) : LeanDb.Indexes $(typeId) where
@@ -679,14 +770,11 @@ private def genUnique (typeName : Name) (entries : Array UniqueEntry) : CommandE
 
 /-- `Id β` or `Ref β` (an abbrev of `Id`). -/
 private def idTarget? (ty : Expr) : MetaM (Option Name) := do
-  match ty with
-  | .app fn arg =>
-      let fn ← whnf fn
-      match fn, arg with
-      | .const n _, .const tgt _ =>
-          if n == ``LeanDb.Id then return some tgt else return none
-      | _, _ => return none
-  | _ => return none
+  let some inst ← synthInstance? (mkApp (mkConst ``LeanDb.ReferenceValue) ty) | return none
+  let target ← whnf (mkApp2 (mkConst ``LeanDb.ReferenceValue.Target) ty inst)
+  match target with
+  | .const name _ => return some name
+  | _ => throwError "reference adapter target must be a declared entity type"
 
 /-- Required `Ref β` as `(β, false)`; `Option (Ref β)` as `(β, true)`. -/
 private def refTarget? (ty : Expr) : MetaM (Option (Name × Bool)) := do
@@ -725,6 +813,7 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
     `(Lean.Parser.Command.ctor| | $(mkIdent f):ident)
   elabCommand (← `(inductive $(rootIdent fkName):ident where $ctors* deriving DecidableEq, Repr))
   let fkId := rootIdent fkName
+  let targetFn := fkName ++ (if fks.any (fun (f, _, _) => f == `target) then `_targetType else `target)
   let typeId := typeIdent typeName
   let mut tgtAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
   let mut fieldAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
@@ -735,26 +824,26 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
     tgtAlts := tgtAlts.push
       (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(typeIdent tgt)))
     fieldAlts := fieldAlts.push
-      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(fieldSym typeName f)))
+      (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(← fieldSym typeName f)))
     if nullable then
       getAlts := getAlts.push
-        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
+        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident |>.map LeanDb.ReferenceValue.id))
     else
       getAlts := getAlts.push
-        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => some v.$(mkIdent f):ident))
+        (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => some (LeanDb.ReferenceValue.id v.$(mkIdent f):ident)))
     entAlts := entAlts.push
       (← `(Lean.Parser.Term.matchAltExpr|
         | .$ctorId:ident => inferInstanceAs (LeanDb.Entity $(typeIdent tgt))))
   let allLits : Array Term ← fks.mapM fun (f, _, _) =>
     `(term| .$(mkIdent f):ident)
   elabCommand (← `(
-    @[reducible] def $(rootIdent (fkName ++ `target)):ident : $fkId → Type
+    @[reducible] def $(rootIdent targetFn):ident : $fkId → Type
       $tgtAlts:matchAlt*
   ))
   elabCommand (← `(
     @[reducible] instance (priority := high) : LeanDb.HasForeignKey $typeId where
       ForeignKey := $fkId
-      Target := $(rootIdent (fkName ++ `target))
+      Target := $(rootIdent targetFn)
       targetEntity $entAlts:matchAlt*
       field $fieldAlts:matchAlt*
       get $getAlts:matchAlt*
@@ -762,9 +851,14 @@ private def genForeignKey (typeName : Name) : CommandElabM Unit := do
   ))
   for (f, tgt, nullable) in fks do
     unless nullable do
+      let fieldType ← structureFieldType typeName f
+      let native ← liftTermElabM do
+        let ty ← whnf fieldType
+        return ty.isAppOf ``LeanDb.Id
+      unless native do continue
       elabCommand (← `(
         @[reducible] instance : LeanDb.JoinCol $typeId $(typeIdent tgt) where
-          col := LeanDb.Pred.Col.here (ts := [$(typeIdent tgt)]) $(fieldSym typeName f)
+          col := LeanDb.Pred.Col.here (ts := [$(typeIdent tgt)]) $(← fieldSym typeName f)
       ))
 
 private def genListField (typeName : Name) : CommandElabM Unit := do
@@ -860,6 +954,69 @@ def elabTyped : CommandElab := fun stx => do
 private def ctorOfType (typeName : Name) : Name :=
   Name.mkSimple typeName.getString!.toLower
 
+/-- Bridge hook: create one unique, cascading association, without making it
+    an ordered child list or a column of the parent. -/
+syntax (name := membersCmd) "members% " ident " : " ident : command
+
+@[command_elab membersCmd]
+def elabMembers : CommandElab := fun stx => do
+  let `(members% $name:ident : $target:ident) := stx | throwUnsupportedSyntax
+  let n := name.getId
+  if n.getPrefix.isAnonymous then
+    throwErrorAt name "members: expected Parent.field"
+  let parent ← resolveEntity n.getPrefix
+  let target ← resolveEntity target.getId
+  let field := n.getString!
+  let edge := parent ++ Name.mkSimple (field.capitalize)
+  let edgeId := rootIdent edge
+  let parentId := rootIdent parent
+  let targetId := rootIdent target
+  if (← getEnv).contains edge then throwError "members: {edge} already exists"
+  elabCommand (← `(structure $edgeId:ident where
+    parent : LeanDb.Ref $parentId
+    target : LeanDb.Ref $targetId
+    deriving BEq))
+  elabCommand (← `(cascade% $(mkIdent (edge ++ `parent)):ident))
+  let parentTable ← liftTermElabM do
+    let e ← Term.elabTerm (← `(LeanDb.Entity.tableName $parentId)) (some (mkConst ``String))
+    let .lit (.strVal name) ← withTransparency .all (whnf e)
+      | throwError "members: native parent table name must reduce to a string literal"
+    pure name
+  let tbl := parentTable ++ "_" ++ field
+  discard <| LeanDb.Derive.deriveEntityCore edge (some tbl)
+  elabCommand (← `(
+    instance : LeanDb.LawfulEntity $edgeId where
+      decode_encode := fun value => by
+        cases value
+        simp [LeanDb.Entity.decode, LeanDb.Entity.encode, LeanDb.fromCol, LeanDb.toCol,
+          LeanDb.decodeField, LeanDb.ColCodec.via, BEq.beq, List.beq]
+          <;> simp [Bind.bind, Pure.pure, Except.bind, List.isEqv, LeanDb.instBEqCol.beq]
+      children_attach := fun _ => rfl
+  ))
+  elabCommand (← `(unique% $(rootIdent (edge ++ `byPair)):ident := ($(mkIdent `parent):ident, $(mkIdent `target):ident)))
+  elabCommand (← `(typed% $edgeId))
+  elabCommand (← `(
+    instance (priority := 10001) : LeanDb.Indexes $edgeId where
+      indexes := #[
+        { unique := true, columns := #["parent", "target"], name := some $(quote s!"uq_{tbl}_byPair") },
+        { unique := false, columns := #["target"], name := some $(quote s!"ix_{tbl}_target") }]
+  ))
+  elabCommand (← `(
+    def $(rootIdent (parent ++ Name.mkSimple (field ++ "Relation"))):ident :
+        LeanDb.MemberRelation $parentId $targetId $edgeId where
+      sourceField := $(quote s!"{parent}.{field}")
+      parentField := $(← fieldSym edge `parent)
+      targetField := $(← fieldSym edge `target)
+      getParent := fun e => e.parent
+      getTarget := fun e => e.target
+      row := fun p t => LeanDb.Checked.of ⟨p, t⟩ ⟨rfl, trivial⟩
+      pairIndex := .byPair
+      onlyPair := fun ix => by cases ix; rfl
+      pairAll := rfl
+      pairKey := fun _ _ => rfl
+  ))
+  modifyEnv (memberExt.addEntry · { parent, target, edge, sourceField := field })
+
 syntax (name := schemaCmd) "schema% " ident " := " ident,+ : command
 
 @[command_elab schemaCmd]
@@ -875,6 +1032,26 @@ def elabSchema : CommandElab := fun stx => do
     if types.contains n then
       throwError "schema: {n} is listed twice"
     types := types.push n
+  -- Portable declaration markers register their associations through the
+  -- native metadata hook. There is no portable package import in this core.
+  for parent in types do
+    for field in getStructureFields (← getEnv) parent do
+      let fieldType ← structureFieldType parent field
+      let target? ← liftTermElabM do
+        let ty := fieldType
+        let some inst ← synthInstance? (mkApp (mkConst ``LeanDb.MemberDeclaration) ty) | return none
+        let target ← whnf (mkApp2 (mkConst ``LeanDb.MemberDeclaration.Target) ty inst)
+        match target with
+        | .const name _ => return some name
+        | _ => throwError "member declaration target must be a declared entity type"
+      if let some target := target? then
+        unless (memberExt.getState (← getEnv)).any (fun r => r.parent == parent && r.sourceField == field.getString!) do
+          elabCommand (← `(members% $(mkIdent (parent ++ field)):ident : $(mkIdent target):ident))
+  for rel in memberExt.getState (← getEnv) do
+    if types.contains rel.parent then
+      unless types.contains rel.target do
+        throwError "schema: member field {rel.parent}.{rel.sourceField} requires target {rel.target}"
+      unless types.contains rel.edge do types := types.push rel.edge
   -- Finish typed symbols per entity (Unique + Indexes, FKs, lists).
   for t in types do
     if let some (listField, rec, refField) ← childListRefField? t then
@@ -961,7 +1138,6 @@ def elabSchema : CommandElab := fun stx => do
     let mut sourceTyAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut sourceEntityEqAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
     let mut allLits : Array Term := #[]
-    let env ← getEnv
     for (src, f, nullable) in inbound do
       let ctor := Name.mkSimple (src.getString!.toLower ++ "_" ++ f.getString!)
       let ctorId := mkIdent ctor
@@ -972,14 +1148,13 @@ def elabSchema : CommandElab := fun stx => do
           | .$ctorId:ident => inferInstanceAs (LeanDb.Entity $(typeIdent src))))
       if nullable then
         getAlts := getAlts.push
-          (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident))
+          (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => v.$(mkIdent f):ident |>.map LeanDb.ReferenceValue.id))
       else
         getAlts := getAlts.push
-          (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => some v.$(mkIdent f):ident))
+            (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident, v => some (LeanDb.ReferenceValue.id v.$(mkIdent f):ident)))
       colAlts := colAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(quote f.getString!)))
-      let casc := (LeanDb.Derive.cascadeExt.getState env).any fun e =>
-        e.typeName == src && e.field == f
+      let casc ← fieldCascades src f
       cascadeAlts := cascadeAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => $(quote casc)))
       let srcIdx := types.findIdx? (· == src) |>.getD 0
@@ -991,9 +1166,8 @@ def elabSchema : CommandElab := fun stx => do
       sourceEntityEqAlts := sourceEntityEqAlts.push
         (← `(Lean.Parser.Term.matchAltExpr| | .$ctorId:ident => rfl))
       allLits := allLits.push (← `(term| .$ctorId:ident))
-    let anyR := inbound.any fun (src, f, _) =>
-      !(LeanDb.Derive.cascadeExt.getState env).any fun e =>
-        e.typeName == src && e.field == f
+    let cascades ← inbound.mapM fun (src, f, _) => fieldCascades src f
+    let anyR := cascades.any (! ·)
     elabCommand (← `(
       @[reducible] def $(rootIdent (rbName ++ `source)):ident : $rbId → Type
         $srcAlts:matchAlt*
