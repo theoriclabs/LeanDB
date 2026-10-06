@@ -575,7 +575,12 @@ private def mkDecodeBody (declName : Name) (gens : Array FieldGen) (table : Opti
 /-- Declare the symbol inductive `declName.Field` with one constructor per
     generated column. Under `_root_` so the current namespace is not
     prepended; a private structure gets a private symbol type (re-mangled
-    to exactly `declName ++ Field` — same module). -/
+    to exactly `declName ++ Field` — same module). Its `DecidableEq` and
+    `Repr` are derived inside `declName`'s namespace, so their names
+    (`declName.instReprField`, …) are unique to the entity: derived in the
+    current namespace they would be `instReprField` for every entity there,
+    and two modules declaring entities in the same namespace could not be
+    imported together. -/
 private def declareSymbols (who : String) (declName : Name) (gens : Array FieldGen)
     (fieldTyName : Name := declName ++ `Field) : CommandElabM Unit := do
   let symId := rootIdent fieldTyName
@@ -583,12 +588,14 @@ private def declareSymbols (who : String) (declName : Name) (gens : Array FieldG
   let ctors ← cols.mapM fun c => `(Lean.Parser.Command.ctor| | $(mkIdent c.symName):ident)
   let symCmd ←
     if isPrivateName declName then
-      `(private inductive $symId:ident where $ctors* deriving DecidableEq, Repr)
+      `(private inductive $symId:ident where $ctors*)
     else
-      `(inductive $symId:ident where $ctors* deriving DecidableEq, Repr)
+      `(inductive $symId:ident where $ctors*)
   elabCommand symCmd
   unless (← getEnv).contains fieldTyName do
     throwError "{who}: failed to declare '{fieldTyName}'"
+  withScope (fun scope => { scope with currNamespace := (privateToUserName? declName).getD declName }) do
+    elabCommand (← `(deriving instance DecidableEq, Repr for $symId:ident))
 
 /-- The checks both derives make before anything is declared. -/
 private def checkStructure (who : String) (declName : Name)

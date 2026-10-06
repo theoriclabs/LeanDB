@@ -275,8 +275,19 @@ partial def additive (old new : Shape) : Except String Unit := do
 
 end Shape
 
+/-- Shapes of columns that hold a value through an external codec (an adapter's
+    canonical JSON of a structured value) are recorded as `wire:<schema>`. The
+    engine cannot judge whether old values decode under a changed schema. -/
+def externalShapePrefix : String := "wire:"
+
 /-- Classify one column's shape change: `.ok ()` means restamp. -/
 private def shapeChange (table col : String) (old new : Option String) : Except String Unit := do
+  if (old.any (·.startsWith externalShapePrefix)) || (new.any (·.startsWith externalShapePrefix)) then
+    if old != new then
+      throw s!"table \"{table}\": column \"{col}\" stores a structured value whose schema changed. \
+Stored values may not decode under the new type; a typed value transformation is not yet \
+available, so this migration is refused. Migrate by hand."
+    return ()
   match old, new with
   | some o, some n =>
       let os ← Shape.parse o |>.mapError fun m =>
