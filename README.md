@@ -17,15 +17,14 @@ Install [elan](https://github.com/leanprover/elan), the Lean toolchain manager.
 Then build LeanDB:
 
 ```bash
-git clone https://github.com/theoriclabs/leanontology.git leanontology
 git clone https://github.com/theoriclabs/LeanDB.git leandb
 cd leandb
 lake build leandb
 ```
 
-SQLite is bundled. The first build takes a few minutes. During development,
-LeanDB requires [leanontology](https://github.com/theoriclabs/leanontology) as
-a path dependency, checked out next to it (`../leanontology`).
+SQLite is bundled. The first build takes a few minutes. Lake fetches
+[leanontology](https://github.com/theoriclabs/leanontology) at the revision
+pinned in `lakefile.toml`.
 Start with the [tickets example](examples/tickets/README.md).
 
 ## Typed data
