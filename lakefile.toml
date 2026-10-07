@@ -1,6 +1,6 @@
 name = "leandb"
-version = "0.4.0"
-defaultTargets = ["LeanDb"]
+version = "0.5.0"
+defaultTargets = ["LeanDb", "LeanDbModel", "LeanDbNative"]
 
 # Pinned and verified against lean4 v4.33.0; bump in lockstep with
 # lean-toolchain.
@@ -15,17 +15,30 @@ name = "leanontology"
 git = "https://github.com/theoriclabs/leanontology"
 rev = "322a4c12631dd8ece6ae9841a5e6b630d08d1e3b"
 
-# `LeanDb` is the native library (SQLite). `LeanDb.Model` is the portable data
-# model (no SQLite, no native code; LeanJS-compilable): its import closure is
-# LeanOntology, Lean and itself only. `LeanDb.Native` runs the model on SQLite.
+# Keep the engine, portable model, and SQLite interpreter in separate libraries.
+# A precompiled consumer of the engine must not load the model or interpreter
+# without their LeanOntology dependencies in its import closure.
 [[lean_lib]]
 name = "LeanDb"
-roots = ["LeanDb", "LeanDb.Model", "LeanDb.Native"]
 
 # The portable model alone: `lake build LeanDbModel` never compiles SQLite.
 [[lean_lib]]
 name = "LeanDbModel"
 roots = ["LeanDb.Model"]
+# Match the module initializer so Lake loads this as a Lean plugin after its
+# dependencies, rather than as an external library before LeanOntology.
+libName = "leandb_LeanDb_Model"
+
+[[lean_lib]]
+name = "LeanDbNative"
+roots = ["LeanDb.Native"]
+libName = "leandb_LeanDb_Native"
+
+# Regression: precompiled consumers can load the client and native interpreter.
+[[lean_lib]]
+name = "FixturePrecompiled"
+globs = ["FixturePrecompiled", "FixturePrecompiled.Native"]
+precompileModules = true
 
 
 # Per-ticket test modules (TestsLdbNN) the `leandb_tests` exe imports.

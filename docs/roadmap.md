@@ -4,18 +4,32 @@ LeanDB aims to preserve domain rules across the application and database.
 This page separates the current implementation from future work.
 The future items are directions, not release dates or API commitments.
 
-## Available in 0.3.1
+## Available in 0.5.0
 
 - Entity-derived schemas, typed IDs and references, and validating codecs.
 - Closed enums, enum sets, JSON columns, inline records, and child lists.
-- Typed `select`, `insert`, `update`, and `delete` operations over SQLite.
-- SQL pushdown for supported predicates, joins, and related-row quantifiers.
+- Typed `select`, `insert`, `insertMany`, `update`, guarded `patch`, and
+  `delete` operations over SQLite, and keyset `scan`.
+- Transactions with savepoints, and a runtime service with read-only
+  reader connections.
+- Declared indexes and composite unique constraints, carried into DDL,
+  the fingerprint, and migrations.
+- SQL pushdown for supported predicates, joins, and related-row quantifiers,
+  and for ordering, limits, counts, and existence checks.
+- Full-text search over FTS5 objects declared with the base.
+- Open-time SQLite settings, with `LEANDB_*` environment overrides.
 - Query plans, logs, and schema-change impact reports.
 - Schema diffs, frozen migration chains, and typed row transformations.
 - Migration transactions, backups, history, and rollback.
 - Standalone base generation and SQLite import reports.
 - CLI, JSON-lines, HTTP, and MCP interfaces.
 - Typed clients over stdio and the separate HTTP adapter.
+- Portable `LeanDb.Model` entities and storage programs, with in-memory
+  and SQLite interpreters, checked value types, constraints, and links.
+- Schema-indexed `Read` and `Txn` programs, validated rows, typed errors,
+  and pure meanings compared with SQLite by differential tests.
+- Entity invariants, compare-and-swap child-list append, and reader-lane
+  snapshots that allow the writer to keep serving.
 
 See [Core concepts](core_concepts_and_terminology.md) for how these fit together.
 The [changelog](../CHANGELOG.md) records released changes.
@@ -80,7 +94,7 @@ The current impact report identifies affected queries; it does not replay them.
 
 - Other SQL backends and queries across database instances.
 - Typed names for selected rows from a database vocabulary.
-- Shared Lean domain types across frontend and backend applications.
+- Broader frontend tooling around the shared portable domain model.
 
 Start with a small example and a clear expected result when proposing work.
 Keep the current SQLite behavior covered by the [release checks](../RELEASING.md).

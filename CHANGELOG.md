@@ -1,7 +1,46 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-10-06
 
+Portable domain models, typed read and transaction programs, and the
+LDB-12 through LDB-24 engine improvements. Lean remains at 4.33.0;
+`leansqlite` is unchanged and `leanontology` is pinned to
+`322a4c12631dd8ece6ae9841a5e6b630d08d1e3b`.
+
+- **Portable model.** `LeanDb.Model` describes entities, checked value
+  types, unique and cascade constraints, links, `Changes`, and `DB` /
+  `Query` programs without importing SQLite. The same programs run in
+  memory and on SQLite through `LeanDb.Native`, `native_schema%`, and
+  `derive_requirements`. Structured and represented values can occupy
+  one column. The domain bridge also checks native storage evidence and
+  typed migration requirements.
+- **Typed API.** The typed layer provides schema-indexed queries, validated
+  reads, typed write errors, and transaction programs with a pure meaning.
+  Differential tests compare that meaning with SQLite execution; the
+  preservation laws and their remaining gaps are documented in
+  [the typed interface guide](docs/typed-interface.md).
+- **Reliability.** HTTP dispatch and host handshakes are bounded; hosted
+  child processes are cleaned up on failure. Restore respects writer
+  locks, migration errors restore connection settings, custom migration
+  steps cannot escape the engine transaction, and backup names avoid
+  collisions. MCP validates arguments and does not reply to notifications.
+  Seeding refuses a non-empty catalog unless forced; scaffolding and
+  import generation validate and escape names and preserve existing files.
+- **Packaging.** Example and benchmark lockfiles include the pinned
+  `leanontology` dependency. The engine, portable model, and SQLite model
+  interpreter have separate Lake libraries, so precompiled client adapters
+  can load the engine without undeclared model dependencies. Shared-library
+  names match Lean module initializers so native model consumers also load
+  their dependencies in the correct order.
+
+- **M15b3.** `Txn.update_wf`, `Txn.set_wf`, `Txn.append_wf`: on a `WF`
+  state, `update`, `set` and `append` yield a `WF` state whether they
+  succeed or fail (`HasPack`, `LawfulEntity`). Unique keys compare with
+  `Unique.keyClash a b := a == b || b == a`, symmetric by construction:
+  `Float.beq` is `extern`, so `Array Col` equality is not provably
+  commutative. It agrees with IEEE and SQLite (`-0.0 = 0.0`; SQLite has
+  no NaN). `patch` and `delete` have no WF lemma yet; the remainder is
+  in `docs/typed-interface.md`.
 - **M15b2.** `Table.nextOk` (`1 ≤ next ≤ natSqlMax + 1`) is in `Table.check`.
   `assign` does not wrap `Int64.ofNat`. `DbState.empty_wf`.
   `Txn.insert_wf`: on a `WF` state, `insert` yields a `WF` state
@@ -212,9 +251,6 @@ Also in this release:
   and the session connection is swapped only after the renamed file opens
   cleanly. A failed restore no longer destroys the instance file or leaves
   the session silently serving an empty in-memory database.
-
-## Unreleased
-
 
 ## 0.3.1 - 2026-09-14
 

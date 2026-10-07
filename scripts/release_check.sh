@@ -16,8 +16,10 @@ if ! cmp -s lean-toolchain "benchmarks/b2t2/lean-toolchain"; then
   exit 1
 fi
 
-lake build leandb leandb_tests
+lake build leandb leandb_tests leandb_ddd_tests FixturePrecompiled
 .lake/build/bin/leandb_tests
+.lake/build/bin/leandb_ddd_tests
+python3 scripts/ddd_model.py
 
 for base in tickets crm shop gpumarket eats; do
   (
@@ -83,7 +85,8 @@ fi
   curl() { command curl -H 'Authorization: Bearer release-check' "$@"; }
   curl -sf -X POST http://127.0.0.1:7433/seed | grep -q '"seeded":true' || ok=0
   curl -sf http://127.0.0.1:7433/query/slaBreached/1700000000 | grep -q '"ok":true' || ok=0
-  curl -sf -X POST http://127.0.0.1:7433/rpc -d '["rows","ticket","--limit","1"]' | grep -q '"count":1' || ok=0
+  curl -sf -X POST http://127.0.0.1:7433/rpc -H 'Content-Type: application/json' \
+    -d '["rows","ticket","--limit","1"]' | grep -q '"count":1' || ok=0
   code=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-LeanDb-Fingerprint: stale' http://127.0.0.1:7433/version)
   [[ "$code" == "409" ]] || ok=0
   unset -f curl

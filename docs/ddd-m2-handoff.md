@@ -1008,11 +1008,13 @@ is gone. LeanReact was only read during this phase, never edited.
 
 ### Layout
 
-- `lakefile.toml` requires `leanontology` as a path dependency (`../leanontology`).
-  `lake-manifest.json` has the matching `path` entry; nothing was downloaded.
-- The `LeanDb` library has three roots: `LeanDb` (native, unchanged API), `LeanDb.Model`
-  (portable) and `LeanDb.Native` (the model on SQLite).
-- `LeanDbModel` is a separate library holding `LeanDb.Model` alone.
+- `lakefile.toml` requires `leanontology` from git at revision
+  `322a4c12631dd8ece6ae9841a5e6b630d08d1e3b`; the manifest pins the same revision.
+- Three separate libraries hold `LeanDb` (the engine, unchanged API),
+  `LeanDbModel` (`LeanDb.Model`, portable), and `LeanDbNative`
+  (`LeanDb.Native`, the model on SQLite). The default build includes all three.
+  Keeping their roots separate also lets precompiled client consumers load
+  the engine without implicitly loading model code.
 - `scripts/ModelClosure.lean` checks that the import closure of `LeanDb.Model` is
   only `LeanDb.Model.*`, `LeanOntology.*`, `Lean`, `Std` and `Init`. Today that is
   1449 modules.

@@ -152,7 +152,7 @@ answer, failure constructor with payload, and final tables via lawful
 table). `checkWF` after every successful load, denote, and load-after.
 Random programs in `TestsM14b.lean` use the same structural compare.
 `TestsM14b.lean` uses the part A schema (join, child list, unique
-indexes, foreign key, invariant), ports the QUERIES.md §3.6 `register`
+indexes, foreign key, invariant), ports LeanAPI's `docs/QUERIES.md` §3.6 `register`
 and `deleteTeam` examples, and includes a `#guard_msgs` test that adding
 `unique Account2.byEmail` makes a non-exhaustive `InsertError` match
 fail.
@@ -335,6 +335,9 @@ Table.check : nextOk && idsOk && refsOk && … && uniquesOk
 DbState.empty_wf : (DbState.empty).WF
 Txn.insert_wf [HasPack s α] [LawfulEntity α] :
   st.WF → (denote (.insert α v) st).2.WF
+Txn.update_wf / set_wf / append_wf [HasPack s α] [LawfulEntity α] :
+  st.WF → (denote (.update α old new) st).2.WF   (and .set, .append)
+Unique.keyClash a b := a == b || b == a   (symmetric by construction)
 Txn.assign_wf : the successful-insert state is WF
   (`nextOk` so `Int64.ofNat next` does not wrap; wrap at
   `next = 0 ∨ natSqlMax < next` leaves the table unchanged)
@@ -353,6 +356,16 @@ of `id`. `insert_wf` uses `nextOk` (`1 ≤ next ≤ natSqlMax + 1`) so
 clash walks being `none`; `decodesOk` / `childrenOk` from
 `LawfulEntity`.
 
+`update_wf`, `set_wf` and `append_wf` cover success and failure; a
+failure leaves the state unchanged. Success is `replaceRow`: ids stay,
+`fksOk` holds because `firstMissingRef` is `none`, and `uniquesOk`
+because `firstDuplicate` found no clash with another id. That last step
+needs a symmetric comparison, and `Array Col` equality is not provably
+commutative (`Col.real` uses `Float.beq`, which is `extern`), so unique
+keys compare with `Unique.keyClash`, symmetric by `Bool.or_comm`. It
+agrees with IEEE and SQLite (`-0.0 = 0.0`; SQLite has no NaN). `set`
+touches every field (`Fields.all`), so it reuses the same lemma.
+
 `DbState.load` checks the entity invariant on every decoded row
 (`Valid.ofStoredM`) but not unique indexes or foreign keys.
 `DbState.loadWF` throws `.invariant "schema" "checkWF"` unless
@@ -367,10 +380,7 @@ created and changed only by LeanDB is `WF`.
   every write, plus `LawfulEntity` / `HasPack` at the *written* type
   (not the program's result type). `schema%` generates `HasPack`;
   `LawfulEntity` instances are not generated (item 6).
-- Successful `update` / `set` / `patch` / `append` (`replaceRow` /
-  `replaceValid`). `uniquesOk` after an in-place replace needs
-  `(enc ≠ enc') → (enc' ≠ enc)` on `Array Col`; `Col.real` uses
-  `Float.beq` (`extern`), so commutativity is not a theorem.
+- Successful `patch` (`replaceValid`): no WF lemma yet.
 - Successful `delete` / cascade `WF` (restrict + cascade graph).
 - `get` after insert/delete as a `find?` lemma (append-right of a
   fresh id; `removeRow` filter). Ids not reused after delete (`next`
@@ -385,7 +395,7 @@ created and changed only by LeanDB is `WF`.
 
 ## Remaining deviations
 
-Relative to QUERIES.md §3 / §5. Not silently weakened.
+Relative to LeanAPI's `docs/QUERIES.md` §3 / §5. Not silently weakened.
 
 - **`where'` is a `Pred`, not a Lean predicate refused unless exact.**
   Unwindowed `all` may keep `.opaque`. Exactness is demanded only where

@@ -26,6 +26,8 @@ jobs:
         run: lake build
       - name: The portable model builds without SQLite
         run: lake build LeanDbModel
+      - name: Precompiled consumers load the engine and native interpreter
+        run: lake build FixturePrecompiled
       - name: Tests
         run: lake build leandb_tests && ./.lake/build/bin/leandb_tests
       - name: DDD tests
