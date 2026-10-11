@@ -1,5 +1,5 @@
 name = "leandb"
-version = "0.5.0"
+version = "0.5.1"
 defaultTargets = ["LeanDb", "LeanDbModel", "LeanDbNative"]
 
 # Pinned and verified against lean4 v4.33.0; bump in lockstep with

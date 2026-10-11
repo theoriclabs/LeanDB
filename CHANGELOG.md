@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.1 - 2026-10-11
+
+- **Schemas of more than fifteen entities (#139).** `schema%`, and
+  `native_schema%` through it, generated `IsSchema.pack` as a `match` on
+  `Fin` literals, which Lean's match compiler rejected with "Missing
+  cases" from about the sixteenth entity on. `pack` now indexes an array
+  of the packed entities, so a schema of any size elaborates. The model
+  suite declares a twenty-entity schema and writes and reads its first and
+  last tables on SQLite.
+
+Lean 4.33.0, `leansqlite`, and `leanontology` are unchanged.
+
 ## 0.5.0 - 2026-10-06
 
 Portable domain models, typed read and transaction programs, and the

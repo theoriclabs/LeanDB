@@ -9,6 +9,7 @@ import TestsModel.JsonColumns
 import TestsModel.LibraryRuntime
 import TestsModel.GateEvolution
 import TestsModel.UniqueSources
+import TestsModel.WideSchema
 
 /-! `leandb_model_tests`: `LeanDb.Model` programs on both backends, and the model on SQLite
 (`LeanDb.Native`). The model modules check their declarations at compile time
@@ -25,4 +26,6 @@ def main : IO Unit := do
   RepresentNative.run
   GateEvolutionFixture.run
   UniqueSourcesFixture.run
+  -- More than fifteen entities in one schema (#139).
+  WideSchemaFixture.run
   IO.println "LeanDb.Model tests passed"

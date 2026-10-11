@@ -4,7 +4,7 @@ LeanDB aims to preserve domain rules across the application and database.
 This page separates the current implementation from future work.
 The future items are directions, not release dates or API commitments.
 
-## Available in 0.5.0
+## Available in 0.5.1
 
 - Entity-derived schemas, typed IDs and references, and validating codecs.
 - Closed enums, enum sets, JSON columns, inline records, and child lists.

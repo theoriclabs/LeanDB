@@ -1069,17 +1069,17 @@ def elabSchema : CommandElab := fun stx => do
   elabCommand (← `(structure $(rootIdent schemaName):ident where deriving Repr))
   let schemaId := rootIdent schemaName
   let n := types.size
-  let mut packAlts : Array (TSyntax ``Lean.Parser.Term.matchAltExpr) := #[]
+  -- `pack` indexes an array of packs. A `match` on `Fin` literals failed
+  -- the exhaustiveness check ("Missing cases") above fifteen tables (#139).
+  let mut packs : Array Term := #[]
   for hi in [0:n] do
     let t := types[hi]!
-    let iLit : Term := quote hi
-    packAlts := packAlts.push (← `(Lean.Parser.Term.matchAltExpr|
-      | ⟨$iLit, _⟩ =>
-          { ty := $(typeIdent t)
-            entity := inferInstanceAs (LeanDb.Entity $(typeIdent t))
-            indexes := inferInstanceAs (LeanDb.Indexes $(typeIdent t))
-            unique := inferInstanceAs (LeanDb.HasUnique $(typeIdent t))
-            foreignKey := inferInstanceAs (LeanDb.HasForeignKey $(typeIdent t)) }))
+    packs := packs.push (← `(term|
+      { ty := $(typeIdent t)
+        entity := inferInstanceAs (LeanDb.Entity $(typeIdent t))
+        indexes := inferInstanceAs (LeanDb.Indexes $(typeIdent t))
+        unique := inferInstanceAs (LeanDb.HasUnique $(typeIdent t))
+        foreignKey := inferInstanceAs (LeanDb.HasForeignKey $(typeIdent t)) }))
   -- Named instance so `Has.id` is `Fin inst.nTables` (`Fin 2`), not
   -- `Fin i.nTables` for a free instance parameter.
   let instName := schemaName ++ `instIsSchema
@@ -1094,7 +1094,7 @@ def elabSchema : CommandElab := fun stx => do
     elabCommand (← `(
       @[reducible] def $instId:ident : LeanDb.IsSchema $schemaId where
         nTables := $(quote n)
-        pack $packAlts:matchAlt*
+        pack index := (#[$packs,*])[index]
     ))
   elabCommand (← `(
     @[reducible] instance : LeanDb.IsSchema $schemaId := $instId:ident
