@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "validation_scope": "LOCAL macOS native binary smoke only",
+  "platform": {
+    "system": "Darwin",
+    "macos_version": "15.5",
+    "machine": "arm64",
+    "python_version": "3.14.0"
+  },
+  "build": {
+    "performed_by_this_validation": false,
+    "origin": "Parent-provided isolated build using installed Lean4; not rebuilt here.",
+    "isolated_source_directory": "/private/tmp/leandb-cf-20261009/local-src/experiments/cloudflare/native",
+    "declared_toolchain": "leanprover/lean4:v4.33.0",
+    "compiler_version_independently_verified": false
+  },
+  "binary": {
+    "path": "/private/tmp/leandb-cf-20261009/local-src/experiments/cloudflare/native/.lake/build/bin/cf-native",
+    "format": "Mach-O 64-bit executable arm64",
+    "size_bytes": 105612064,
+    "sha256": "290d786cb74b88d97d97d35fa758d74d9c7d1bc029fc731ce1754b9737e9669d",
+    "sha256_after_run": "290d786cb74b88d97d97d35fa758d74d9c7d1bc029fc731ce1754b9737e9669d",
+    "unchanged_during_run": true
+  },
+  "source_provenance": {
+    "algorithm": "SHA-256",
+    "all_current_sources_match_isolated_build_sources": false,
+    "status": "fixture_source_mismatch",
+    "files": [
+      {
+        "file": "CfNative.lean",
+        "current_path": "/Users/harshwork/code/LeanDB/experiments/cloudflare/native/CfNative.lean",
+        "isolated_build_source_path": "/private/tmp/leandb-cf-20261009/local-src/experiments/cloudflare/native/CfNative.lean",
+        "current_sha256": "5f0b41785c6b394ad67bb9964548570177fed0ff85e24313ebf3c9023f8697ed",
+        "isolated_build_source_sha256": "cc19f9fd739c74fe1a29b6474ee8829dec455b521cf46b0297d6190119673248",
+        "match": false,
+        "diff_isolated_to_current": "--- /private/tmp/leandb-cf-20261009/local-src/experiments/cloudflare/native/CfNative.lean\n+++ /Users/harshwork/code/LeanDB/experiments/cloudflare/native/CfNative.lean\n@@ -68,9 +68,7 @@\n /-- Execute inside a savepoint. Domain aborts roll back before the caller writes\n     Applied; unexpected engine errors propagate and never consume a sequence. -/\n private def mutate (j : Json) : DbM (Tx String Int64) := do\n-  let c \u2190 match parseCommand j with\n-    | .ok c => pure c\n-    | .error code => return .abort code\n+  let .ok c := parseCommand j | return .abort \"invalid\"\n   unless allowed c.actor c.tenant do return .abort \"forbidden\"\n   if c.kind == \"create\" then\n     try\n@@ -83,9 +81,8 @@\n   let some row := (\u2190 fetchAll Counter).find?\n       (fun row => row.val.tenant == c.tenant && row.val.key == c.key) |\n     return .abort \"not_found\"\n-  let value \u2190 match checkedInt64 (row.val.value.toInt + c.amount.toInt) with\n-    | .ok value => pure value\n-    | .error code => return .abort code\n+  let .ok value := checkedInt64 (row.val.value.toInt + c.amount.toInt) |\n+    return .abort \"invalid\"\n   discard <| update row { row.val with value }\n   if c.kind == \"rollback\" then return .abort \"rolled_back\"\n   return .commit value\n",
+        "current_sha256_after_run": "5f0b41785c6b394ad67bb9964548570177fed0ff85e24313ebf3c9023f8697ed",
+        "isolated_build_source_sha256_after_run": "cc19f9fd739c74fe1a29b6474ee8829dec455b521cf46b0297d6190119673248",
+        "unchanged_during_run": true
+      },
+      {
+        "file": "Main.lean",
+        "current_path": "/Users/harshwork/code/LeanDB/experiments/cloudflare/native/Main.lean",
+        "isolated_build_source_path": "/private/tmp/leandb-cf-20261009/local-src/experiments/cloudflare/native/Main.lean",
+        "current_sha256": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e",
+        "isolated_build_source_sha256": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e",
+        "match": true,
+        "diff_isolated_to_current": "",
+        "current_sha256_after_run": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e",
+        "isolated_build_source_sha256_after_run": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e",
+        "unchanged_during_run": true
+      }
+    ],
+    "limitation": "CfNative.lean differs in two error-handling blocks; Main.lean matches. The smoke result applies to the supplied binary and does not establish validation of the exact current CfNative.lean source."
+  },
+  "smoke": {
+    "script_path": "/Users/harshwork/code/LeanDB/experiments/cloudflare/native/smoke.py",
+    "script_sha256": "19dca94d16451f899c7ec062fb66f3e56d81e0af600965ddaecbbbcf1ed01461",
+    "script_sha256_after_run": "19dca94d16451f899c7ec062fb66f3e56d81e0af600965ddaecbbbcf1ed01461",
+    "command": [
+      "/opt/homebrew/opt/python@3.14/bin/python3.14",
+      "/Users/harshwork/code/LeanDB/experiments/cloudflare/native/smoke.py",
+      "/private/tmp/leandb-cf-20261009/local-src/experiments/cloudflare/native/.lake/build/bin/cf-native"
+    ],
+    "cwd": "/Users/harshwork/code/LeanDB/experiments/cloudflare/native",
+    "started_at_utc": "2026-10-09T21:08:07.828171+00:00",
+    "finished_at_utc": "2026-10-09T21:08:08.349334+00:00",
+    "duration_seconds": 0.521049,
+    "exit_code": 0,
+    "stdout": "smoke artifacts: /Users/harshwork/code/LeanDB/experiments/cloudflare/native/.smoke-artifacts/cf-native-smoke-cgou645o\nPASS: native fixture smoke; 12 persisted/replayed receipts\n",
+    "stderr": "",
+    "status": "passed",
+    "artifact_directories": [
+      "/Users/harshwork/code/LeanDB/experiments/cloudflare/native/.smoke-artifacts/cf-native-smoke-cgou645o"
+    ],
+    "environment": "Minimal PATH, owned TMPDIR, PYTHONUNBUFFERED; smoke supplies its synthetic token. No inherited secret environment.",
+    "termination_semantics": "server() calls terminate() (SIGTERM on macOS), waits up to 5 seconds, then calls kill() only on timeout. Which shutdown branch ran is not instrumented. This is not evidence of an abrupt-kill or in-flight crash test."
+  },
+  "pending": [
+    "Exact current-source build and smoke validation because fixture source hashes differ.",
+    "Linux build and native smoke validation.",
+    "Cloud deployment/integration, injected after-journal and after-native crash windows, and durable/ephemeral gateway recovery validation."
+  ]
+}

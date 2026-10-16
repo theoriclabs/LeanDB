@@ -1,0 +1,20 @@
+{
+  "scope": "macOS arm64 local final-source validation",
+  "at": "2026-10-09T21:09:48.529072+00:00",
+  "build_exit": 0,
+  "binary_sha256": "55bee4e0909c97263212da4146e65f261cbd641d2179dff7da88fedefdd858a0",
+  "source_hashes": {
+    "CfNative.lean": {
+      "current": "5f0b41785c6b394ad67bb9964548570177fed0ff85e24313ebf3c9023f8697ed",
+      "built": "5f0b41785c6b394ad67bb9964548570177fed0ff85e24313ebf3c9023f8697ed"
+    },
+    "Main.lean": {
+      "current": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e",
+      "built": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e"
+    }
+  },
+  "source_match": true,
+  "smoke_exit": 0,
+  "stdout": "smoke artifacts: /var/folders/vn/42lgh9yx6_b09rn3mxkx4dl80000gn/T/cf-native-smoke-6y7ag6b0\nPASS: native fixture smoke; 12 persisted/replayed receipts\n",
+  "stderr": ""
+}

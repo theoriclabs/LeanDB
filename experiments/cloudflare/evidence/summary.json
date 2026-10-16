@@ -1,0 +1,66 @@
+{
+  "all_cloud_checks_passed": true,
+  "cloud_probe_requests": 302,
+  "assertions_passed": 1387,
+  "assertions_failed": 0,
+  "peak_concurrency": 8,
+  "durable_forced_replacements": 6,
+  "ephemeral_forced_replacements": 1,
+  "sequential_command_end_to_end": {
+    "n": 11,
+    "p50_ms": 607.41,
+    "p95_ms": 700.71,
+    "min_ms": 514.33,
+    "max_ms": 700.71
+  },
+  "concurrent_increment_end_to_end": {
+    "n": 40,
+    "p50_ms": 4160.93,
+    "p95_ms": 4518.58,
+    "min_ms": 617.72,
+    "max_ms": 4540.84
+  },
+  "recovery_checks": [
+    {
+      "scenario": "durable persistence recovery",
+      "scope": "first recovery request through verified snapshots",
+      "seconds": 8.816,
+      "requests": 5,
+      "transient_503": 2,
+      "transport_timeouts": 0
+    },
+    {
+      "scenario": "ephemeral negative control recovery",
+      "scope": "first recovery request through verified snapshots",
+      "seconds": 74.411,
+      "requests": 8,
+      "transient_503": 2,
+      "transport_timeouts": 3
+    },
+    {
+      "scenario": "after-journal subsequent destroy recovery",
+      "scope": "first recovery request through verified snapshots",
+      "seconds": 12.417,
+      "requests": 6,
+      "transient_503": 3,
+      "transport_timeouts": 0
+    },
+    {
+      "scenario": "after-native subsequent destroy recovery",
+      "scope": "first recovery request through verified snapshots",
+      "seconds": 8.524,
+      "requests": 5,
+      "transient_503": 2,
+      "transport_timeouts": 0
+    },
+    {
+      "scenario": "post redeploy forced recovery recovery",
+      "scope": "first recovery request through verified snapshots",
+      "seconds": 9.548,
+      "requests": 5,
+      "transient_503": 2,
+      "transport_timeouts": 0
+    }
+  ],
+  "extra_crash_recovery_note": "After-journal approximately70.59s, including61.79s container_ready_timeout; after-native approximately10.29s. Estimates sum recorded request durations plus explicit 2s retry waits; no per-request wall timestamps in extra probe."
+}

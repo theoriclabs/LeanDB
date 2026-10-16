@@ -1,0 +1,44 @@
+[
+  {
+    "name": "cf-gateway-20261009T210218Z",
+    "exit_code": 0,
+    "wall_seconds": 706,
+    "is_error": false,
+    "result": "Implemented entirely within `gateway`: Worker/LeanDbHost, protected build and R2 bootstrap, immutable journal/replay verification, ephemeral mode, crash injection, and README limits.\n\nValidation passed: **28 local tests**, TypeScript check, and Wrangler dry-run.\n\n[README](/Users/harshwork/code/LeanDB/experiments/cloudflare/gateway/README.md) documents operation and limitations. No deployment or cloud operations performed; live integration remains with the parent."
+  },
+  {
+    "name": "cf-live-full-20261009T211529Z",
+    "exit_code": 0,
+    "wall_seconds": 392,
+    "is_error": false,
+    "result": "Passed: **1,181 assertions passed, 0 failed**, across **248 requests**. Peak concurrency was **8**; runtime was **206 seconds**.\n\n- Concurrent increments produced exactly 40 effects and 40 distinct sequences.\n- Durable state and receipts survived three container resets.\n- Ephemeral state cleared after its reset; recovery succeeded after three transport failures.\n- Both injected faults recovered with exactly one effect.\n- Authentication, tenant isolation, rollback, and idempotency checks passed.\n\n[Full evidence](/Users/harshwork/code/LeanDB/experiments/cloudflare/evidence/cloud-full.json)  \n[Checkpoint](/Users/harshwork/code/LeanDB/experiments/cloudflare/evidence/cloud-checkpoint.json) \u2014 `ready_for_redeploy: true`.\n\nExecuted once after readiness; source unchanged."
+  },
+  {
+    "name": "cf-live-recovery-20261009T212236Z",
+    "exit_code": 0,
+    "wall_seconds": 188,
+    "is_error": false,
+    "result": "Both probes passed: **54 requests, 206 assertions, zero assertion failures**.\n\n| Probe | Requests | Assertions | Recovery latency |\n|---|---:|---:|---|\n| [Redeploy check](/Users/harshwork/code/LeanDB/experiments/cloudflare/evidence/cloud-redeploy.json) | 32 | 188 | 8.28 s after destruction acknowledgment |\n| [Crash before retry](/Users/harshwork/code/LeanDB/experiments/cloudflare/evidence/cloud-crash-before-retry.json) | 22 | 18 | After journal: \u224870.59 s; after native: \u224810.29 s |\n\nCrash latencies include recorded request durations and scheduled backoff. After-journal recovery encountered a **61.79 s `container_ready_timeout`**, then succeeded within the script\u2019s retry window. Both crash windows verified exactly-once recovery, stable receipts, new container boots, and correct state.\n\nEvidence is preserved. Source remained unchanged; the crash script used an in-memory redirect blocker. The crash probes changed state after the checkpoint, and redeploy-check was not rerun."
+  },
+  {
+    "name": "cf-native-20261009T210218Z",
+    "exit_code": 0,
+    "wall_seconds": 218,
+    "is_error": false,
+    "result": "Implemented the fixture entirely within `native/`: requested five files plus `smoke.py`.\n\n- Real LeanDB/SQLite transactions, composite uniqueness, tenant checks, atomic Applied receipts, replay/conflict/gap handling.\n- `cf-native` target; local dependency `../../..`; Lean v4.33.0.\n- [README](/Users/harshwork/code/LeanDB/experiments/cloudflare/native/README.md) documents startup, gateway wrapping, and tests.\n\nStartup with `LEANDB_TOKEN` supplied:\n```sh\ncf-native --db /work/state.sqlite serve --http 7411 --bind 0.0.0.0\n```\n\nGateway unwraps `{\"ok\":true,\"result\":<protocol result>}`.\n\nReceipt: Python syntax, TOML, and whitespace checks passed. **Lean compilation and native smoke were not run**; they remain for the parent Linux builder. No toolchain download, cloud actions, agents, or out-of-scope writes."
+  },
+  {
+    "name": "cf-native-validation-20261009T210645Z",
+    "exit_code": 0,
+    "wall_seconds": 129,
+    "is_error": false,
+    "result": "Local macOS arm64 smoke **passed**: exit `0`, empty stderr, **12 persisted/replayed receipts**.\n\n[Evidence JSON](/Users/harshwork/code/LeanDB/experiments/cloudflare/evidence/native-local.json) contains actual output, timestamps, and hashes. Binary SHA-256:\n`290d786cb74b88d97d97d35fa758d74d9c7d1bc029fc731ce1754b9737e9669d`\n\n**Provenance mismatch:** `Main.lean` matches; `CfNative.lean` differs in two error-handling blocks. The pass validates the supplied binary; exact current-source validation remains unestablished.\n\nUpdated [README](/Users/harshwork/code/LeanDB/experiments/cloudflare/native/README.md:129) and corrected SIGTERM wording. Linux/cloud validation remains pending. No builds or source-logic changes."
+  },
+  {
+    "name": "cf-probes-20261009T210218Z",
+    "exit_code": 0,
+    "wall_seconds": 599,
+    "is_error": false,
+    "result": "Implemented [run.py](/Users/harshwork/code/LeanDB/experiments/cloudflare/probes/run.py) and [README.md](/Users/harshwork/code/LeanDB/experiments/cloudflare/probes/README.md).\n\nIncludes both modes, checkpoints, requested probes, redacted evidence, cumulative 999-request budget, and concurrency eight.\n\nSyntax/compile checks passed. No credentials accessed or network calls made; live validation awaits parent authorization."
+  }
+]

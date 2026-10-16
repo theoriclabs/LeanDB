@@ -1,0 +1,2 @@
+{"output":"info: downloading https://releases.lean-lang.org/lean4/v4.33.0/lean-4.33.0-linux.tar.zst\ninfo: installing /root/.elan/toolchains/leanprover--lean4---v4.33.0\n","info":{"stream":"stdout"}}
+{"result":{"ok":true,"value":{"exitCode":0}}}

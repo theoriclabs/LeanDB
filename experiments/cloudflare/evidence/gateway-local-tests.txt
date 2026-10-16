@@ -1,0 +1,42 @@
+
+> test
+> node --test tests/*.test.mjs
+
+(node:99096) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ health is metadata-only; auth/schema/method failures do not start containers (18.801041ms)
+✔ canonical idempotency, actor override, actor scope, and native domain failures (49.092958ms)
+✔ after-journal: retry exactly once after DO eviction with warm container (20.556542ms)
+✔ after-journal: retry exactly once after container destruction (20.302833ms)
+✔ after-native: retry exactly once after DO eviction with warm container (21.168583ms)
+✔ after-native: retry exactly once after container destruction (21.438958ms)
+✔ injection survives DO eviction and is consumed only by a new command (26.127083ms)
+✔ full replay restores ordered successes and failures with byte-identical envelopes (37.7255ms)
+✔ durable replay verifies committed outcomes and fails closed on disagreement (11.020791ms)
+✔ SQL enforces immutable journals and receipts (5.887833ms)
+✔ commands remain serialized across native awaits, duplicate retries, and reads (74.528208ms)
+✔ native reply loss after commit retries safely and commits the original outcome (16.340041ms)
+✔ ephemeral state is lost, no old envelopes replay, fresh sequence starts at native status (28.070667ms)
+✔ ephemeral warm boot resolves unknown outcomes across DO eviction without duplicate mutation (20.05575ms)
+✔ boot marker lives on filesystem; bootstrap uses request origin/env and preserves warm native (3.493375ms)
+✔ bootstrap errors are redacted and invalid requests never reach native (0.990958ms)
+✔ build exec streams NDJSON and holds the DO queue until the stream finishes (13.436125ms)
+✔ call whitelist, workspace streaming, stripped binary publish, protected download (2.142166ms)
+✔ only two fixed mode names are routed and container state is isolated (8.599917ms)
+✔ canonicalization handles nested ordering, prototype keys, and numeric forms (0.128625ms)
+✔ native sequence regression triggers durable replay even with the same filesystem boot (15.67025ms)
+✔ native state ahead of the durable journal is rejected without exposing a snapshot (7.150625ms)
+✔ unready Node server exits at the bounded readiness deadline (251.761834ms)
+✔ native readiness is bounded after launch and the gateway never exposes bootstrap diagnostics (251.895916ms)
+✔ schema mismatch preserves an existing native process and refuses bootstrap (2.151166ms)
+✔ publish rejection cancels the binary stream and releases the request queue (2.576083ms)
+✔ internal exec parses split NDJSON/UTF-8 and requires a successful terminal result (2.415834ms)
+✔ static bootstrap is valid bash without executing it or interpolating credentials (87.939ms)
+ℹ tests 28
+ℹ suites 0
+ℹ pass 28
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1157.7805

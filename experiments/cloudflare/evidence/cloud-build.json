@@ -1,0 +1,17 @@
+{
+  "source_commit": "8920c70b1c01e2d0109e83dbc1be14adbf05ed96",
+  "source_tar_sha256": "c09c3fb7c18528e650e768538d69e009ecfc7527769822c08dfd2442cee6aacc",
+  "lean_version": "4.33.0",
+  "target": "x86_64-unknown-linux-gnu",
+  "builder": "Cloudflare Container standard-1",
+  "started_utc": "2026-10-09T21:09:45Z",
+  "finished_utc": "2026-10-09T21:17:06Z",
+  "elapsed_seconds": 441,
+  "exit_code": 0,
+  "binary_bytes": 84161720,
+  "binary_sha256": "d4a2aca0f20525696bbc8d46d6f95e788d83832edcace75382e80897a37edcca",
+  "source_hashes": {
+    "CfNative.lean": "5f0b41785c6b394ad67bb9964548570177fed0ff85e24313ebf3c9023f8697ed",
+    "Main.lean": "0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e"
+  }
+}

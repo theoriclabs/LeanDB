@@ -1,0 +1,5 @@
+.wrangler/
+**/__pycache__/
+**/.lake/
+**/lake-manifest.json
+*.secret*

@@ -1,0 +1,30 @@
+[
+  {
+    "mode": "durable",
+    "http": 200,
+    "body": {
+      "lastSeq": 0,
+      "ok": true,
+      "schemaVersion": "cf-v1",
+      "mode": "durable",
+      "bootId": "9c7cd7be-31fb-4983-bbfc-ff9eb2364c53",
+      "journalCount": 0,
+      "committedCount": 0
+    },
+    "ms": 5522.53
+  },
+  {
+    "mode": "ephemeral",
+    "http": 200,
+    "body": {
+      "lastSeq": 0,
+      "ok": true,
+      "schemaVersion": "cf-v1",
+      "mode": "ephemeral",
+      "bootId": "7c482207-ecf6-45ad-83be-ed62eaa07093",
+      "journalCount": 0,
+      "committedCount": 0
+    },
+    "ms": 4933.32
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "created_utc": "2026-10-09T21:03:00Z",
+  "worker": "leandb-cf-exp-20261009",
+  "url": "https://leandb-cf-exp-20261009.harsh-420.workers.dev",
+  "container_app_id": "a03d20fd-d040-4257-b64e-9ab3fc8f5d96",
+  "do_namespace_id": "a89b2537552f4876be7f3edb51e33374",
+  "r2_bucket": "leandb-cf-exp-20261009",
+  "initial_version": "4213c619-828f-4fd1-afb6-9cddef9adc5c",
+  "image_digest": "sha256:cb8f8b25b15e2a54c8626273ab5946eceeb13b4e4be7d718dbef0f323cb25e88",
+  "cleanup": {
+    "completed_at": "2026-10-09T21:32:35.691989+00:00",
+    "containers_destroyed": true,
+    "container_application_deleted": true,
+    "worker_deleted": true,
+    "durable_object_namespace_absent": true,
+    "r2_object_deleted": true,
+    "r2_bucket_absent": true,
+    "existing_wybe_container_application_present": true,
+    "shared_container_image_delete_attempted": false,
+    "worker_absence_api_code": 10007
+  },
+  "gateway_version": "0d9c4d50-9ac4-4298-bc7c-41c928a1888b",
+  "redeploy_version": "8b8d355a-3524-4d36-917f-44c22b2d5f39"
+}

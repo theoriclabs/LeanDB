@@ -1,0 +1,344 @@
+{
+  "started": "2026-10-09T21:23:56.268817+00:00",
+  "scope": "container destruction before retry in both commit windows",
+  "requests": [
+    {
+      "path": "/durable/snapshot",
+      "status": 200,
+      "ms": 598.08,
+      "response": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 200,
+      "ms": 574.95,
+      "response": {
+        "ok": true,
+        "seq": 53,
+        "value": 0
+      }
+    },
+    {
+      "path": "/durable/status",
+      "status": 200,
+      "ms": 523.84,
+      "response": {
+        "lastSeq": 53,
+        "ok": true,
+        "schemaVersion": "cf-v1",
+        "mode": "durable",
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "journalCount": 53,
+        "committedCount": 53
+      }
+    },
+    {
+      "path": "/durable/admin/inject",
+      "status": 200,
+      "ms": 137.84,
+      "response": {
+        "ok": true,
+        "point": "after-journal"
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 503,
+      "ms": 539.96,
+      "response": {
+        "ok": false,
+        "code": "injected_after_journal"
+      }
+    },
+    {
+      "path": "/durable/admin/destroy",
+      "status": 200,
+      "ms": 258.54,
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 503,
+      "ms": 1064.69,
+      "response": {
+        "ok": false,
+        "code": "unavailable"
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 503,
+      "ms": 61785.37,
+      "response": {
+        "ok": false,
+        "code": "container_ready_timeout"
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 200,
+      "ms": 3735.0,
+      "response": {
+        "ok": true,
+        "seq": 54,
+        "value": 7
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 200,
+      "ms": 615.29,
+      "response": {
+        "ok": true,
+        "seq": 54,
+        "value": 7
+      }
+    },
+    {
+      "path": "/durable/status",
+      "status": 200,
+      "ms": 521.5,
+      "response": {
+        "lastSeq": 54,
+        "ok": true,
+        "schemaVersion": "cf-v1",
+        "mode": "durable",
+        "bootId": "cc3c104b-3893-4cbb-956e-ac415d0a0efb",
+        "journalCount": 54,
+        "committedCount": 54
+      }
+    },
+    {
+      "path": "/durable/snapshot",
+      "status": 200,
+      "ms": 553.33,
+      "response": {
+        "count": 3,
+        "items": [
+          {
+            "key": "crash-4109aba41cca434585c46bdd5082830f",
+            "value": 7
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 89
+      }
+    },
+    {
+      "path": "/durable/status",
+      "status": 200,
+      "ms": 583.96,
+      "response": {
+        "lastSeq": 54,
+        "ok": true,
+        "schemaVersion": "cf-v1",
+        "mode": "durable",
+        "bootId": "cc3c104b-3893-4cbb-956e-ac415d0a0efb",
+        "journalCount": 54,
+        "committedCount": 54
+      }
+    },
+    {
+      "path": "/durable/admin/inject",
+      "status": 200,
+      "ms": 133.38,
+      "response": {
+        "ok": true,
+        "point": "after-native"
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 503,
+      "ms": 851.87,
+      "response": {
+        "ok": false,
+        "code": "injected_after_native"
+      }
+    },
+    {
+      "path": "/durable/admin/destroy",
+      "status": 200,
+      "ms": 328.01,
+      "response": {
+        "ok": true
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 503,
+      "ms": 1171.34,
+      "response": {
+        "ok": false,
+        "code": "unavailable"
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 503,
+      "ms": 805.95,
+      "response": {
+        "ok": false,
+        "code": "unavailable"
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 200,
+      "ms": 4317.36,
+      "response": {
+        "ok": true,
+        "seq": 55,
+        "value": 12
+      }
+    },
+    {
+      "path": "/durable/command",
+      "status": 200,
+      "ms": 487.94,
+      "response": {
+        "ok": true,
+        "seq": 55,
+        "value": 12
+      }
+    },
+    {
+      "path": "/durable/status",
+      "status": 200,
+      "ms": 510.79,
+      "response": {
+        "lastSeq": 55,
+        "ok": true,
+        "schemaVersion": "cf-v1",
+        "mode": "durable",
+        "bootId": "8666ac89-1856-499c-8a04-5d4ba4a4fa3f",
+        "journalCount": 55,
+        "committedCount": 55
+      }
+    },
+    {
+      "path": "/durable/snapshot",
+      "status": 200,
+      "ms": 564.0,
+      "response": {
+        "count": 3,
+        "items": [
+          {
+            "key": "crash-4109aba41cca434585c46bdd5082830f",
+            "value": 12
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 94
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "name": "initial snapshot",
+      "passed": true
+    },
+    {
+      "name": "seed",
+      "passed": true
+    },
+    {
+      "name": "after-journal status before",
+      "passed": true
+    },
+    {
+      "name": "after-journal armed",
+      "passed": true
+    },
+    {
+      "name": "after-journal interrupted",
+      "passed": true
+    },
+    {
+      "name": "after-journal destroyed before retry",
+      "passed": true
+    },
+    {
+      "name": "after-journal recovered exactly once",
+      "passed": true
+    },
+    {
+      "name": "after-journal stable receipt",
+      "passed": true
+    },
+    {
+      "name": "after-journal new container boot",
+      "passed": true
+    },
+    {
+      "name": "after-journal exact recovered state",
+      "passed": true
+    },
+    {
+      "name": "after-native status before",
+      "passed": true
+    },
+    {
+      "name": "after-native armed",
+      "passed": true
+    },
+    {
+      "name": "after-native interrupted",
+      "passed": true
+    },
+    {
+      "name": "after-native destroyed before retry",
+      "passed": true
+    },
+    {
+      "name": "after-native recovered exactly once",
+      "passed": true
+    },
+    {
+      "name": "after-native stable receipt",
+      "passed": true
+    },
+    {
+      "name": "after-native new container boot",
+      "passed": true
+    },
+    {
+      "name": "after-native exact recovered state",
+      "passed": true
+    }
+  ],
+  "outcome": "passed",
+  "finished": "2026-10-09T21:25:24.952352+00:00"
+}

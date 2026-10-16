@@ -1,0 +1,2 @@
+{"output":"toolchain-install-started\n","info":{"stream":"stdout"}}
+{"result":{"ok":true,"value":{"exitCode":0}}}

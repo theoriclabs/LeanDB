@@ -1,0 +1,5 @@
+
+ ⛅️ wrangler 4.148.0 (update available 4.149.0)
+───────────────────────────────────────────────
+Deleting bucket leandb-cf-exp-20261009.
+Deleted bucket leandb-cf-exp-20261009.

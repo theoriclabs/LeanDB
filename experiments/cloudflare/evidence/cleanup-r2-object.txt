@@ -1,0 +1,7 @@
+
+ ⛅️ wrangler 4.148.0 (update available 4.149.0)
+───────────────────────────────────────────────
+Resource location: remote 
+
+Deleting object "cf-native" from bucket "leandb-cf-exp-20261009".
+Delete complete.

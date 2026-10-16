@@ -1,0 +1,120 @@
+{
+  "base_url": "https://leandb-cf-exp-20261009.harsh-420.workers.dev",
+  "durable": {
+    "receipts": [
+      {
+        "actor": "alice",
+        "body": {
+          "command": {
+            "delta": 7,
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "tenant": "alpha",
+            "type": "increment"
+          },
+          "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:retry"
+        },
+        "result": {
+          "ok": true,
+          "seq": 8,
+          "value": 20
+        }
+      },
+      {
+        "actor": "bob",
+        "body": {
+          "command": {
+            "delta": 2,
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "tenant": "beta",
+            "type": "increment"
+          },
+          "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:retry"
+        },
+        "result": {
+          "ok": true,
+          "seq": 9,
+          "value": 22
+        }
+      },
+      {
+        "actor": "alice",
+        "body": {
+          "command": {
+            "delta": 11,
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "tenant": "alpha",
+            "type": "increment"
+          },
+          "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:after-journal"
+        },
+        "result": {
+          "ok": true,
+          "seq": 51,
+          "value": 31
+        }
+      },
+      {
+        "actor": "alice",
+        "body": {
+          "command": {
+            "delta": 11,
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "tenant": "alpha",
+            "type": "increment"
+          },
+          "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:after-native"
+        },
+        "result": {
+          "ok": true,
+          "seq": 52,
+          "value": 42
+        }
+      }
+    ],
+    "snapshots": {
+      "alice": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "bob": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      }
+    },
+    "status": {
+      "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+      "committedCount": 52,
+      "journalCount": 52,
+      "lastSeq": 52,
+      "mode": "durable",
+      "ok": true,
+      "schemaVersion": "cf-v1"
+    }
+  },
+  "format_version": 1,
+  "last_run_id": "d262ed2006b74f83ac254c5e112c4975",
+  "origin_run_id": "7dc10bd11d314ab1a657c9702938ee76",
+  "phase": "redeploy-check complete",
+  "protocol": "cf-v1",
+  "ready_for_redeploy": true,
+  "request_count": 280,
+  "written_at": "2026-10-09T21:23:42.118+00:00"
+}

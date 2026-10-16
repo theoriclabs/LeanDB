@@ -1,0 +1,15 @@
+{
+  "container_application": {
+    "id": "a03d20fd-d040-4257-b64e-9ab3fc8f5d96",
+    "command": "wrangler containers delete a03d20fd-d040-4257-b64e-9ab3fc8f5d96",
+    "confirmed": true,
+    "exit_code": 0,
+    "observed_output": "Your container has been deleted"
+  },
+  "worker": {
+    "command": "wrangler delete leandb-cf-exp-20261009 --config gateway/wrangler.jsonc",
+    "confirmed": true,
+    "exit_code": 0,
+    "observed_output": "Successfully deleted leandb-cf-exp-20261009"
+  }
+}

@@ -1,0 +1,3457 @@
+{
+  "assertion_counts": {
+    "failed": 0,
+    "passed": 188
+  },
+  "assertions": [
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": "cf-v1",
+      "name": "external redeploy continuity: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": "nonnegative integer",
+      "name": "external redeploy continuity: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": "nonnegative integer",
+      "name": "external redeploy continuity: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "external redeploy continuity: status bootId",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": 52,
+      "name": "external redeploy continuity: unchanged lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:18.894+00:00",
+      "expected": 52,
+      "name": "external redeploy continuity: unchanged journalCount",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "expected": true,
+      "name": "external redeploy continuity: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "expected": "list",
+      "name": "external redeploy continuity: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "external redeploy continuity: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "external redeploy continuity: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 2,
+      "at": "2026-10-09T21:23:19.441+00:00",
+      "expected": 2,
+      "name": "external redeploy continuity: derived count",
+      "passed": true
+    },
+    {
+      "actual": 82,
+      "at": "2026-10-09T21:23:19.441+00:00",
+      "expected": 82,
+      "name": "external redeploy continuity: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "at": "2026-10-09T21:23:19.441+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "name": "external redeploy continuity: durable alpha exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": true,
+      "name": "external redeploy continuity: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": "list",
+      "name": "external redeploy continuity: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "external redeploy continuity: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "external redeploy continuity: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": 1,
+      "name": "external redeploy continuity: derived count",
+      "passed": true
+    },
+    {
+      "actual": 22,
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": 22,
+      "name": "external redeploy continuity: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "name": "external redeploy continuity: durable beta exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:20.501+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:20.501+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:20.501+00:00",
+      "expected": "cf-v1",
+      "name": "external redeploy continuity: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:20.501+00:00",
+      "expected": "nonnegative integer",
+      "name": "external redeploy continuity: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:20.501+00:00",
+      "expected": "nonnegative integer",
+      "name": "external redeploy continuity: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+      "at": "2026-10-09T21:23:20.501+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "external redeploy continuity: status bootId",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 30,
+        "json": {
+          "ok": true,
+          "seq": 8,
+          "value": 20
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:21.148+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 8,
+        "value": 20
+      },
+      "at": "2026-10-09T21:23:21.148+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 8,
+        "value": 20
+      },
+      "name": "external redeploy continuity: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 30,
+        "json": {
+          "ok": true,
+          "seq": 9,
+          "value": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:21.634+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 9,
+        "value": 22
+      },
+      "at": "2026-10-09T21:23:21.634+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 9,
+        "value": 22
+      },
+      "name": "external redeploy continuity: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 31,
+        "json": {
+          "ok": true,
+          "seq": 51,
+          "value": 31
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:22.228+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 51,
+        "value": 31
+      },
+      "at": "2026-10-09T21:23:22.228+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 51,
+        "value": 31
+      },
+      "name": "external redeploy continuity: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 31,
+        "json": {
+          "ok": true,
+          "seq": 52,
+          "value": 42
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:22.778+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 52,
+        "value": 42
+      },
+      "at": "2026-10-09T21:23:22.778+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 52,
+        "value": 42
+      },
+      "name": "external redeploy continuity: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": "cf-v1",
+      "name": "external redeploy continuity: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": "nonnegative integer",
+      "name": "external redeploy continuity: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": "nonnegative integer",
+      "name": "external redeploy continuity: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "external redeploy continuity: status bootId",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": 52,
+      "name": "external redeploy continuity: unchanged lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:23.291+00:00",
+      "expected": 52,
+      "name": "external redeploy continuity: unchanged journalCount",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": true,
+      "name": "external redeploy continuity: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": "list",
+      "name": "external redeploy continuity: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "external redeploy continuity: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "external redeploy continuity: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 2,
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": 2,
+      "name": "external redeploy continuity: derived count",
+      "passed": true
+    },
+    {
+      "actual": 82,
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": 82,
+      "name": "external redeploy continuity: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "name": "external redeploy continuity: durable alpha exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": 200,
+      "name": "external redeploy continuity: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": "object",
+      "name": "external redeploy continuity: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": true,
+      "name": "external redeploy continuity: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": "list",
+      "name": "external redeploy continuity: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "external redeploy continuity: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "external redeploy continuity: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": 1,
+      "name": "external redeploy continuity: derived count",
+      "passed": true
+    },
+    {
+      "actual": 22,
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": 22,
+      "name": "external redeploy continuity: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "name": "external redeploy continuity: durable beta exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:25.051+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery before destroy: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:25.051+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery before destroy: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:25.051+00:00",
+      "expected": "cf-v1",
+      "name": "post redeploy forced recovery before destroy: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:25.051+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy forced recovery before destroy: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:25.051+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy forced recovery before destroy: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+      "at": "2026-10-09T21:23:25.051+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "post redeploy forced recovery before destroy: status bootId",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery before destroy: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery before destroy: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": true,
+      "name": "post redeploy forced recovery before destroy: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": "list",
+      "name": "post redeploy forced recovery before destroy: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy forced recovery before destroy: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy forced recovery before destroy: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 2,
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": 2,
+      "name": "post redeploy forced recovery before destroy: derived count",
+      "passed": true
+    },
+    {
+      "actual": 82,
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": 82,
+      "name": "post redeploy forced recovery before destroy: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "name": "post redeploy forced recovery before destroy: durable alpha exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery before destroy: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery before destroy: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": true,
+      "name": "post redeploy forced recovery before destroy: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": "list",
+      "name": "post redeploy forced recovery before destroy: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy forced recovery before destroy: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy forced recovery before destroy: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": 1,
+      "name": "post redeploy forced recovery before destroy: derived count",
+      "passed": true
+    },
+    {
+      "actual": 22,
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": 22,
+      "name": "post redeploy forced recovery before destroy: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "name": "post redeploy forced recovery before destroy: durable beta exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 12,
+        "json": {
+          "count": 52
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:26.355+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery before destroy: admin journal HTTP status",
+      "passed": true
+    },
+    {
+      "actual": [
+        "count"
+      ],
+      "at": "2026-10-09T21:23:26.355+00:00",
+      "expected": "count metadata without journal entries",
+      "name": "post redeploy forced recovery before destroy: journal exposes count only",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 52
+      },
+      "at": "2026-10-09T21:23:26.355+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy forced recovery before destroy: journal count",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:26.355+00:00",
+      "expected": 52,
+      "name": "post redeploy forced recovery before destroy: journal/status count agrees",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 11,
+        "json": {
+          "ok": true
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:26.603+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery destroy: admin destroy HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true
+      },
+      "at": "2026-10-09T21:23:26.603+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery destroy: destroy response JSON object",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true
+      },
+      "at": "2026-10-09T21:23:26.603+00:00",
+      "expected": true,
+      "name": "post redeploy forced recovery destroy: destroy acknowledged",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery recovery: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery recovery: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": "cf-v1",
+      "name": "post redeploy forced recovery recovery: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy forced recovery recovery: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy forced recovery recovery: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "post redeploy forced recovery recovery: status bootId",
+      "passed": true
+    },
+    {
+      "actual": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+      "at": "2026-10-09T21:23:34.880+00:00",
+      "expected": "bootId differs from dcabcff7-904c-4449-9dfb-2a4842ab7005",
+      "name": "post redeploy forced recovery recovery: new container boot",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery recovery: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery recovery: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": true,
+      "name": "post redeploy forced recovery recovery: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": "list",
+      "name": "post redeploy forced recovery recovery: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy forced recovery recovery: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy forced recovery recovery: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 2,
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": 2,
+      "name": "post redeploy forced recovery recovery: derived count",
+      "passed": true
+    },
+    {
+      "actual": 82,
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": 82,
+      "name": "post redeploy forced recovery recovery: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "name": "post redeploy forced recovery recovery: durable alpha exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": 200,
+      "name": "post redeploy forced recovery recovery: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": "object",
+      "name": "post redeploy forced recovery recovery: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": true,
+      "name": "post redeploy forced recovery recovery: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": "list",
+      "name": "post redeploy forced recovery recovery: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy forced recovery recovery: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy forced recovery recovery: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": 1,
+      "name": "post redeploy forced recovery recovery: derived count",
+      "passed": true
+    },
+    {
+      "actual": 22,
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": 22,
+      "name": "post redeploy forced recovery recovery: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "name": "post redeploy forced recovery recovery: durable beta exact contents",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": 52,
+      "name": "post redeploy forced recovery recovery: unchanged lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "expected": 52,
+      "name": "post redeploy forced recovery recovery: unchanged journalCount",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:36.637+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:36.637+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:36.637+00:00",
+      "expected": "cf-v1",
+      "name": "post redeploy persisted receipts: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:36.637+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy persisted receipts: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:36.637+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy persisted receipts: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+      "at": "2026-10-09T21:23:36.637+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "post redeploy persisted receipts: status bootId",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 30,
+        "json": {
+          "ok": true,
+          "seq": 8,
+          "value": 20
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:37.186+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 8,
+        "value": 20
+      },
+      "at": "2026-10-09T21:23:37.186+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 8,
+        "value": 20
+      },
+      "name": "post redeploy persisted receipts: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 30,
+        "json": {
+          "ok": true,
+          "seq": 9,
+          "value": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:37.767+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 9,
+        "value": 22
+      },
+      "at": "2026-10-09T21:23:37.767+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 9,
+        "value": 22
+      },
+      "name": "post redeploy persisted receipts: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 31,
+        "json": {
+          "ok": true,
+          "seq": 51,
+          "value": 31
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:38.349+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 51,
+        "value": 31
+      },
+      "at": "2026-10-09T21:23:38.349+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 51,
+        "value": 31
+      },
+      "name": "post redeploy persisted receipts: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 31,
+        "json": {
+          "ok": true,
+          "seq": 52,
+          "value": 42
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:38.872+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: persisted receipt retry HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "ok": true,
+        "seq": 52,
+        "value": 42
+      },
+      "at": "2026-10-09T21:23:38.872+00:00",
+      "expected": {
+        "ok": true,
+        "seq": 52,
+        "value": 42
+      },
+      "name": "post redeploy persisted receipts: persisted original receipt",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": "cf-v1",
+      "name": "post redeploy persisted receipts: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy persisted receipts: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy persisted receipts: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "post redeploy persisted receipts: status bootId",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": 52,
+      "name": "post redeploy persisted receipts: unchanged lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:39.391+00:00",
+      "expected": 52,
+      "name": "post redeploy persisted receipts: unchanged journalCount",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": true,
+      "name": "post redeploy persisted receipts: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": "list",
+      "name": "post redeploy persisted receipts: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy persisted receipts: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy persisted receipts: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 2,
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": 2,
+      "name": "post redeploy persisted receipts: derived count",
+      "passed": true
+    },
+    {
+      "actual": 82,
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "expected": 82,
+      "name": "post redeploy persisted receipts: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "at": "2026-10-09T21:23:39.926+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "name": "post redeploy persisted receipts: durable alpha exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": true,
+      "name": "post redeploy persisted receipts: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": "list",
+      "name": "post redeploy persisted receipts: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy persisted receipts: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy persisted receipts: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": 1,
+      "name": "post redeploy persisted receipts: derived count",
+      "passed": true
+    },
+    {
+      "actual": 22,
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": 22,
+      "name": "post redeploy persisted receipts: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "name": "post redeploy persisted receipts: durable beta exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": true,
+      "name": "post redeploy persisted receipts: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": "list",
+      "name": "post redeploy persisted receipts: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+          "value": 40
+        },
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 42
+        }
+      ],
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy persisted receipts: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy persisted receipts: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 2,
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": 2,
+      "name": "post redeploy persisted receipts: derived count",
+      "passed": true
+    },
+    {
+      "actual": 82,
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": 82,
+      "name": "post redeploy persisted receipts: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent": 40,
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 42
+      },
+      "name": "post redeploy persisted receipts: durable alpha exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: snapshot HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: snapshot JSON object",
+      "passed": true
+    },
+    {
+      "actual": true,
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": true,
+      "name": "post redeploy persisted receipts: snapshot success",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": "list",
+      "name": "post redeploy persisted receipts: snapshot items",
+      "passed": true
+    },
+    {
+      "actual": [
+        {
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "value": 22
+        }
+      ],
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": "{key:string,value:integer}[]",
+      "name": "post redeploy persisted receipts: snapshot item schema",
+      "passed": true
+    },
+    {
+      "actual": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": [
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main"
+      ],
+      "name": "post redeploy persisted receipts: snapshot keys unique and sorted",
+      "passed": true
+    },
+    {
+      "actual": 1,
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": 1,
+      "name": "post redeploy persisted receipts: derived count",
+      "passed": true
+    },
+    {
+      "actual": 22,
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": 22,
+      "name": "post redeploy persisted receipts: derived sum",
+      "passed": true
+    },
+    {
+      "actual": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "expected": {
+        "probe-7dc10bd11d314ab1a657c9702938ee76-main": 22
+      },
+      "name": "post redeploy persisted receipts: durable beta exact contents",
+      "passed": true
+    },
+    {
+      "actual": {
+        "body_bytes": 151,
+        "json": {
+          "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+          "committedCount": 52,
+          "journalCount": 52,
+          "lastSeq": 52,
+          "mode": "durable",
+          "ok": true,
+          "schemaVersion": "cf-v1"
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "at": "2026-10-09T21:23:42.118+00:00",
+      "expected": 200,
+      "name": "post redeploy persisted receipts: durable status HTTP status",
+      "passed": true
+    },
+    {
+      "actual": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "at": "2026-10-09T21:23:42.118+00:00",
+      "expected": "object",
+      "name": "post redeploy persisted receipts: status JSON object",
+      "passed": true
+    },
+    {
+      "actual": "cf-v1",
+      "at": "2026-10-09T21:23:42.118+00:00",
+      "expected": "cf-v1",
+      "name": "post redeploy persisted receipts: status schema",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:42.118+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy persisted receipts: status lastSeq",
+      "passed": true
+    },
+    {
+      "actual": 52,
+      "at": "2026-10-09T21:23:42.118+00:00",
+      "expected": "nonnegative integer",
+      "name": "post redeploy persisted receipts: status journalCount",
+      "passed": true
+    },
+    {
+      "actual": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+      "at": "2026-10-09T21:23:42.118+00:00",
+      "expected": "nonempty container boot marker",
+      "name": "post redeploy persisted receipts: status bootId",
+      "passed": true
+    }
+  ],
+  "base_url": "https://leandb-cf-exp-20261009.harsh-420.workers.dev",
+  "checkpoint_written": true,
+  "duration_ms": 25033.518,
+  "events": [
+    {
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "changed": false,
+      "current_boot_id": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+      "name": "external_redeploy_boot_observation",
+      "previous_boot_id": "dcabcff7-904c-4449-9dfb-2a4842ab7005"
+    },
+    {
+      "at": "2026-10-09T21:23:26.356+00:00",
+      "name": "checkpoint_written",
+      "phase": "post redeploy forced recovery before destroy",
+      "ready_for_redeploy": false
+    },
+    {
+      "at": "2026-10-09T21:23:36.153+00:00",
+      "name": "checkpoint_written",
+      "phase": "post redeploy forced recovery recovered",
+      "ready_for_redeploy": false
+    },
+    {
+      "at": "2026-10-09T21:23:42.119+00:00",
+      "name": "checkpoint_written",
+      "phase": "redeploy-check complete",
+      "ready_for_redeploy": true
+    }
+  ],
+  "failures": [],
+  "finished_at": "2026-10-09T21:23:42.119+00:00",
+  "format_version": 1,
+  "last_stage": "post redeploy persisted receipts",
+  "limits": {
+    "concurrency": 8,
+    "request_timeout_seconds": 15.0,
+    "requests": 999,
+    "retry_window_seconds": 120.0
+  },
+  "mode": "redeploy-check",
+  "observed_max_concurrency": 1,
+  "outcome": "passed",
+  "previous_request_count": 248,
+  "protocol": "cf-v1",
+  "request_count": 32,
+  "requests": [
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 1807.301,
+      "finished_at": "2026-10-09T21:23:18.894+00:00",
+      "json": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 1,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:17.086+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 176,
+      "credential_role": "alice",
+      "duration_ms": 546.075,
+      "finished_at": "2026-10-09T21:23:19.440+00:00",
+      "json": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "method": "POST",
+      "number": 2,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "alpha"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:18.894+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 105,
+      "credential_role": "bob",
+      "duration_ms": 552.175,
+      "finished_at": "2026-10-09T21:23:19.993+00:00",
+      "json": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "method": "POST",
+      "number": 3,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "beta"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:19.441+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 507.91,
+      "finished_at": "2026-10-09T21:23:20.501+00:00",
+      "json": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 4,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:19.993+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 30,
+      "credential_role": "alice",
+      "duration_ms": 646.445,
+      "finished_at": "2026-10-09T21:23:21.148+00:00",
+      "json": {
+        "ok": true,
+        "seq": 8,
+        "value": 20
+      },
+      "method": "POST",
+      "number": 5,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 7,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "alpha",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:retry"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:20.501+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 30,
+      "credential_role": "bob",
+      "duration_ms": 485.687,
+      "finished_at": "2026-10-09T21:23:21.634+00:00",
+      "json": {
+        "ok": true,
+        "seq": 9,
+        "value": 22
+      },
+      "method": "POST",
+      "number": 6,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 2,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "beta",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:retry"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:21.148+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 31,
+      "credential_role": "alice",
+      "duration_ms": 593.883,
+      "finished_at": "2026-10-09T21:23:22.228+00:00",
+      "json": {
+        "ok": true,
+        "seq": 51,
+        "value": 31
+      },
+      "method": "POST",
+      "number": 7,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 11,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "alpha",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:after-journal"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:21.634+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 31,
+      "credential_role": "alice",
+      "duration_ms": 550.669,
+      "finished_at": "2026-10-09T21:23:22.778+00:00",
+      "json": {
+        "ok": true,
+        "seq": 52,
+        "value": 42
+      },
+      "method": "POST",
+      "number": 8,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 11,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "alpha",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:after-native"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:22.228+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 512.124,
+      "finished_at": "2026-10-09T21:23:23.291+00:00",
+      "json": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 9,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:22.779+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 176,
+      "credential_role": "alice",
+      "duration_ms": 579.757,
+      "finished_at": "2026-10-09T21:23:23.871+00:00",
+      "json": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "method": "POST",
+      "number": 10,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "alpha"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:23.291+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 105,
+      "credential_role": "bob",
+      "duration_ms": 639.735,
+      "finished_at": "2026-10-09T21:23:24.511+00:00",
+      "json": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "method": "POST",
+      "number": 11,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "beta"
+      },
+      "scenario": "external redeploy continuity",
+      "started_at": "2026-10-09T21:23:23.871+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 539.678,
+      "finished_at": "2026-10-09T21:23:25.051+00:00",
+      "json": {
+        "bootId": "dcabcff7-904c-4449-9dfb-2a4842ab7005",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 12,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy forced recovery before destroy",
+      "started_at": "2026-10-09T21:23:24.511+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 176,
+      "credential_role": "alice",
+      "duration_ms": 542.536,
+      "finished_at": "2026-10-09T21:23:25.593+00:00",
+      "json": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "method": "POST",
+      "number": 13,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "alpha"
+      },
+      "scenario": "post redeploy forced recovery before destroy",
+      "started_at": "2026-10-09T21:23:25.051+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 105,
+      "credential_role": "bob",
+      "duration_ms": 658.694,
+      "finished_at": "2026-10-09T21:23:26.253+00:00",
+      "json": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "method": "POST",
+      "number": 14,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "beta"
+      },
+      "scenario": "post redeploy forced recovery before destroy",
+      "started_at": "2026-10-09T21:23:25.594+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 12,
+      "credential_role": "admin",
+      "duration_ms": 102.422,
+      "finished_at": "2026-10-09T21:23:26.355+00:00",
+      "json": {
+        "count": 52
+      },
+      "method": "GET",
+      "number": 15,
+      "path": "/durable/admin/journal",
+      "request_body": null,
+      "scenario": "post redeploy forced recovery before destroy",
+      "started_at": "2026-10-09T21:23:26.253+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 11,
+      "credential_role": "admin",
+      "duration_ms": 246.369,
+      "finished_at": "2026-10-09T21:23:26.602+00:00",
+      "json": {
+        "ok": true
+      },
+      "method": "POST",
+      "number": 16,
+      "path": "/durable/admin/destroy",
+      "request_body": {},
+      "scenario": "post redeploy forced recovery destroy",
+      "started_at": "2026-10-09T21:23:26.356+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 33,
+      "credential_role": "alice",
+      "duration_ms": 1289.083,
+      "finished_at": "2026-10-09T21:23:27.892+00:00",
+      "json": {
+        "code": "unavailable",
+        "ok": false
+      },
+      "method": "GET",
+      "number": 17,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy forced recovery recovery",
+      "started_at": "2026-10-09T21:23:26.603+00:00",
+      "status": 503,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 33,
+      "credential_role": "alice",
+      "duration_ms": 839.385,
+      "finished_at": "2026-10-09T21:23:29.236+00:00",
+      "json": {
+        "code": "unavailable",
+        "ok": false
+      },
+      "method": "GET",
+      "number": 18,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy forced recovery recovery",
+      "started_at": "2026-10-09T21:23:28.397+00:00",
+      "status": 503,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 4638.741,
+      "finished_at": "2026-10-09T21:23:34.880+00:00",
+      "json": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 19,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy forced recovery recovery",
+      "started_at": "2026-10-09T21:23:30.241+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 176,
+      "credential_role": "alice",
+      "duration_ms": 641.672,
+      "finished_at": "2026-10-09T21:23:35.522+00:00",
+      "json": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "method": "POST",
+      "number": 20,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "alpha"
+      },
+      "scenario": "post redeploy forced recovery recovery",
+      "started_at": "2026-10-09T21:23:34.880+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 105,
+      "credential_role": "bob",
+      "duration_ms": 628.733,
+      "finished_at": "2026-10-09T21:23:36.151+00:00",
+      "json": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "method": "POST",
+      "number": 21,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "beta"
+      },
+      "scenario": "post redeploy forced recovery recovery",
+      "started_at": "2026-10-09T21:23:35.522+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 483.524,
+      "finished_at": "2026-10-09T21:23:36.637+00:00",
+      "json": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 22,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:36.153+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 30,
+      "credential_role": "alice",
+      "duration_ms": 549.434,
+      "finished_at": "2026-10-09T21:23:37.186+00:00",
+      "json": {
+        "ok": true,
+        "seq": 8,
+        "value": 20
+      },
+      "method": "POST",
+      "number": 23,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 7,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "alpha",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:retry"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:36.637+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 30,
+      "credential_role": "bob",
+      "duration_ms": 580.199,
+      "finished_at": "2026-10-09T21:23:37.767+00:00",
+      "json": {
+        "ok": true,
+        "seq": 9,
+        "value": 22
+      },
+      "method": "POST",
+      "number": 24,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 2,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "beta",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:retry"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:37.187+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 31,
+      "credential_role": "alice",
+      "duration_ms": 582.447,
+      "finished_at": "2026-10-09T21:23:38.349+00:00",
+      "json": {
+        "ok": true,
+        "seq": 51,
+        "value": 31
+      },
+      "method": "POST",
+      "number": 25,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 11,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "alpha",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:after-journal"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:37.767+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 31,
+      "credential_role": "alice",
+      "duration_ms": 522.245,
+      "finished_at": "2026-10-09T21:23:38.872+00:00",
+      "json": {
+        "ok": true,
+        "seq": 52,
+        "value": 42
+      },
+      "method": "POST",
+      "number": 26,
+      "path": "/durable/command",
+      "request_body": {
+        "command": {
+          "delta": 11,
+          "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+          "tenant": "alpha",
+          "type": "increment"
+        },
+        "requestId": "probe-7dc10bd11d314ab1a657c9702938ee76:after-native"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:38.349+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 519.03,
+      "finished_at": "2026-10-09T21:23:39.391+00:00",
+      "json": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 27,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:38.872+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 176,
+      "credential_role": "alice",
+      "duration_ms": 534.13,
+      "finished_at": "2026-10-09T21:23:39.925+00:00",
+      "json": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "method": "POST",
+      "number": 28,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "alpha"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:39.391+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 105,
+      "credential_role": "bob",
+      "duration_ms": 515.903,
+      "finished_at": "2026-10-09T21:23:40.441+00:00",
+      "json": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "method": "POST",
+      "number": 29,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "beta"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:39.926+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 176,
+      "credential_role": "alice",
+      "duration_ms": 526.434,
+      "finished_at": "2026-10-09T21:23:40.968+00:00",
+      "json": {
+        "count": 2,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+            "value": 40
+          },
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 42
+          }
+        ],
+        "ok": true,
+        "sum": 82
+      },
+      "method": "POST",
+      "number": 30,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "alpha"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:40.442+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 105,
+      "credential_role": "bob",
+      "duration_ms": 631.075,
+      "finished_at": "2026-10-09T21:23:41.599+00:00",
+      "json": {
+        "count": 1,
+        "items": [
+          {
+            "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+            "value": 22
+          }
+        ],
+        "ok": true,
+        "sum": 22
+      },
+      "method": "POST",
+      "number": 31,
+      "path": "/durable/snapshot",
+      "request_body": {
+        "tenant": "beta"
+      },
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:40.968+00:00",
+      "status": 200,
+      "transport_error": null
+    },
+    {
+      "body_bytes": 151,
+      "credential_role": "alice",
+      "duration_ms": 518.465,
+      "finished_at": "2026-10-09T21:23:42.118+00:00",
+      "json": {
+        "bootId": "73524d86-33c3-49a8-b528-6f2007b2c8ab",
+        "committedCount": 52,
+        "journalCount": 52,
+        "lastSeq": 52,
+        "mode": "durable",
+        "ok": true,
+        "schemaVersion": "cf-v1"
+      },
+      "method": "GET",
+      "number": 32,
+      "path": "/durable/status",
+      "request_body": null,
+      "scenario": "post redeploy persisted receipts",
+      "started_at": "2026-10-09T21:23:41.600+00:00",
+      "status": 200,
+      "transport_error": null
+    }
+  ],
+  "run_id": "d262ed2006b74f83ac254c5e112c4975",
+  "snapshots": [
+    {
+      "actor": "alice",
+      "at": "2026-10-09T21:23:19.440+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "external redeploy continuity",
+      "tenant": "alpha"
+    },
+    {
+      "actor": "bob",
+      "at": "2026-10-09T21:23:19.993+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "external redeploy continuity",
+      "tenant": "beta"
+    },
+    {
+      "actor": "alice",
+      "at": "2026-10-09T21:23:23.871+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "external redeploy continuity",
+      "tenant": "alpha"
+    },
+    {
+      "actor": "bob",
+      "at": "2026-10-09T21:23:24.511+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "external redeploy continuity",
+      "tenant": "beta"
+    },
+    {
+      "actor": "alice",
+      "at": "2026-10-09T21:23:25.594+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy forced recovery before destroy",
+      "tenant": "alpha"
+    },
+    {
+      "actor": "bob",
+      "at": "2026-10-09T21:23:26.253+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy forced recovery before destroy",
+      "tenant": "beta"
+    },
+    {
+      "actor": "alice",
+      "at": "2026-10-09T21:23:35.522+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy forced recovery recovery",
+      "tenant": "alpha"
+    },
+    {
+      "actor": "bob",
+      "at": "2026-10-09T21:23:36.151+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy forced recovery recovery",
+      "tenant": "beta"
+    },
+    {
+      "actor": "alice",
+      "at": "2026-10-09T21:23:39.925+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy persisted receipts",
+      "tenant": "alpha"
+    },
+    {
+      "actor": "bob",
+      "at": "2026-10-09T21:23:40.442+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy persisted receipts",
+      "tenant": "beta"
+    },
+    {
+      "actor": "alice",
+      "at": "2026-10-09T21:23:40.968+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 176,
+        "json": {
+          "count": 2,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-concurrent",
+              "value": 40
+            },
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 42
+            }
+          ],
+          "ok": true,
+          "sum": 82
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy persisted receipts",
+      "tenant": "alpha"
+    },
+    {
+      "actor": "bob",
+      "at": "2026-10-09T21:23:41.600+00:00",
+      "mode": "durable",
+      "response": {
+        "body_bytes": 105,
+        "json": {
+          "count": 1,
+          "items": [
+            {
+              "key": "probe-7dc10bd11d314ab1a657c9702938ee76-main",
+              "value": 22
+            }
+          ],
+          "ok": true,
+          "sum": 22
+        },
+        "status": 200,
+        "transport_error": null
+      },
+      "stage": "post redeploy persisted receipts",
+      "tenant": "beta"
+    }
+  ],
+  "started_at": "2026-10-09T21:23:17.086+00:00",
+  "total_request_count": 280
+}

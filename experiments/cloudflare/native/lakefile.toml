@@ -1,0 +1,14 @@
+name = "cf_native"
+version = "0.1.0"
+defaultTargets = ["cf-native"]
+
+[[require]]
+name = "leandb"
+path = "../../.."
+
+[[lean_lib]]
+name = "CfNative"
+
+[[lean_exe]]
+name = "cf-native"
+root = "Main"

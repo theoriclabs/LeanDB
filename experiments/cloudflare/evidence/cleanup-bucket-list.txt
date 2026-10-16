@@ -1,0 +1,12 @@
+
+ ⛅️ wrangler 4.148.0 (update available 4.149.0)
+───────────────────────────────────────────────
+Listing buckets...
+name:           compute-payloads
+creation_date:  2026-08-05T03:12:53.611Z
+
+name:           compute-terraform-state
+creation_date:  2026-09-01T01:16:55.261Z
+
+name:           wybe-artifacts
+creation_date:  2026-10-08T01:14:51.002Z

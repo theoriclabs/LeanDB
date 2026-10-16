@@ -1,0 +1,8 @@
+__pycache__/
+artifacts/
+checkpoint.json
+*.checkpoint.json
+tokens*.json
+*credentials*.json
+.env
+.env.*

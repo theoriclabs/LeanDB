@@ -1,0 +1,12 @@
+{
+  "checked_at": "2026-10-09T21:31:22.604229+00:00",
+  "success": true,
+  "experiment_namespace_absent": true,
+  "matching_namespaces": [],
+  "result_info": {
+    "page": 1,
+    "per_page": 100,
+    "count": 2,
+    "total_count": 2
+  }
+}

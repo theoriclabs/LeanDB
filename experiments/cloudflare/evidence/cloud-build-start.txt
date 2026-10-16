@@ -1,0 +1,2 @@
+{"output":"cloud-build-started\n","info":{"stream":"stdout"}}
+{"result":{"ok":true,"value":{"exitCode":0}}}

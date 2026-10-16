@@ -1,0 +1,231 @@
+Fri Oct  9 21:09:45 UTC 2026
+Linux cloudchamber 6.18.54-cloudflare-microvm-2026.9.16 #1 SMP PREEMPT_DYNAMIC Mon Sep 27 00:00:00 UTC 2010 x86_64 GNU/Linux
+info: cf_native: no previous manifest, creating one from scratch
+info: toolchain not updated; already up-to-date
+warning: leandb: ignoring missing manifest:
+  /work/repo/lake-manifest.json
+info: leansqlite: cloning https://github.com/leanprover/leansqlite
+info: leansqlite: checking out revision '0be4df908d1a8e75b58961041e2b4973692623df'
+✔ [2/6] Built LeanDb.Core (4.0s)
+✔ [3/8] Built LeanDb.Entity (2.2s)
+✔ [4/8] Built LeanDb.Json (2.3s)
+✔ [5/15] Built LeanDb.Select (1.3s)
+✔ [6/15] Built LeanDb.Derive (25s)
+✔ [7/15] Built LeanDb.Pred (18s)
+✔ [9/15] Built leansqlite/leansqlite.o (446ms)
+✔ [10/15] Built leansqlite/shathree.o (142ms)
+✔ [11/15] Built LeanDb.PlanElab (7.9s)
+✔ [12/18] Built leansqlite/sqlite.o (8.6s)
+✔ [13/18] Built leansqlite/leansqlite.static (23ms)
+✔ [15/22] Built leansqlite.static:shared (116ms)
+⚠ [17/22] Built SQLite.Blob.Classes (4.6s)
+warning: SQLite/Blob/Classes.lean:280:0: `instFromBinaryProd`: universes `u_1`, `u_2` only occur together. This usually means there is a `max` expression in the type where none of these universes appear on their own.
+
+Note: This linter can be disabled with `set_option linter.checkUnivs false`
+✔ [18/31] Built SQLite.FFI (795ms)
+✔ [19/31] Built SQLite.FFI:c.o (231ms)
+✔ [20/36] Built SQLite.Blob.Classes:c.o (1.9s)
+✔ [21/36] Built SQLite.FFI:dynlib (155ms)
+✔ [22/42] Built SQLite.Blob.Classes:dynlib (107ms)
+✔ [23/42] Built SQLite.LowLevel (2.2s)
+✔ [24/48] Built SQLite.Blob.Deriving (3.8s)
+✔ [25/51] Built SQLite.LowLevel:c.o (1.3s)
+✔ [26/52] Built SQLite.Blob.Deriving:c.o (2.9s)
+✔ [27/52] Built SQLite.LowLevel:dynlib (109ms)
+✔ [28/52] Built SQLite.Blob.Deriving:dynlib (108ms)
+✔ [29/52] Built SQLite.Blob.Instances (3.9s)
+✔ [30/56] Built SQLite.Blob.Instances:c.o (4.1s)
+✔ [31/57] Built SQLite.Blob.Instances:dynlib (112ms)
+✔ [32/58] Built SQLite.Blob (601ms)
+✔ [33/58] Built SQLite.Blob:c.o (119ms)
+✔ [34/59] Built LeanDb.Render (911ms)
+✔ [35/60] Built SQLite.Blob:dynlib (161ms)
+✔ [36/60] Built SQLite.QueryParam (999ms)
+✔ [37/61] Built SQLite.QueryResult (1.4s)
+✔ [38/61] Built SQLite.QueryParam:c.o (202ms)
+✔ [39/62] Built SQLite.QueryResult:c.o (394ms)
+✔ [40/62] Built SQLite.QueryParam:dynlib (105ms)
+✔ [41/63] Built SQLite.QueryResult:dynlib (111ms)
+✔ [42/63] Built SQLite.QueryResult.Deriving (2.6s)
+✔ [43/64] Built SQLite.Interpolation (1.3s)
+✔ [44/64] Built SQLite.QueryResult.Deriving:c.o (2.1s)
+✔ [45/65] Built SQLite.Interpolation:c.o (421ms)
+✔ [46/65] Built SQLite.QueryResult.Deriving:dynlib (110ms)
+✔ [47/67] Built SQLite.Interpolation:dynlib (106ms)
+✔ [48/67] Built SQLite (886ms)
+⚠ [49/68] Built LeanDb.Scaffold (1.2s)
+warning: LeanDb/Scaffold.lean:52:74: `String.get` has been deprecated: Use `String.Pos.Raw.get` instead
+
+Note: The updated constant is in a different namespace. Dot notation may need to be changed (e.g., from `x.get` to `String.Pos.Raw.get x`).
+warning: LeanDb/Scaffold.lean:71:15: `String.mk` has been deprecated: Use `String.ofList` instead
+✔ [50/68] Built SQLite:c.o (180ms)
+⚠ [51/69] Built LeanDb.Typed.Schema (19s)
+warning: LeanDb/Typed/Schema.lean:154:0: Definition `LeanDb.ForeignKey.targetEntity` of class type is semireducible. Most type class instances should be instance-reducible, so consider marking this
+definition with `@[instance_reducible]`. If it is intentionally semireducible, this warning can be disabled with `set_option warn.classDefReducibility false`.
+warning: LeanDb/Typed/Schema.lean:311:0: Definition `LeanDb.ReferencedBy.sourceEntity` of class type is semireducible. Most type class instances should be instance-reducible, so consider marking this
+definition with `@[instance_reducible]`. If it is intentionally semireducible, this warning can be disabled with `set_option warn.classDefReducibility false`.
+✔ [52/71] Built SQLite:shared (117ms)
+⚠ [53/71] Built LeanDb.Import (7.7s)
+warning: LeanDb/Import.lean:814:15: `String.mk` has been deprecated: Use `String.ofList` instead
+✔ [54/71] Built LeanDb.Db (11s)
+✔ [55/72] Built LeanDb.Typed.Fault (904ms)
+✔ [56/73] Built LeanDb.Migrate (10s)
+✔ [57/74] Built LeanDb.Transaction (2.7s)
+✔ [58/75] Built LeanDb.Migration (4.6s)
+✔ [59/76] Built LeanDb.Typed.State (3.0s)
+✔ [60/76] Built LeanDb.Base (3.2s)
+✔ [61/77] Built LeanDb.Freeze (2.7s)
+✔ [62/77] Built LeanDb.Typed.Write (3.8s)
+✔ [63/78] Built LeanDb.Typed.Query (12s)
+✔ [64/78] Built LeanDb.Runtime (3.0s)
+✔ [65/79] Built LeanDb.Cli (7.4s)
+✔ [67/124] Built LeanDb.Typed.Constraint (3.0s)
+✔ [68/124] Built LeanDb.Typed.Read (4.6s)
+⚠ [69/124] Built LeanDb.Mcp (3.1s)
+warning: LeanDb/Mcp.lean:39:13: Variable name `b` is not explicitly referenced.
+
+Hint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:
+  [apply] _b
+
+Note: This linter can be disabled with `set_option linter.unusedVariables false`
+✔ [70/124] Built LeanDb.Client (4.1s)
+✔ [71/124] Built LeanDb.Http (4.3s)
+✔ [72/124] Built LeanDb.CliQuery (3.4s)
+✔ [73/124] Built LeanDb.Core:c.o (3.3s)
+✔ [74/124] Built LeanDb.Entity:c.o (1.2s)
+✔ [75/124] Built LeanDb.Json:c.o (2.3s)
+✔ [76/124] Built LeanDb.Derive:c.o (22s)
+✔ [77/124] Built LeanDb.Select:c.o (709ms)
+✔ [78/124] Built LeanDb.Pred:c.o (5.4s)
+✔ [79/124] Built LeanDb.PlanElab:c.o (6.4s)
+✔ [80/124] Built LeanDb.Db:c.o (12s)
+✔ [81/124] Built LeanDb.Transaction:c.o (584ms)
+✔ [82/124] Built LeanDb.Migrate:c.o (5.0s)
+✔ [83/124] Built LeanDb.Migration:c.o (2.5s)
+✔ [84/124] Built LeanDb.Base:c.o (1.5s)
+✔ [85/124] Built LeanDb.Runtime:c.o (2.2s)
+✔ [86/124] Built LeanDb.Render:c.o (419ms)
+✔ [87/124] Built LeanDb.Freeze:c.o (705ms)
+✔ [88/124] Built LeanDb.Cli:c.o (6.1s)
+✔ [89/124] Built LeanDb.Import:c.o (5.4s)
+✔ [90/124] Built LeanDb.Scaffold:c.o (500ms)
+✔ [91/124] Built LeanDb.Typed.Schema:c.o (20s)
+✔ [92/124] Built LeanDb.Typed.State:c.o (1.3s)
+✔ [93/124] Built LeanDb.Typed.Query:c.o (7.5s)
+✔ [94/124] Built LeanDb.Typed.Fault:c.o (290ms)
+✔ [95/124] Built LeanDb.Typed.Write:c.o (998ms)
+✔ [96/124] Built LeanDb.Typed.Constraint:c.o (610ms)
+✔ [97/124] Built LeanDb.Typed.Read:c.o (1.0s)
+✔ [98/124] Built LeanDb.Mcp:c.o (1.2s)
+✔ [99/124] Built LeanDb.Client:c.o (1.2s)
+✔ [100/124] Built LeanDb.Http:c.o (2.8s)
+✔ [101/124] Built LeanDb.CliQuery:c.o (1.0s)
+✔ [102/124] Built LeanDb.Typed.Gate (5.9s)
+⚠ [103/124] Built LeanDb.Typed.Txn (6.5s)
+warning: LeanDb/Typed/Txn.lean:274:5: Variable name `h` is not explicitly referenced.
+
+Hint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:
+  [apply] _h
+
+Note: This linter can be disabled with `set_option linter.unusedVariables false`
+✔ [104/124] Built LeanDb.Host (2.7s)
+✔ [105/124] Built LeanDb.Typed.Gate:c.o (4.3s)
+✔ [106/124] Built LeanDb.Typed.Txn:c.o (4.5s)
+✔ [107/124] Built LeanDb.Host:c.o (897ms)
+✔ [108/124] Built LeanDb.Typed.Rollback (8.0s)
+⚠ [109/124] Built LeanDb.Typed.Laws (15s)
+warning: LeanDb/Typed/Laws.lean:450:18: This simp argument is unused:
+  hfind
+
+Hint: Omit it from the simp argument list.
+  [apply] simp
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: LeanDb/Typed/Laws.lean:452:12: This simp argument is unused:
+  hfind
+
+Hint: Omit it from the simp argument list.
+  [apply] simp
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: LeanDb/Typed/Laws.lean:455:24: This simp argument is unused:
+  hdup
+
+Hint: Omit it from the simp argument list.
+  [apply] simp
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: LeanDb/Typed/Laws.lean:457:16: This simp argument is unused:
+  hdup
+
+Hint: Omit it from the simp argument list.
+  [apply] simp
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: LeanDb/Typed/Laws.lean:459:28: This simp argument is unused:
+  hfk
+
+Hint: Omit it from the simp argument list.
+  [apply] simp
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: LeanDb/Typed/Laws.lean:461:20: This simp argument is unused:
+  hfk
+
+Hint: Omit it from the simp argument list.
+  [apply] simp
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+warning: LeanDb/Typed/Laws.lean:763:4: try 'simp' instead of 'simpa'
+
+Note: This linter can be disabled with `set_option linter.unnecessarySimpa false`
+warning: LeanDb/Typed/Laws.lean:1230:37: Variable name `h` is not explicitly referenced.
+
+Hint: The binding can be removed (if unused) or named `_` (if used implicitly). Alternatively, prefix the name with `_` to silence this warning:
+  [apply] _h
+
+Note: This linter can be disabled with `set_option linter.unusedVariables false`
+warning: LeanDb/Typed/Laws.lean:1266:6: try 'simp' instead of 'simpa'
+
+Note: This linter can be disabled with `set_option linter.unnecessarySimpa false`
+warning: LeanDb/Typed/Laws.lean:1657:10: try 'simp' instead of 'simpa'
+
+Note: This linter can be disabled with `set_option linter.unnecessarySimpa false`
+warning: LeanDb/Typed/Laws.lean:1916:12: This simp argument is unused:
+  hsym
+
+Hint: Omit it from the simp argument list.
+  [apply] simp [List.any_cons]
+
+Note: This linter can be disabled with `set_option linter.unusedSimpArgs false`
+✔ [110/124] Built LeanDb.Typed.Harness (2.5s)
+✔ [111/124] Built LeanDb.Typed.Rollback:c.o (1.1s)
+✔ [112/124] Built LeanDb.Typed.Laws:c.o (1.7s)
+✔ [113/124] Built LeanDb.Typed.Harness:c.o (337ms)
+✔ [114/124] Built LeanDb.Typed.Members (5.7s)
+✔ [115/124] Built LeanDb.Typed.Link (4.0s)
+✔ [116/124] Built LeanDb.Typed.Members:c.o (905ms)
+✔ [117/124] Built LeanDb.Typed.Link:c.o (695ms)
+✔ [118/124] Built LeanDb (2.0s)
+✔ [119/124] Built LeanDb:c.o (172ms)
+✔ [120/124] Built CfNative (5.0s)
+✔ [121/124] Built CfNative:c.o (9.8s)
+✔ [122/124] Built Main (2.1s)
+✔ [123/124] Built Main:c.o (118ms)
+✔ [124/124] Built «cf-native»:exe (2.8s)
+Build completed successfully (124 jobs).
+d4a2aca0f20525696bbc8d46d6f95e788d83832edcace75382e80897a37edcca  /work/out/cf-native
+-rwxr-xr-x 1 root root 81M Oct  9 21:17 /work/out/cf-native
+	linux-vdso.so.1 (0x00007f8be0fcf000)
+	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f8bdbc1e000)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f8be0fd1000)
+	libpthread.so.0 => /lib/x86_64-linux-gnu/libpthread.so.0 (0x00007f8be0fc0000)
+	libdl.so.2 => /lib/x86_64-linux-gnu/libdl.so.2 (0x00007f8be0fbb000)
+	librt.so.1 => /lib/x86_64-linux-gnu/librt.so.1 (0x00007f8be0fb6000)
+	libm.so.6 => /lib/x86_64-linux-gnu/libm.so.6 (0x00007f8bdbb3e000)
+Fri Oct  9 21:17:06 UTC 2026
+BUILD_EXIT=0
+Lean (version 4.33.0, x86_64-unknown-linux-gnu, commit d8b18978322de05a8f3dba51ef03cf5461676c17, Release)
+5f0b41785c6b394ad67bb9964548570177fed0ff85e24313ebf3c9023f8697ed  /work/repo/experiments/cloudflare/native/CfNative.lean
+0291efc8e5ade49d8963e82549341c500378e10d462caa3f77cadf1b2cbfbf3e  /work/repo/experiments/cloudflare/native/Main.lean
+84161720

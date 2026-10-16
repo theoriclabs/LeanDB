@@ -1,0 +1,6 @@
+node_modules
+.wrangler/
+.dry-run/
+.test-build/
+.dev.vars
+.env*
