@@ -256,6 +256,13 @@ private def testPatchInsertManyScan : IO Unit := do
       return true
     let total ← io n.get
     check' (total == 3) s!"scan visited {total}"
+    -- An opaque leaf would render as `1` and be ignored, handing back rows
+    -- that fail it: `scan` refuses it, as `patch` does its guard.
+    let refused ← tryCatch (do
+        scan (α := Counted) (.opaque fun _ => false) 2 fun _ => return true
+        return false)
+      fun e => return e.message.contains "opaque"
+    check' refused "scan refuses an opaque leaf"
   discard <| expectOk r "patch/insertMany/scan"
 
 private def testOpenConfigAndLogPolicy : IO Unit := do
