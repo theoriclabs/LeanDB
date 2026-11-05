@@ -447,18 +447,18 @@ theorem Txn.patch_get_other {σ s ε α β} [IsSchema s] [Entity α] [Entity β]
       DbState.get (α := β) st := by
   rw [Txn.denote_patch]
   cases hfind : (DbState.get (α := α) st).rows.find? (·.id == row.id) with
-  | none => simp [hfind]
+  | none => simp
   | some cur =>
-      simp [hfind]
+      simp
       cases hdup : firstDuplicateTouching fs (Fields.apply fs cur.val new.val) st
           (some row.id) with
-      | some _ => simp [hdup]
+      | some _ => simp
       | none =>
-          simp [hdup]
+          simp
           cases hfk : firstMissingWithin fs (Fields.apply fs cur.val new.val) st with
-          | some _ => simp [hfk]
+          | some _ => simp
           | none =>
-              simp [hfk]
+              simp
               cases Entity.check α (Fields.apply fs cur.val new.val) with
               | error _ => rfl
               | ok c => exact Txn.replaceValid_get_other st _ hneq
@@ -760,7 +760,8 @@ theorem DbState.empty_wf {s} [i : IsSchema s] : (DbState.empty (s := s)).WF := b
   rw [Array.all_eq_true_iff_forall_mem]
   intro t ht
   have ht' : t ∈ Array.ofFn (n := i.nTables) id := by
-    simpa [IsSchema.tables] using ht
+    simp only [IsSchema.tables] at ht
+    exact ht
   obtain ⟨k, hk⟩ := Array.mem_ofFn.mp ht'
   cases hk
   exact DbState.checkPacked_empty k
@@ -1227,7 +1228,7 @@ theorem DbState.containsId_pos {s} [i : IsSchema s] {st : DbState s}
   simpa [heq] using hpos
 
 theorem Table.refsOk_of_missingRef_none {s α} [IsSchema s] [Entity α]
-    [HasForeignKey α] [HasUnique α] [h : IsSchema.Has s α]
+    [HasForeignKey α] [HasUnique α] [_h : IsSchema.Has s α]
     {st : DbState s} {c : Checked α} (hwf : st.WF)
     (hfk : Txn.firstMissingRef c.val st = none) :
     (ForeignKey.all α).all (fun fk =>
@@ -1263,7 +1264,7 @@ theorem Table.fksOk_of_containsId_mono {s α} [IsSchema s] [Entity α] [HasForei
   have hfk' := hr' fk hfk
   cases hg : HasForeignKey.get fk r.val with
   | none =>
-      simpa [hg] using hfk'
+      rfl
   | some tgt =>
       simp [hg] at hfk' ⊢
       exact hmono _ _ hfk'
@@ -1654,7 +1655,7 @@ theorem Table.uniquesOk.distinct_replace {α} [Entity α] [HasUnique α]
             LawfulBEq.eq_of_beq (by simpa [Id.beq_eq_int] using hr)
           have h2 : o0.id.toInt64 = id.toInt64 :=
             LawfulBEq.eq_of_beq (by simpa [Id.beq_eq_int] using ho)
-          simpa [Id.beq_eq_int, h1, h2]
+          simp [Id.beq_eq_int, h1, h2]
         simp [heq] at hne
 
 theorem Table.uniquesOk_replace {s α} [IsSchema s] [Entity α] [HasUnique α]
@@ -1913,7 +1914,7 @@ theorem Unique.touches_all {α} [Entity α] [HasUnique α] (ix : Unique α) :
         simp [hsym]
       simp [Array.isEmpty, hsz]
   | cons _ _ =>
-      simp [hsym, List.any_cons]
+      simp [List.any_cons]
 
 theorem Unique.anyTouch_all {α} [Entity α] [HasUnique α] :
     Unique.anyTouch (α := α) (Fields.all α) = !(Unique.all α).toList.isEmpty := by

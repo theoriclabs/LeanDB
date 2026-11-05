@@ -17,6 +17,7 @@ private def validationMessage (errors : Ontology.ValidationErrors) : String :=
 
 /-- The portable parser is used on decode AND checked encode. No invalid or
     noncanonical scalar can acquire `Checked` storage evidence. -/
+@[instance_reducible]
 def textCodec {α} [BEq α] (parse : String → Ontology.Validation α)
     (value : α → String) : ColCodec α where
   sqlType := .text

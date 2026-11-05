@@ -151,6 +151,7 @@ def ForeignKey.get {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey �
     Option (Id (ForeignKey.Target fk)) :=
   HasForeignKey.get fk v
 
+@[instance_reducible]
 def ForeignKey.targetEntity {α : Type} [Entity α] [HasForeignKey α] (fk : ForeignKey α) :
     Entity (ForeignKey.Target fk) :=
   HasForeignKey.targetEntity fk
@@ -308,6 +309,7 @@ abbrev ReferencedBy (s : Type) (α : Type) [IsSchema s] [HasReferencedBy s α] :
 abbrev ReferencedBy.Source {s α : Type} [IsSchema s] [HasReferencedBy s α] (r : ReferencedBy s α) : Type :=
   HasReferencedBy.Source r
 
+@[instance_reducible]
 def ReferencedBy.sourceEntity {s α : Type} [IsSchema s] [HasReferencedBy s α] (r : ReferencedBy s α) :
     Entity (ReferencedBy.Source r) :=
   HasReferencedBy.sourceEntity r
