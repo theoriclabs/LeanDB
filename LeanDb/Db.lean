@@ -1529,10 +1529,14 @@ def insertMany (α : Type) [Entity α] (rows : Array α) : DbM (Array (Stored α
 
 /-- Keyset-paginated walk over `id`. Each chunk is its own deferred
     snapshot so a concurrent writer is not starved. `f` returns `false`
-    to stop. -/
+    to stop. Like `patch`'s guard, `p` must not contain an opaque leaf:
+    its pages are SQL with no Lean re-check, and an opaque leaf renders as
+    `1`, so it would be ignored rather than applied. -/
 partial def scan [Entity α] (p : Pred [α]) (chunk : Nat := 500)
     (f : Array (Stored α) → DbM Bool) : DbM Unit :=
   withLog "scan" (Entity.tableName α) (fun _ => 1) do
+    if p.hasOpaque then
+      throw (.sqlite "scan predicate must not contain an opaque leaf")
     if chunk == 0 || chunk >= Int64.maxValue.toNatClampNeg then
       throw (.sqlite "scan chunk is out of range")
     let rec go (last : Option Int64) : DbM Unit := do
