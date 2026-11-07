@@ -347,7 +347,7 @@ theorem Txn.eraseAt_tables {s} [i : IsSchema s] (st : DbState s)
     (t : Fin i.nTables) (id : Int64) (t2 : Fin i.nTables) (h : t2 ≠ t) :
     (eraseAt (s := s) st t id).tables t2 = st.tables t2 := by
   unfold eraseAt
-  simp [dif_neg h]
+  simp [dite_eq_right h]
 
 /-! ## Remaining write unfolding (`rfl` like `denote_insert`) -/
 
@@ -1097,7 +1097,7 @@ theorem Entity.check_of_invariant {α} [Entity α] {v : α} (h : Invariant α v)
       | .ok _ => true
       | .error _ => false) = true := by
   unfold Entity.check
-  rw [dif_pos h.1]
+  rw [dite_eq_left h.1]
   split
   · rfl
   · rename_i e heq
@@ -1396,7 +1396,7 @@ theorem Txn.assign_snd {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
       let row := Valid.ofChecked (⟨Int64.ofNat tbl.next⟩ : Id α) c
       st.set { next := tbl.next + 1, rows := tbl.rows ++ [row] } := by
   simp only [assign]
-  rw [dif_neg hnw]
+  rw [dite_eq_right hnw]
 
 theorem Txn.assign_snd_id {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α]
     (st : DbState s) (c : Checked α) :
@@ -1404,8 +1404,8 @@ theorem Txn.assign_snd_id {s α} [IsSchema s] [Entity α] [h : IsSchema.Has s α
   simp only [assign]
   by_cases h : (DbState.get (α := α) st).next = 0 ∨
       natSqlMax < (DbState.get (α := α) st).next
-  · rw [dif_pos h]
-  · rw [dif_neg h]
+  · rw [dite_eq_left h]
+  · rw [dite_eq_right h]
 
 set_option maxHeartbeats 400000 in
 theorem Txn.assign_wf {s α} [i : IsSchema s] [Entity α] [HasUnique α]
@@ -1422,7 +1422,7 @@ theorem Txn.assign_wf {s α} [i : IsSchema s] [Entity α] [HasUnique α]
   by_cases hwrap : tbl.next = 0 ∨ natSqlMax < tbl.next
   · have heq : (assign st c).2 = st := by
       simp only [assign]
-      rw [dif_pos (by simpa [tbl] using hwrap)]
+      rw [dite_eq_left (by simpa [tbl] using hwrap)]
     rw [heq]
     exact hwf
   · have hbound : tbl.next ≤ natSqlMax := Nat.not_lt.mp (not_or.mp hwrap).2
@@ -1961,7 +1961,7 @@ theorem Txn.firstDuplicate_none_of_touching_all {s α} [IsSchema s] [Entity α]
     rw [Array.findSome?_eq_none_iff] at h ⊢
     intro ix hix
     have hi := h ix hix
-    rw [dif_pos (Unique.touches_all ix)] at hi
+    rw [dite_eq_left (Unique.touches_all ix)] at hi
     refine List.findSome?_none_congr _ _ _ ?_ hi
     intro r hr
     constructor
@@ -2006,7 +2006,7 @@ theorem Txn.firstMissingRef_none_of_within_all {s α} [IsSchema s] [Entity α]
     rw [Array.find?_eq_none]
     intro fk hmem
     have hi := h fk hmem
-    rw [dif_pos (ForeignKey.within_all fk)] at hi
+    rw [dite_eq_left (ForeignKey.within_all fk)] at hi
     by_cases hm : Txn.fkMissing fk v st = true
     · simp [hm] at hi
     · exact hm

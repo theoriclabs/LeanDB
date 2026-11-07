@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.0 - 2026-11-07
+
+Lean 4.35.0. A base that requires this tag must move its
+`lean-toolchain` to `leanprover/lean4:v4.35.0`; `leandb new` and
+`import-sqlite` now scaffold with it.
+
+- **Toolchain and dependencies.** Lean moves from 4.33.0 to 4.35.0.
+  `leansqlite` is pinned to its `v4.35.0` tag
+  (`4ed2f27ecf81792abc8ff848670ac4356d0c4794`) and `leanontology` to
+  `567f7e6dee02e9205b7d32e502068779b09c1f96`, its own 4.35.0 bump. Every
+  example and the B2T2 benchmark share the root `lean-toolchain` and
+  lockfile pins.
+- **Import of columns named after new tokens.** Lean 4.35.0 adds the
+  tokens `recall` and `monotonicity_by`, so a bare field with either name
+  no longer parses. `import-sqlite` now emits both guillemet-quoted, and
+  the hostile-names test covers them. Every quoted and refused name was
+  re-verified against 4.35.0 by compiling it as a field under `deriving
+  LeanDb.Entity`. `toCtorIdx` now compiles there but stays refused, so a
+  database imports the same way on either toolchain.
+- **No build warnings (#147, #148).** A clean `lake build` emits no
+  warnings from LeanDB sources: deprecated `String` APIs, unused simp
+  arguments and binders, and the class-type reducibility linter are
+  addressed, and the 4.35.0 deprecation of `dif_pos`/`dif_neg` is
+  followed (`dite_eq_left`/`dite_eq_right`).
+- **`scan` refuses an opaque leaf (#137).** `scan`'s pages are SQL with
+  no Lean re-check, and an opaque leaf renders as `1`, so it was ignored
+  and `scan` returned rows that fail it. `scan` now refuses such a
+  predicate, as `patch` already refuses an opaque guard.
+
 ## 0.5.1 - 2026-10-11
 
 - **Schemas of more than fifteen entities (#139).** `schema%`, and

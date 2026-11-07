@@ -66,7 +66,7 @@ def validBaseName (s : String) : Bool :=
     (ok && (if first then c.isLower && c.isAlpha
             else (c.isAlpha && c.isLower) || c.isDigit || c == '_'), false)).1
 
-def toolchain : String := "leanprover/lean4:v4.33.0"
+def toolchain : String := "leanprover/lean4:v4.35.0"
 
 def runImport (a : ImportArgs) : IO UInt32 := do
   let some file := a.file | return ← usageErr "import-sqlite: missing <file.db>"

@@ -216,13 +216,15 @@ private def isValidFieldName (s : String) : Bool :=
 /-- Column names Lean refuses even under guillemets: a binder spelled with
     one collides in the kernel with a declaration Lean generates for the
     structure itself or for `deriving LeanDb.Entity`'s symbol inductive
-    (issue #66). Each entry was verified against Lean v4.33.0 by compiling
+    (issue #66). Each entry was verified against Lean v4.35.0 by compiling
     a structure with that field name under guillemets and deriving
     `LeanDb.Entity`: `mk` is refused as the structure constructor's name,
-    and `noConfusion`, `noConfusionType`, `casesOn`, `recOn`, `ctorIdx`
-    and `toCtorIdx` fail with "(kernel) constant has already been
-    declared" — the constructor-index functions cover the structure and
-    the derived symbol inductive. (`rec` and the modifier keywords
+    and `noConfusion`, `noConfusionType`, `casesOn`, `recOn` and `ctorIdx`
+    fail with "(kernel) constant has already been declared" — the
+    constructor-index functions cover the structure and the derived symbol
+    inductive. `toCtorIdx` clashed the same way on v4.33.0 and compiles on
+    v4.35.0; it stays refused so a database imports the same way on
+    either toolchain. (`rec` and the modifier keywords
     `unsafe`/`noncomputable`/`partial`/`private`/`protected` are refused
     by `LeanDb.Derive.unusableSymNames` instead, which the importer also
     checks.) -/
@@ -234,7 +236,7 @@ private def unusableFieldNames : List String :=
     compile guillemet-quoted: Lean keyword tokens (statement and
     declaration keywords, the capitalized type keywords `Type`/`Sort`/
     `Prop`, two-token words like `suffices` and `grind_pattern`, and the
-    token `λ`). Every entry was verified against Lean v4.33.0 the same
+    token `λ`). Every entry was verified against Lean v4.35.0 the same
     way: the bare binder fails to parse, the guillemet-quoted one
     elaborates and derives `LeanDb.Entity` cleanly. Names *not* listed
     here — including words that once looked like keywords but compile
@@ -243,18 +245,19 @@ private def unusableFieldNames : List String :=
     `inj`, `sizeOf`) — become plain binders. -/
 private def quotedFieldNames : List String :=
   ["abbrev", "at", "attribute", "axiom", "break", "by", "calc", "catch",
-   "class", "continue", "decreasing_by", "def", "deriving", "do", "elab",
-   "else", "end", "example", "exists", "export", "extends", "finally",
-   "for", "forall", "from", "fun", "have", "haveI", "hiding", "if",
-   "import", "in", "include", "inductive", "infix", "infixl", "infixr",
-   "initialize", "instance", "let", "letI", "local", "macro",
-   "macro_rules", "match", "mut", "mutual", "namespace", "nomatch",
-   "nonrec", "notation", "omit", "opaque", "open", "postfix", "prefix",
-   "Prop", "renaming", "repeat", "return", "run_cmd", "scoped", "seal",
-   "section", "set_option", "show", "sorry", "Sort", "structure",
-   "suffices", "syntax", "termination_by", "then", "theorem", "try",
-   "Type", "universe", "unless", "unseal", "until", "using", "variable",
-   "where", "while", "with", "λ"]
+   "class", "continue", "decreasing_by", "def", "deriving", "do",
+   "elab", "else", "end", "example", "exists", "export", "extends",
+   "finally", "for", "forall", "from", "fun", "have", "haveI", "hiding",
+   "if", "import", "in", "include", "inductive", "infix", "infixl",
+   "infixr", "initialize", "instance", "let", "letI", "local", "macro",
+   "macro_rules", "match", "monotonicity_by", "mut", "mutual",
+   "namespace", "nomatch", "nonrec", "notation", "omit", "opaque",
+   "open", "postfix", "prefix", "Prop", "recall", "renaming", "repeat",
+   "return", "run_cmd", "scoped", "seal", "section", "set_option",
+   "show", "sorry", "Sort", "structure", "suffices", "syntax",
+   "termination_by", "then", "theorem", "try", "Type", "universe",
+   "unless", "unseal", "until", "using", "variable", "where", "while",
+   "with", "λ"]
 
 /-- A generated field binder: guillemet-quoted when the bare spelling is
     a Lean token, plain otherwise. The refusal gate has already removed

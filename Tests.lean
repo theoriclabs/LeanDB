@@ -1899,9 +1899,10 @@ private def testImportHostileDeclType : IO Unit := do
     "a VARCHAR column reads as TEXT affinity"
   check ((scalars2.splitOn "VARCHAR(20)").length == 1)
     "even a benign declared type stays out of generated Lean"
-/-- Issue #66, revisited against Lean v4.33.0: a column name can still be
+/-- Issue #66, revisited against Lean v4.35.0: a column name can still be
     carried as a guillemet-quoted binder when only the bare spelling is a
-    token (`suffices`, `using`, `forall`), is refused only when even the
+    token (`suffices`, `using`, `forall`, and v4.35.0's `recall` and
+    `monotonicity_by`), is refused only when even the
     quoted binder clashes in the kernel (`mk`, `noConfusion`, `ctorIdx`),
     and words that were once refused wholesale but compile bare on this
     toolchain (`type`) come through as plain binders. Each refusal or
@@ -1914,12 +1915,13 @@ private def testImportHostileNames : IO Unit := do
     { name := "hostile"
       createSql :=
         "CREATE TABLE hostile (id INTEGER PRIMARY KEY, suffices TEXT, using TEXT, \
-type TEXT, mk TEXT, noConfusion TEXT, ctorIdx TEXT, toCtorIdx TEXT, ok TEXT)"
+type TEXT, mk TEXT, noConfusion TEXT, ctorIdx TEXT, toCtorIdx TEXT, ok TEXT, \
+recall TEXT, monotonicity_by TEXT)"
       columns := #[
         { name := "id", declType := "INTEGER", notnull := true, pkIndex := 1,
           defaultSql := none },
         col "suffices", col "using", col "type", col "mk", col "noConfusion",
-        col "ctorIdx", col "toCtorIdx", col "ok"]
+        col "ctorIdx", col "toCtorIdx", col "ok", col "recall", col "monotonicity_by"]
       fks := #[]
       indexes := #[] }
   let plan := planOf "hn" "Hn" { tables := #[t], views := #[], triggers := #[], indexes := #[] }
@@ -1930,7 +1932,8 @@ type TEXT, mk TEXT, noConfusion TEXT, ctorIdx TEXT, toCtorIdx TEXT, ok TEXT)"
     s!"only the kernel-clashing names are skipped, got {repr tp.skippedColumns.toList}"
   check (tp.skippedColumns.all fun (_, r) => (r.splitOn "kernel").length > 1)
     "each skip reason names the kernel collision"
-  check ((tp.fields.map (·.column)).toList == ["suffices", "using", "type", "ok"])
+  check ((tp.fields.map (·.column)).toList ==
+      ["suffices", "using", "type", "ok", "recall", "monotonicity_by"])
     "token and ordinary names are still carried"
   let files := renderFiles plan "." "h.db" "h.db" "test"
   let some entities := (files.find? (·.1 == "Hn/Entities.lean")).map (·.2)
@@ -1942,6 +1945,10 @@ type TEXT, mk TEXT, noConfusion TEXT, ctorIdx TEXT, toCtorIdx TEXT, ok TEXT)"
     "the token name suffices is emitted guillemet-quoted"
   check ((entities.splitOn "  «using» : ").length > 1)
     "the token name using is emitted guillemet-quoted"
+  check ((entities.splitOn "  «recall» : ").length > 1)
+    "the v4.35.0 token name recall is emitted guillemet-quoted"
+  check ((entities.splitOn "  «monotonicity_by» : ").length > 1)
+    "the v4.35.0 token name monotonicity_by is emitted guillemet-quoted"
   check ((entities.splitOn "  type : Option HostileType").length > 1)
     "type is emitted as a plain binder (no over-refusal, no over-quoting)"
   check ((entities.splitOn "  ok : Option HostileOk").length > 1)

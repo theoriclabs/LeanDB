@@ -198,7 +198,7 @@ theorem DbState.get_set_same {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] (st : DbState s) (tbl : Table α) :
     DbState.get (α := α) (st.set tbl) = tbl := by
   unfold DbState.get DbState.set
-  simp only [dif_pos]
+  simp only [dite_eq_left]
   exact Table.cast_cancel h.ty_eq h.entity_eq tbl
 
 theorem DbState.get_set_other {s α β : Type} [i : IsSchema s]
@@ -206,7 +206,7 @@ theorem DbState.get_set_other {s α β : Type} [i : IsSchema s]
     (st : DbState s) (tbl : Table α) (hneq : ha.id ≠ hb.id) :
     DbState.get (α := β) (st.set (α := α) tbl) = DbState.get (α := β) st := by
   unfold DbState.get DbState.set
-  simp [dif_neg (Ne.symm hneq)]
+  simp [dite_eq_right (Ne.symm hneq)]
 
 /-- `set` is function update: every packed slot except `α`'s is unchanged. -/
 theorem DbState.set_tables_other {s α : Type} [i : IsSchema s] [Entity α]
@@ -214,14 +214,14 @@ theorem DbState.set_tables_other {s α : Type} [i : IsSchema s] [Entity α]
     (t : Fin i.nTables) (hne : t ≠ h.id) :
     (st.set (α := α) tbl).tables t = st.tables t := by
   unfold DbState.set
-  simp [dif_neg hne]
+  simp [dite_eq_right hne]
 
 theorem DbState.set_tables_same {s α : Type} [i : IsSchema s] [Entity α]
     [h : IsSchema.Has s α] (st : DbState s) (tbl : Table α) :
     (st.set (α := α) tbl).tables h.id =
       Table.cast h.ty_eq.symm (Entity.eq_symm h.ty_eq h.entity_eq) tbl := by
   unfold DbState.set
-  simp only [dif_pos]
+  simp only [dite_eq_left]
 
 theorem DbState.empty_rows {s α : Type} [i : IsSchema s] [ent : Entity α]
     [h : IsSchema.Has s α] :
