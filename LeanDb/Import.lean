@@ -811,7 +811,7 @@ private def tomlEscapeChar (c : Char) : String :=
   | 0x0d => "\\r"
   | n => if n < 0x20 || n == 0x7f then
       let hex := Nat.toDigits 16 n
-      "\\u" ++ String.mk ((List.replicate (4 - hex.length) '0') ++ hex)
+      "\\u" ++ String.ofList ((List.replicate (4 - hex.length) '0') ++ hex)
     else String.singleton c
 
 /-- A string as a TOML basic-string literal, valid by construction

@@ -49,7 +49,8 @@ private def reservedModules : List String :=
 /-- A base name is usable when it is lowercase snake_case AND does not
     mangle to a reserved module name (see `reservedModules`). -/
 def validName (s : String) : Bool :=
-  !s.isEmpty && s.all (fun c => c.isLower || c.isDigit || c == '_') && (s.get 0).isLower &&
+  !s.isEmpty && s.all (fun c => c.isLower || c.isDigit || c == '_') &&
+    (String.Pos.Raw.get s ⟨0⟩).isLower &&
     !reservedModules.contains (moduleOf s)
 
 /-- Escape one character for a TOML basic string: TOML allows only
@@ -68,7 +69,7 @@ private def tomlEscapeChar (c : Char) : String :=
   | 0x0d => "\\r"
   | n => if n < 0x20 || n == 0x7f then
       let hex := Nat.toDigits 16 n
-      "\\u" ++ String.mk ((List.replicate (4 - hex.length) '0') ++ hex)
+      "\\u" ++ String.ofList ((List.replicate (4 - hex.length) '0') ++ hex)
     else String.singleton c
 
 /-- A string as a TOML basic-string literal, valid by construction

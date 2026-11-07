@@ -36,7 +36,7 @@ private def tool (name description : String) (input : Json) : Json :=
     offer enums for query parameters whose type name matches a table's
     closed-world column type. `query%` records the type name; a
     `ClosedEnum` type's variants are those of any column typed by it. -/
-def enumsOf (b : Base) : List (String × List String) :=
+def enumsOf (_b : Base) : List (String × List String) :=
   -- The specs carry variants per column, not per type; a parameter typed
   -- like a closed world is matched by the type's last name component
   -- against the column names' worlds when they agree. Best effort.

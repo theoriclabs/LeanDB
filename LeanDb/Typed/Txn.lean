@@ -271,7 +271,7 @@ def assign {s α} [IsSchema s] [Entity α] [IsSchema.Has s α] (st : DbState s) 
   let tbl := DbState.get (α := α) st
   let id : Id α := ⟨Int64.ofNat tbl.next⟩
   let row := Valid.ofChecked id c
-  if h : tbl.next = 0 ∨ natSqlMax < tbl.next then
+  if _h : tbl.next = 0 ∨ natSqlMax < tbl.next then
     (row, st)
   else
     (row, st.set { next := tbl.next + 1, rows := tbl.rows ++ [row] })
