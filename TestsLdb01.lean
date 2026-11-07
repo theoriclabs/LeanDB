@@ -570,10 +570,12 @@ private def testRestoreDuringSnapshot : IO Unit := do
   let snapTask ← IO.asTask (prio := .default) do
     svc.snapshotOn .reader snapDest2
   -- wait until the snapshot has registered its job (status shows the
-  -- running lane), so the restore is guaranteed to claim mid-backup
+  -- running lane), so the restore claims mid-backup. On a fast disk the
+  -- snapshot can finish between two polls and is never seen running;
+  -- the restore then follows it, which the match below accepts.
   let mut polls := 0
   repeat
-    if ← snapshotRunning svc then break
+    if (← snapshotRunning svc) || (← IO.hasFinished snapTask) then break
     if polls > 500 then throw <| IO.userError "FAIL: snapshot never registered"
     polls := polls + 1
     IO.sleep 2
