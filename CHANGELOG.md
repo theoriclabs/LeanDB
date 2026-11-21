@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.0 - 2026-11-21
+
+Lean 4.36.0. A base that requires this tag must move its
+`lean-toolchain` to `leanprover/lean4:v4.36.0`; `leandb new` and
+`import-sqlite` now scaffold with it.
+
+- **Toolchain and dependencies.** Lean moves from 4.35.0 to 4.36.0.
+  `leansqlite` is pinned to its `v4.36.0` tag
+  (`fed8102bf2d68d7eb1b1ec6c784cc1e0126584b7`); `leanontology` stays at
+  `567f7e6dee02e9205b7d32e502068779b09c1f96`, which builds unchanged on
+  4.36.0. Every example and the B2T2 benchmark share the root
+  `lean-toolchain` and lockfile pins. LeanDB sources still build without
+  warnings.
+- **Import of columns named after any Lean token.** The importer
+  guillemet-quoted only a hand-picked set of keywords, so a column named
+  after another token, such as `meta`, `public`, `matches`, `nofun`,
+  `coinductive`, `generalizing` or `include_str`, was emitted as a bare
+  binder and the generated base did not compile. The quoted list is now
+  derived from the token table that `import LeanDb` brings in on 4.36.0,
+  which includes 4.36.0's new `declare_decidable_int_quantifiers` and
+  `declare_decidable_uint_quantifiers`. Every identifier-shaped token was
+  compiled as a field under `deriving LeanDb.Entity`, bare and quoted:
+  204 names need quoting, `aux_def` and `with_annotate_term` compile bare,
+  and the modifier keywords stay refused. Tables that would become the
+  struct names `Sort` or `StateRefT` are now refused as well. The
+  hostile-names test covers the new cases.
+- **Restore-during-snapshot test on fast disks.** The test no longer fails
+  when the reader snapshot finishes before it is seen running.
+
 ## 0.6.0 - 2026-11-07
 
 Lean 4.35.0. A base that requires this tag must move its

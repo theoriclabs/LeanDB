@@ -192,7 +192,8 @@ private def blockedNames : List String :=
    "TableSpec", "ColumnSpec", "DbError", "Int", "Int64", "Int32", "Nat",
    "String", "Float", "Bool", "Array", "List", "Except", "Sum", "Prod",
    "Unit", "Char", "Type", "Prop", "IO", "Json", "Main", "Repr", "Ord",
-   "BEq", "Hashable", "DecidableEq", "SQLite", "LeanDb", "Lean"]
+   "BEq", "Hashable", "DecidableEq", "SQLite", "LeanDb", "Lean", "Sort",
+   "StateRefT"]
 
 /-- The struct name for a table: must round-trip through
     `LeanDb.Derive.tableNameOf` (the deriving machinery's only notion of a
@@ -216,15 +217,15 @@ private def isValidFieldName (s : String) : Bool :=
 /-- Column names Lean refuses even under guillemets: a binder spelled with
     one collides in the kernel with a declaration Lean generates for the
     structure itself or for `deriving LeanDb.Entity`'s symbol inductive
-    (issue #66). Each entry was verified against Lean v4.35.0 by compiling
+    (issue #66). Each entry was verified against Lean v4.36.0 by compiling
     a structure with that field name under guillemets and deriving
     `LeanDb.Entity`: `mk` is refused as the structure constructor's name,
     and `noConfusion`, `noConfusionType`, `casesOn`, `recOn` and `ctorIdx`
     fail with "(kernel) constant has already been declared" — the
     constructor-index functions cover the structure and the derived symbol
-    inductive. `toCtorIdx` clashed the same way on v4.33.0 and compiles on
-    v4.35.0; it stays refused so a database imports the same way on
-    either toolchain. (`rec` and the modifier keywords
+    inductive. `toCtorIdx` clashed the same way on v4.33.0 and compiles
+    from v4.35.0; it stays refused so a database imports the same way on
+    every toolchain. (`rec` and the modifier keywords
     `unsafe`/`noncomputable`/`partial`/`private`/`protected` are refused
     by `LeanDb.Derive.unusableSymNames` instead, which the importer also
     checks.) -/
@@ -233,31 +234,72 @@ private def unusableFieldNames : List String :=
    "toCtorIdx"]
 
 /-- Column names that cannot be spelled bare in binder position but
-    compile guillemet-quoted: Lean keyword tokens (statement and
-    declaration keywords, the capitalized type keywords `Type`/`Sort`/
-    `Prop`, two-token words like `suffices` and `grind_pattern`, and the
-    token `λ`). Every entry was verified against Lean v4.35.0 the same
-    way: the bare binder fails to parse, the guillemet-quoted one
-    elaborates and derives `LeanDb.Entity` cleanly. Names *not* listed
-    here — including words that once looked like keywords but compile
-    bare on this toolchain (`type`, `fine`, `when`, `this`, `admit`,
-    `exact`, `throw`, `global`, `lemma`, `exit`, `below`, `brecOn`,
-    `inj`, `sizeOf`) — become plain binders. -/
+    compile guillemet-quoted: every identifier-shaped token in the token
+    table that `import LeanDb` brings in (statement and declaration
+    keywords, the capitalized `Type`/`Sort`/`Prop`/`StateRefT`, command
+    words like `grind_pattern`, `register_option` and
+    `declare_decidable_int_quantifiers`, term words like `meta`, `nofun`
+    and `matches`, and the token `λ`). The list was derived from
+    `Lean.Parser.getTokenTable` on Lean v4.36.0, and every entry was
+    verified the same way: the bare binder fails to parse, the
+    guillemet-quoted one elaborates and derives `LeanDb.Entity` cleanly.
+    Two tokens compile bare (`aux_def`, `with_annotate_term`) and the
+    modifier keywords are refused outright, so neither is listed. Names
+    *not* listed here — including words that once looked like keywords
+    but compile bare on this toolchain (`type`, `fine`, `when`, `this`,
+    `admit`, `exact`, `throw`, `global`, `lemma`, `exit`, `below`,
+    `brecOn`, `inj`, `sizeOf`) — become plain binders. -/
 private def quotedFieldNames : List String :=
-  ["abbrev", "at", "attribute", "axiom", "break", "by", "calc", "catch",
-   "class", "continue", "decreasing_by", "def", "deriving", "do",
-   "elab", "else", "end", "example", "exists", "export", "extends",
-   "finally", "for", "forall", "from", "fun", "have", "haveI", "hiding",
-   "if", "import", "in", "include", "inductive", "infix", "infixl",
-   "infixr", "initialize", "instance", "let", "letI", "local", "macro",
-   "macro_rules", "match", "monotonicity_by", "mut", "mutual",
-   "namespace", "nomatch", "nonrec", "notation", "omit", "opaque",
-   "open", "postfix", "prefix", "Prop", "recall", "renaming", "repeat",
-   "return", "run_cmd", "scoped", "seal", "section", "set_option",
-   "show", "sorry", "Sort", "structure", "suffices", "syntax",
-   "termination_by", "then", "theorem", "try", "Type", "universe",
-   "unless", "unseal", "until", "using", "variable", "where", "while",
-   "with", "λ"]
+  ["abbrev", "add_decl_doc", "assert_not_exists", "assert_not_imported",
+   "at", "attribute", "axiom", "bif", "binder_predicate", "break",
+   "builtin_cbv_simproc", "builtin_cbv_simproc_decl", "builtin_dsimproc",
+   "builtin_dsimproc_decl", "builtin_grind_propagator",
+   "builtin_initialize", "builtin_simproc", "builtin_simproc_decl", "by",
+   "by_elab", "calc", "catch", "cbv_eval", "cbv_simproc",
+   "cbv_simproc_decl", "class", "coinductive", "coinductive_fixpoint",
+   "continue", "dbg_trace", "declare_bitwise_int_theorems",
+   "declare_bitwise_uint_theorems", "declare_command_config_elab",
+   "declare_command_config_elab_legacy", "declare_config_elab",
+   "declare_config_elab_legacy", "declare_core_config_elab",
+   "declare_decidable_int_quantifiers",
+   "declare_decidable_uint_quantifiers", "declare_eval_bin",
+   "declare_eval_bin_bitwise", "declare_eval_bin_bool_pred",
+   "declare_int_theorems", "declare_simp_like_tactic",
+   "declare_sint_simprocs", "declare_syntax_cat",
+   "declare_term_config_elab", "declare_uint_simprocs",
+   "declare_uint_theorems", "decreasing_by", "def", "def_eval_config_item",
+   "deprecated_module", "deprecated_syntax", "deriving", "do",
+   "docs_to_verso", "dsimproc", "dsimproc_decl", "elab", "elab_rules",
+   "elab_stx_quot", "else", "end", "eval_prec", "eval_prio", "example",
+   "exists", "export", "extends", "finally", "for", "forall", "from",
+   "fun", "generalizing", "grind_annotated", "grind_pattern",
+   "grind_propagator", "have", "haveI", "hiding", "idbg", "if", "import",
+   "in", "include", "include_str", "inductive", "inductive_fixpoint",
+   "inferInstanceAs", "infix", "infixl", "infixr", "init_grind_norm",
+   "init_quot", "initialize", "instance", "leading_parser", "let",
+   "let_delayed", "let_expr", "let_fun", "let_tmp", "letI", "local",
+   "logNamedError", "logNamedErrorAt", "logNamedWarning",
+   "logNamedWarningAt", "macro", "macro_rules", "match", "match_expr",
+   "matches", "max_prec", "meta", "mod_cast", "monotonicity_by", "mut",
+   "mutual", "namespace", "nat_lit", "no_index", "nofun", "nomatch",
+   "nonrec", "norm_cast_add_elim", "notation", "omit", "opaque", "open",
+   "partial_fixpoint", "postfix", "prefix", "Prop", "public", "recall",
+   "recommended_spelling", "register_builtin_option",
+   "register_error_explanation", "register_grind_attr",
+   "register_label_attr", "register_linter_set", "register_option",
+   "register_parser_alias", "register_simp_attr", "register_sym_dsimp",
+   "register_sym_simp", "register_sym_simp_attr", "register_tactic_tag",
+   "renaming", "repeat", "reprove", "return", "run_cmd", "run_elab",
+   "run_meta", "scoped", "seal", "section", "set_library_suggestions",
+   "set_option", "show", "show_panel_widgets", "show_term",
+   "show_term_elab", "simproc", "simproc_decl", "sorry", "Sort",
+   "StateRefT", "structure", "suffices", "syntax", "tactic_alt",
+   "tactic_extension", "tactic_name", "tactic_tag", "termination_by",
+   "test_extern", "then", "theorem", "throwError", "throwErrorAt",
+   "throwNamedError", "throwNamedErrorAt", "trailing_parser", "try",
+   "Type", "unif_hint", "universe", "unless", "unlock_limits", "unseal",
+   "until", "using", "variable", "where", "while", "with",
+   "with_weak_namespace", "without_expected_type", "λ"]
 
 /-- A generated field binder: guillemet-quoted when the bare spelling is
     a Lean token, plain otherwise. The refusal gate has already removed
