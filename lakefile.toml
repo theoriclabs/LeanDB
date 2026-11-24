@@ -1,5 +1,5 @@
 name = "leandb"
-version = "0.7.0"
+version = "0.7.1"
 defaultTargets = ["LeanDb", "LeanDbModel", "LeanDbNative"]
 
 # Pinned and verified against lean4 v4.36.0; bump in lockstep with
@@ -13,7 +13,7 @@ rev = "fed8102bf2d68d7eb1b1ec6c784cc1e0126584b7"
 [[require]]
 name = "leanontology"
 git = "https://github.com/theoriclabs/leanontology"
-rev = "567f7e6dee02e9205b7d32e502068779b09c1f96"
+rev = "v0.1.1"
 
 # Keep the engine, portable model, and SQLite interpreter in separate libraries.
 # A precompiled consumer of the engine must not load the model or interpreter

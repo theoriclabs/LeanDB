@@ -112,10 +112,11 @@ initialize reservedPredicateInstalled : EnvExtension Bool ← registerEnvExtensi
 
 /-- Reserved-name predicates are snapshotted when an environment is created, before
 imported initializers run; install ours into this module's environment directly. -/
-def installEntityReservedNames : CommandElabM Unit := do
+def installEntityReservedNames (owner : Lean.Name) : CommandElabM Unit := do
   unless reservedPredicateInstalled.getState (← getEnv) do
     modifyEnv fun env =>
-      let env := reservedNamePredicatesExt.modifyState env (·.push fun env name => (entityOpOwner? env name).isSome)
+      let env := reservedNamePredicatesExt.modifyState (log := .decl owner) env
+        (·.push fun env name => (entityOpOwner? env name).isSome)
       reservedPredicateInstalled.setState env true
 
 def runCommand (source : String) : CommandElabM Unit := do
@@ -241,7 +242,7 @@ partial def deriveOne (name : Lean.Name) (entity : Bool) (allowPayload : Bool :=
       runCommand ("instance : LeanDb.Model.Domain " ++ ty ++ " := " ++ domainBase)
       runCommand ("instance : Ontology.Wire " ++ ty ++ " := ⟨LeanDb.Model.recordCodec " ++ identity ++ " (" ++ codec ++ ")⟩")
     if entity then
-      installEntityReservedNames
+      installEntityReservedNames name
       modifyEnv fun env => entityDeclarations.addEntry env
         ⟨name, ((List.range fields.size).map fun i => (fields[i]!.toString, fieldTypes[i]!)).toArray⟩
     -- Row view: `Row T` = `T.Row OpScope`, extending `T` with its `id`.

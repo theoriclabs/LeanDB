@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 - 2026-11-24
+
+- Register generated entity operation names against their declaring entity.
+  This avoids the environment-extension panic when `deriving Entity` runs on
+  Lean 4.36.0.
+- Pin LeanOntology 0.1.1, which uses the same Lean toolchain.
+
 ## 0.7.0 - 2026-11-21
 
 Lean 4.36.0. A base that requires this tag must move its

@@ -33,4 +33,6 @@ jobs:
       - name: DDD tests
         run: lake build leandb_ddd_tests && ./.lake/build/bin/leandb_ddd_tests
       - name: Model tests (in memory and on SQLite)
+        env:
+          LEAN_ABORT_ON_PANIC: "1"
         run: lake build leandb_model_tests && ./.lake/build/bin/leandb_model_tests
