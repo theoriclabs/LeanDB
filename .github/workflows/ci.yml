@@ -36,3 +36,14 @@ jobs:
         env:
           LEAN_ABORT_ON_PANIC: "1"
         run: lake build leandb_model_tests && ./.lake/build/bin/leandb_model_tests
+      - name: Install libcurl headers for the optional client (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Dashboard integration with the opt-in HTTP client
+        env:
+          LEAN_ABORT_ON_PANIC: "1"
+        run: |
+          lake -d examples/tickets build tickets
+          cd examples/dashboard
+          lake build
+          .lake/build/bin/dashboard

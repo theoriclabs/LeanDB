@@ -27,6 +27,12 @@ SQLite is bundled. The first build takes a few minutes. Lake fetches
 pinned in `lakefile.toml`.
 Start with the [tickets example](examples/tickets/README.md).
 
+### HTTP clients
+
+To call a served LeanDB base from Lean, add the opt-in [HTTP client package](packages/leandb-http/README.md)
+from the same LeanDB tag. The [dashboard example](examples/dashboard/Main.lean)
+runs the same typed query locally, over stdio, and over authenticated HTTP.
+
 ## Typed data
 
 Define tables as Lean structures. Use a codec to validate custom fields.

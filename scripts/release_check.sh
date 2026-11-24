@@ -16,6 +16,11 @@ if ! cmp -s lean-toolchain "benchmarks/b2t2/lean-toolchain"; then
   exit 1
 fi
 
+if ! cmp -s lean-toolchain packages/leandb-http/lean-toolchain; then
+  echo "release check failed: packages/leandb-http/lean-toolchain differs from root" >&2
+  exit 1
+fi
+
 lake build leandb leandb_tests leandb_ddd_tests FixturePrecompiled
 .lake/build/bin/leandb_tests
 .lake/build/bin/leandb_ddd_tests
@@ -38,19 +43,12 @@ for base in tickets crm shop gpumarket eats; do
   )
 done
 
-# dashboard: the same typed query in-process, over stdio, and over leanhttp.
-# examples/dashboard requires the untracked sibling ../../../leandb-http
-# (see RELEASING.md); skip with a message on a fresh clone rather than
-# dying mid-run.
-if [[ ! -d "$repo_root/../leandb-http" ]]; then
-  echo "skipping dashboard checks: $repo_root/../leandb-http is missing (see RELEASING.md)"
-else
-  (
-    cd examples/dashboard
-    lake build
-    .lake/build/bin/dashboard
-  )
-fi
+# Dashboard: the same typed query in-process, over stdio, and over HTTP.
+(
+  cd examples/dashboard
+  lake build
+  .lake/build/bin/dashboard
+)
 
 # scaffold round trip: leandb new against this checkout builds and passes its tests
 (

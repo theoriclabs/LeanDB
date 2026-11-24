@@ -1,0 +1,16 @@
+name = "leandb_http"
+version = "0.8.0"
+defaultTargets = ["LeanDbHttp"]
+
+[[require]]
+name = "leandb"
+path = "../.."
+
+[[require]]
+name = "leanhttp"
+git = "https://github.com/theoriclabs/leanhttp"
+rev = "v0.8.0"
+
+[[lean_lib]]
+name = "LeanDbHttp"
+precompileModules = true

@@ -4,7 +4,7 @@ LeanDB aims to preserve domain rules across the application and database.
 This page separates the current implementation from future work.
 The future items are directions, not release dates or API commitments.
 
-## Available in 0.7.0
+## Available in 0.8.0
 
 - Entity-derived schemas, typed IDs and references, and validating codecs.
 - Closed enums, enum sets, JSON columns, inline records, and child lists.
@@ -23,7 +23,7 @@ The future items are directions, not release dates or API commitments.
 - Migration transactions, backups, history, and rollback.
 - Standalone base generation and SQLite import reports.
 - CLI, JSON-lines, HTTP, and MCP interfaces.
-- Typed clients over stdio and the separate HTTP adapter.
+- Typed clients over stdio and through the opt-in HTTP package.
 - Portable `LeanDb.Model` entities and storage programs, with in-memory
   and SQLite interpreters, checked value types, constraints, and links.
 - Schema-indexed `Read` and `Txn` programs, validated rows, typed errors,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - 2026-11-24
+
+- Ship `LeanDbHttp` as an opt-in Lake package under the LeanDB release tag.
+  Clients can add `packages/leandb-http` as a Git subdirectory dependency and
+  keep using `import LeanDbHttp`. Core Lake consumers have no LeanHttp dependency.
+- Build and run the dashboard from a fresh LeanDB checkout. It checks the
+  same typed query in-process, over stdio, and over authenticated HTTP, and
+  checks that both transports refuse a mismatched schema fingerprint.
+
 ## 0.7.1 - 2026-11-24
 
 - Register generated entity operation names against their declaring entity.

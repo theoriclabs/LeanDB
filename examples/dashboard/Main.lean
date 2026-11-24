@@ -6,7 +6,7 @@ import LeanDbHttp
 
 Not a base. `Tickets` and `Eats` are ordinary Lake dependencies; this
 program gets their types, their `base` values and their query defs, and
-uses them two ways:
+uses them three ways:
 
 - **in-process**, against each base's instance file: `Base.withInstance`
   opens the file with the base's own schema check and runs the query
@@ -16,8 +16,8 @@ uses them two ways:
   slaBreached` is the query's signature with `DbM` replaced by
   `ClientM` — arguments render through `CliRender`, results decode
   through `QueryIn`, so the remote call is typed like the local one;
-- **over HTTP**, against `tickets serve --http`, using the standalone
-  `leandb-http` adapter and its libcurl-backed `leanhttp`
+- **over HTTP**, against `tickets serve --http`, using the optional
+  `LeanDbHttp` package and its libcurl-backed `leanhttp`
   transport. The same typed stub and result checks are unchanged.
 
 Run from `examples/dashboard` after `lake build` here and

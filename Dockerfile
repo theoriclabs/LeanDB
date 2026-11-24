@@ -3,8 +3,8 @@
 #   docker build --build-arg BASE=tickets -t leandb-tickets .
 #   docker run -p 7411:7411 -v tickets-data:/data -e LEANDB_TOKEN=s3cret leandb-tickets
 #
-# dashboard requires the untracked sibling repo ../../../leandb-http (see
-# RELEASING.md); the other examples build standalone. The instance lives in
+# Run the dashboard integration example from the checkout (see RELEASING.md).
+# The instance lives in
 # the /data volume (LEANDB_DB); the server binds 0.0.0.0 inside the
 # container, so set LEANDB_TOKEN (or pass --auth-token) before publishing
 # the port. Named volumes are chown'd to the `leandb` user (created in the

@@ -226,6 +226,7 @@ A base can expose its tables and queries over JSON lines, HTTP, or MCP.
 `client%` creates a typed client stub from a registered query definition.
 Clients check the server's schema fingerprint before using the base.
 The [dashboard example](../examples/dashboard/Main.lean) shows local,
-stdio, and HTTP calls. HTTP clients use the separate `leandb-http` adapter.
+stdio, and HTTP calls. To opt in to HTTP clients, add the
+[`LeanDbHttp` package](../packages/leandb-http/README.md) from the same LeanDB release.
 
 See the [CLI reference](../README.md#the-cli-every-base-gets) for commands.

@@ -11,7 +11,7 @@ path = "../.."
 
 [[require]]
 name = "leandb_http"
-path = "../../../leandb-http"
+path = "../../packages/leandb-http"
 
 [[require]]
 name = "tickets"
