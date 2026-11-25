@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 - 2026-11-25
 
 - Restore snapshots the source through SQLite, preserving committed WAL
   data (#60). It opens the source read-only, validates the staged copy

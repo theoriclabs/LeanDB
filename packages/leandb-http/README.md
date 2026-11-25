@@ -11,7 +11,7 @@ declares a direct LeanDB requirement, pin it to the same release.
 [[require]]
 name = "leandb_http"
 git = { url = "https://github.com/theoriclabs/LeanDB", subDir = "packages/leandb-http" }
-rev = "v0.8.0"
+rev = "v0.8.1"
 ```
 
 Run `lake update`, then import `LeanDbHttp`. The HTTP package uses the
