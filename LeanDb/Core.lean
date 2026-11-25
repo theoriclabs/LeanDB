@@ -226,6 +226,33 @@ structure Stored (α : Type) where
 /-- The reference other rows use to point at this row. -/
 abbrev Stored.ref (s : Stored α) : Ref α := s.id
 
+/-- A nominal reference to an entity `α` stored in another database.
+    Stored as an `INTEGER` (`Int64`), preserving nominal Lean type safety
+    (`ExtRef User` vs `ExtRef Order`) without emitting a local SQLite
+    `REFERENCES` clause or requiring `α` in the local base's schema. -/
+structure ExtRef (α : Type) where
+  toInt64 : Int64
+  deriving DecidableEq, Repr, Hashable
+
+instance : BEq (ExtRef α) := ⟨fun a b => a.toInt64 == b.toInt64⟩
+-- manual: the derived instance would demand `Ord α` for a phantom parameter
+instance : Ord (ExtRef α) := ⟨fun a b => compare a.toInt64 b.toInt64⟩
+
+/-- Issued AUTOINCREMENT ids are ≥ 1. -/
+def ExtRef.positive (r : ExtRef α) : Bool := (0 : Int64) < r.toInt64
+
+/-- The `Nat` of an external reference. For positive ids this does not clamp. -/
+def ExtRef.toNat (r : ExtRef α) : Nat := r.toInt64.toNatClampNeg
+
+/-- Convert an external reference to `Id α` for explicit joins against the remote table. -/
+abbrev ExtRef.id (r : ExtRef α) : Id α := ⟨r.toInt64⟩
+
+/-- Promote a local `Id α` into a cross-database `ExtRef α`. -/
+abbrev Id.extRef (id : Id α) : ExtRef α := ⟨id.toInt64⟩
+
+/-- The external reference pointing at this stored row from another database. -/
+abbrev Stored.extRef (s : Stored α) : ExtRef α := s.id.extRef
+
 /-- How a scalar type lives in one SQL column. Decoding is total over
     honest data and *typed-fails* over anything else — a value that does
     not pass its type's validation never enters the program. -/
@@ -467,6 +494,13 @@ instance : LawfulColCodec (Id α) where
   roundTrip v :=
     ColCodec.via_roundTrip Id.toInt64 (fun x => Except.ok ⟨x⟩) (fun _ => rfl) v
 
+instance : ColCodec (ExtRef α) := ColCodec.via (β := Int64) ExtRef.toInt64 (fun v => .ok ⟨v⟩)
+instance : SqlOrd (ExtRef α) where
+
+instance : LawfulColCodec (ExtRef α) where
+  roundTrip v :=
+    ColCodec.via_roundTrip ExtRef.toInt64 (fun x => Except.ok ⟨x⟩) (fun _ => rfl) v
+
 instance [ColCodec α] : ColCodec (Option α) where
   sqlType := ColCodec.sqlType α
   nullable := true
@@ -505,6 +539,9 @@ instance : NonNullCodec Float where
   toCol_ne_null _ h := nomatch h
 
 instance : NonNullCodec (Id α) where
+  toCol_ne_null _ h := nomatch h
+
+instance : NonNullCodec (ExtRef α) where
   toCol_ne_null _ h := nomatch h
 
 instance : NonNullCodec UInt16 where
@@ -687,6 +724,8 @@ class RefTarget (α : Type) where
   target : Option String := none
 
 instance (priority := 50) : RefTarget α := ⟨none⟩
+/-- External references cross database boundaries and emit no local FK constraint. -/
+instance : RefTarget (ExtRef α) := ⟨none⟩
 instance [RefTarget α] : RefTarget (Option α) := ⟨RefTarget.target α⟩
 
 /-- The declared *shape* of a JSON-encoded value type: a canonical,

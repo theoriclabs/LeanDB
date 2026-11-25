@@ -708,6 +708,11 @@ instance : LawfulSqlOrd (Id α) where
     change Col.order (Col.int a.toInt64) (Col.int b.toInt64) = some (compare a.toInt64 b.toInt64)
     rfl
 
+instance : LawfulSqlOrd (ExtRef α) where
+  order_toCol a b := by
+    change Col.order (Col.int a.toInt64) (Col.int b.toInt64) = some (compare a.toInt64 b.toInt64)
+    rfl
+
 /-- `SqlOrd Nat` is sound on `0 … Int64.maxValue`; above that `toCol` clamps. -/
 theorem nat_order_toCol (n m : Nat) (hn : n ≤ natSqlMax) (hm : m ≤ natSqlMax) :
     Col.order (toCol (α := Nat) n) (toCol (α := Nat) m) = some (compare n m) := by

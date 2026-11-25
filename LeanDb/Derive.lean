@@ -771,6 +771,39 @@ initialize invariantAttr : TagAttribute ←
 not check {declName}. Declare the invariant first, then \
 `deriving instance LeanDb.Entity for {typeName}`."
 
+/-- An explicit, persistent SQL table name, including when `native_schema%`
+    derives the native instance later. Default names stay unchanged. -/
+syntax (name := leandb_table) "leandb_table " str : attr
+
+initialize tableNameDeclarations : SimplePersistentEnvExtension (Name × String) (Array (Name × String)) ←
+  registerSimplePersistentEnvExtension {
+    addEntryFn := Array.push
+    addImportedFn := fun entries => entries.foldl Array.append #[]
+  }
+
+initialize registerBuiltinAttribute {
+    name := `leandb_table
+    descr := "the SQL table name used when deriving LeanDb.Entity"
+    add := fun declName stx kind => do
+      unless kind == .global do throwError "@[leandb_table]: the table name must be global"
+      let `(attr| leandb_table $table:str) := stx | throwError "expected leandb_table followed by a string"
+      unless isStructure (← getEnv) declName do
+        throwError "@[leandb_table]: {declName} must be a structure"
+      let table := table.getString
+      if table.isEmpty || table.contains '\x00' then
+        throwError "@[leandb_table]: table name must be nonempty and contain no NUL"
+      if table.toLower.startsWith "_leandb_" || table.toLower.startsWith "sqlite_" then
+        throwError "@[leandb_table]: table name '{table}' uses a reserved prefix"
+      let derived ← Meta.MetaM.run' do
+        return (← Meta.synthInstance? (mkApp (mkConst ``LeanDb.Entity) (mkConst declName))).isSome
+      if derived then
+        throwError "@[leandb_table]: LeanDb.Entity {declName} already exists. Declare the table name before deriving the entity."
+      if (tableNameDeclarations.getState (← getEnv)).any (fun (owner, name) =>
+          owner == declName && name != table) then
+        throwError "@[leandb_table]: {declName} already declares a different table name"
+      modifyEnv fun env => tableNameDeclarations.addEntry env (declName, table)
+  }
+
 /-- `cascade% User.team` — this `Ref` is `ON DELETE CASCADE`. Must be
     declared before `deriving LeanDb.Entity`. Default is RESTRICT. -/
 structure CascadeDecl where
@@ -839,7 +872,11 @@ partial def deriveEntityCore (declName : Name) (tableName? : Option String := no
   checkStructure who declName fieldTyName
   let env ← getEnv
   let fields := getStructureFields env declName
-  let tblName := tableName?.getD (tableNameOf declName)
+  let declaredNames := (tableNameDeclarations.getState env).filterMap fun (owner, name) =>
+    if owner == declName then some name else none
+  if declaredNames.toList.eraseDups.length > 1 then
+    throwError "deriving LeanDb.Entity: {declName} has conflicting table names in imported modules"
+  let tblName := (tableName?.orElse fun _ => declaredNames[0]?).getD (tableNameOf declName)
   if tblName.startsWith "_leandb_" then
     throwError "{who}: table name '{tblName}' uses the reserved _leandb_ prefix"
   if fields.any (·.getString! == "id") then

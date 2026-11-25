@@ -72,6 +72,21 @@ structure Ticket where
 `deriving LeanDb.Entity` generates the table schema and row codecs.
 Defaults and foreign keys come from the same declarations.
 
+Entities with the same short name can select distinct SQL table names:
+
+```lean
+@[leandb_table "workspace_snapshot"]
+structure Workspace.Snapshot where
+  title : String
+  deriving LeanDb.Entity
+```
+
+Set `leandb_table` before deriving the native entity. For an imported
+portable model, use `attribute [leandb_table "workspace_snapshot"] Workspace.Snapshot`
+in the native package before `native_schema%`. References, child tables, and
+indexes use the selected name. Existing entities keep their default names;
+changing an existing table name requires a migration.
+
 ## Typed queries
 
 The table list determines the query's input and result types.

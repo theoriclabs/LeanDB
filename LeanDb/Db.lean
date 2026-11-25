@@ -1012,6 +1012,14 @@ def readMeta (db : SQLite) (key : String) : IO (Option String) := do
   stmt.bindText 1 key
   if ← stmt.step then some <$> stmt.columnText 0 else return none
 
+/-- One application table, excluding SQLite and LeanDB bookkeeping. Shared
+    by first-open and migration checks before treating a file as fresh. -/
+def firstUserTable (db : SQLite) : IO (Option String) := do
+  let stmt ← db.prepare
+    "SELECT name FROM sqlite_master WHERE type = 'table' \
+AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_leandb\\_%' ESCAPE '\\' LIMIT 1"
+  if ← stmt.step then some <$> stmt.columnText 0 else return none
+
 def writeMeta (db : SQLite) (key value : String) : IO Unit := do
   let stmt ← db.prepare "INSERT OR REPLACE INTO _leandb_meta (key, value) VALUES (?, ?)"
   stmt.bindText 1 key
@@ -1049,7 +1057,7 @@ def ensureColumns (db : SQLite) (table : String) (cols : List (String × String)
 /-! ### Restore safety primitives
 
 Shared by the CLI session (`Cli.replaceFile`) and `Runtime.Service.restore`:
-validate the source before anything destructive, copy it bounded. -/
+validate the source before anything destructive, snapshot it through SQLite. -/
 
 /-- The 16-byte magic string every SQLite 3 file begins with. -/
 def Restore.magic : ByteArray := "SQLite format 3\u0000".toUTF8
@@ -1071,7 +1079,7 @@ def Restore.validate (src : System.FilePath) : IO (Except DbError Unit) := do
   unless Restore.headerOk head do
     return .error (.migrate s!"restore source is not a SQLite database: {src}")
   try
-    let db ← SQLite.open src
+    let db ← SQLite.openWith src .readonly
     let stmt ← db.prepare "PRAGMA quick_check"
     if ← stmt.step then
       let verdict ← stmt.columnText 0
@@ -1092,6 +1100,20 @@ def Restore.copyChunked (src dest : System.FilePath) : IO Unit := do
     if bytes.isEmpty then break
     output.write bytes
 
+/-- Reserve a sibling directory atomically, so concurrent or interrupted
+    restores cannot share a staging file. Its snapshot can be renamed on
+    the same filesystem as the destination. -/
+private def Restore.stagingDir (path : System.FilePath) : IO System.FilePath := do
+  for i in [:32] do
+    let dir : System.FilePath := path.toString ++ ".restore" ++
+      (if i == 0 then "" else s!"-{i + 1}")
+    try
+      IO.FS.createDir dir
+      return dir
+    catch e =>
+      unless ← dir.pathExists do throw e
+  throw <| IO.userError s!"no free restore staging directory for {path}"
+
 /-- #76: refuse the restore/rollback file swap while another process holds
     the instance's write lock. `BEGIN IMMEDIATE` takes SQLite's RESERVED
     lock and fails immediately (no busy timeout is set) when a concurrent
@@ -1108,8 +1130,9 @@ retry when the other writer is idle")
   conn.raw.exec "ROLLBACK"
   return .ok ()
 
-/-- Replace the instance file at `path` with `src`: validate first, copy
-    under a temporary name, rename into place so no reader sees a
+/-- Replace the instance file at `path` with `src`: validate first, take a
+    SQLite snapshot (including committed WAL frames), validate those exact
+    staged bytes, then rename into place so no reader sees a
     half-written file, and take stale `-wal`/`-shm`/`-journal` siblings
     with the old file. The caller reopens after the swap. -/
 def Restore.swapFile (path src : System.FilePath) : IO (Except DbError Unit) := do
@@ -1119,17 +1142,25 @@ def Restore.swapFile (path src : System.FilePath) : IO (Except DbError Unit) := 
   | .error e => return .error e
   | .ok () => pure ()
   try
-    let tmp : System.FilePath := path.toString ++ ".restore"
+    let dir ← Restore.stagingDir path
+    let tmp := dir / "snapshot.sqlite"
     try
-      Restore.copyChunked src tmp
-    catch e =>
-      try IO.FS.removeFile tmp catch _ => pure ()
-      throw e
-    for suffix in ["-wal", "-shm", "-journal"] do
-      let side : System.FilePath := path.toString ++ suffix
-      if ← side.pathExists then IO.FS.removeFile side
-    IO.FS.rename tmp path
-    return .ok ()
+      -- A raw main-file copy loses committed WAL frames (#60). VACUUM
+      -- reads a consistent snapshot without checkpointing or writing to
+      -- the source, even while it has a live writer.
+      let source ← SQLite.openWith src .readonly
+      let quoted := "'" ++ (tmp.toString.replace "'" "''") ++ "'"
+      source.exec s!"VACUUM INTO {quoted}"
+      match ← Restore.validate tmp with
+      | .error e => return .error e
+      | .ok () => pure ()
+      for suffix in ["-wal", "-shm", "-journal"] do
+        let side : System.FilePath := path.toString ++ suffix
+        if ← side.pathExists then IO.FS.removeFile side
+      IO.FS.rename tmp path
+      return .ok ()
+    finally
+      discard <| (IO.FS.removeDirAll dir).toBaseIO
   catch e =>
     return .error (.sqlite s!"restore failed: {e}")
 
@@ -1282,11 +1313,7 @@ def Conn.verify (conn : Conn) (specs : List TableSpec) (initialVersion : Nat := 
         -- first open of a file that already carries user tables is
         -- refused by name. Empty files (and files this engine's own DDL
         -- has just created) pass.
-        let stmt ← db.prepare
-          "SELECT name FROM sqlite_master WHERE type = 'table' \
-AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '\\_leandb\\_%' ESCAPE '\\'"
-        if ← stmt.step then
-          let existing ← stmt.columnText 0
+        if let some existing ← firstUserTable db then
           return .error (.migrate s!"the file already carries tables (first: {String.quote existing}) \
 but records no LeanDB schema: it was not created by this base. Adopt it with \
 `leandb import-sqlite` instead of opening it as this base's instance")

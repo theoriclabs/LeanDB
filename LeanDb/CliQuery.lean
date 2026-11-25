@@ -25,10 +25,11 @@ open Lean Elab Term Meta
 private def queryFootprint (root : Name) : MetaM Footprint := do
   let env ← getEnv
   let mainRoot := (← getMainModule).getRoot
+  let allowedRoots := (PlanElab.footprintModuleRoots env).insert mainRoot
   let ours := fun (n : Name) =>
     match env.getModuleIdxFor? n with
     | none => true
-    | some idx => (env.header.moduleNames[idx.toNat]?.map (·.getRoot == mainRoot)).getD false
+    | some idx => (env.header.moduleNames[idx.toNat]?.map (fun m => allowedRoots.contains m.getRoot)).getD false
   let mut visited : List Name := []
   let mut queue : List Name := [root]
   let mut acc : Footprint := {}

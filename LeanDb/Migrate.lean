@@ -298,7 +298,11 @@ available, so this migration is refused. Migrate by hand."
         s!"table \"{table}\": column \"{col}\" changed shape — {m}. Existing values \
 would not decode under the new type; a typed value transformation is not yet available, \
 so this migration is refused. Migrate by hand."
-  | _, _ => pure ()   -- a shape declared (or dropped) where there was none: nothing to compare
+  | none, none => pure ()
+  | _, _ =>
+      throw s!"table \"{table}\": column \"{col}\" added or removed its JSON shape. \
+Compatibility of existing values cannot be established without both shapes; \
+declare a typed transform for this table or migrate by hand."
 
 structure MigPlan where
   steps : List MigStep := []
@@ -496,6 +500,12 @@ def migrateOn (conn : Conn) (specs : List TableSpec) (opts : MigrateOpts) :
     let old? ← match ← readStoredSchemaRaw db with
       | .ok old? => pure old?
       | .error msg => return .error (.migrate msg)
+    if old?.isNone then
+      if let some existing ← firstUserTable db then
+        return .error (.migrate s!"the file already carries tables (first: {String.quote existing}) \
+but records no LeanDB schema_json: migration cannot infer the stored schema. \
+Restore intact schema metadata, or adopt the file with `leandb import-sqlite` \
+instead of treating it as a fresh instance")
     let old := old?.getD []
     match planMigration old specs with
     | .error msg => return .error (.migrate msg)

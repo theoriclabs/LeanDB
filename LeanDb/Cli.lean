@@ -44,6 +44,8 @@ instance : CliArg (Id α) := ⟨fun s => do
     throw s!"row id out of Int64 range: {s}"
   return ⟨Int64.ofNat n⟩⟩
 
+instance : CliArg (ExtRef α) := ⟨fun s => (CliArg.parse s : Except String (Id α)).map Id.extRef⟩
+
 instance [ClosedEnum α] : CliArg α := ⟨fun s =>
   match ClosedEnum.decodeName s with
   | some a => .ok a

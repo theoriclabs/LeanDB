@@ -28,6 +28,9 @@ structure Note where
 
 private def specs : List TableSpec := Entity.specs Note
 
+def notesMatching (needle : String) : DbM (Array (Stored Note)) :=
+  select [Note] (fun n => n.val.text == needle) (.key (·.val.text))
+
 private def dbPath : System.FilePath := ".lake" / "leandb_test_ldb24.sqlite"
 
 private def fresh (p : System.FilePath) : IO Unit := do

@@ -216,8 +216,16 @@ partial def deriveOne (name : Lean.Name) (entity : Bool) (allowPayload : Bool :=
             if let .const ctor _ := value then return some ctor.getString!
             throwError "closed enum default for {proj} must reduce to a constructor"
           return none
+        -- Re-elaborate the default's body instead of calling its generated
+        -- `_default` constant: Lean 4.33's closed-term lifting can produce
+        -- an invalid join point for that call (#141). Keep implicit
+        -- arguments explicit so definition-site instances survive a later
+        -- derive under different local instances.
+        let value ← liftTermElabM <| withOptions (fun options =>
+          options.setBool `pp.explicit true |>.setBool `pp.proofs true) do
+          sourceOf (← getConstInfo fn).value!
         let encoded := if let some tag := enumTag? then "Lean.Json.str " ++ quoted tag
-          else "LeanDb.Model.encodeDefault (Ontology.Wire.codec (α := " ++ type ++ ")) " ++ full fn
+          else "LeanDb.Model.encodeDefault (Ontology.Wire.codec (α := " ++ type ++ ")) (" ++ value ++ ")"
         -- The alternate constant representation must match the SAME codec definitionally.
         runCommand ("theorem " ++ ty ++ "." ++ field.toString ++ "DefaultEncoding : (" ++ encoded ++ ") = (Ontology.Wire.codec (α := " ++ type ++ ")).encode " ++ full fn ++ " := by rfl")
         defaults := defaults.push ("(" ++ quoted field.toString ++ ", " ++ encoded ++ ")")

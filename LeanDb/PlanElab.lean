@@ -112,6 +112,16 @@ initialize planFootprintExt :
 def footprintsOf (env : Environment) (decl : Name) : List PlanFootprint :=
   ((planFootprintExt.getState env).find? decl).getD []
 
+/-- Module roots of declarations in the environment that recorded a plan footprint. -/
+def footprintModuleRoots (env : Environment) : NameSet :=
+  (planFootprintExt.getState env).foldl (init := {}) fun roots decl _ =>
+    match env.getModuleIdxFor? decl with
+    | none => roots
+    | some idx =>
+        match env.header.moduleNames[idx.toNat]? with
+        | some modName => roots.insert modName.getRoot
+        | none => roots
+
 /-- Walk a reified plan for the columns it mentions. -/
 partial def footprintOfPlan (plan : Expr) : Footprint := Id.run do
   let mut types : List String := []

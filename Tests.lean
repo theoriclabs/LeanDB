@@ -65,6 +65,41 @@ instance : Indexes Profile where
 
 def schema : List TableSpec := [Entity.spec Author, Entity.spec Book]
 
+namespace NamedTables
+
+structure Entry where
+  value : String
+  deriving LeanDb.Inline
+
+@[leandb_table "workspace_snapshot"]
+structure A.Snapshot where
+  title : String
+  entries : List Entry
+  deriving LeanDb.Entity
+
+@[leandb_table "session_snapshot"]
+structure B.Snapshot where
+  workspace : Ref A.Snapshot
+  deriving LeanDb.Entity
+
+end NamedTables
+
+/-- error: @[leandb_table]: LeanDb.Entity Author already exists. Declare the table name before deriving the entity. -/
+#guard_msgs in
+attribute [leandb_table "renamed_author"] Author
+
+/-- error: @[leandb_table]: table name must be nonempty and contain no NUL -/
+#guard_msgs in
+@[leandb_table ""]
+structure EmptyTableName where
+  value : String
+
+/-- error: @[leandb_table]: table name '_LEANDB_reserved' uses a reserved prefix -/
+#guard_msgs in
+@[leandb_table "_LEANDB_reserved"]
+structure ReservedTableName where
+  value : String
+
 /-! ## Pure tests -/
 
 private def roundtrip [ColCodec α] [BEq α] (a : α) : Bool :=
@@ -1195,6 +1230,27 @@ private def expectErr (r : Except DbError α) (code : String) (context : String)
       unless e.code == code do
         throw <| IO.userError s!"FAIL: {context}: expected [{code}], got {e}"
 
+open NamedTables in
+private def testExplicitTableNames : IO Unit := do
+  check (Entity.tableName A.Snapshot == "workspace_snapshot") "explicit parent table name"
+  check (Entity.tableName B.Snapshot == "session_snapshot") "same short entity names coexist"
+  check (((Entity.columns B.Snapshot)[0]!).fkTable == some "workspace_snapshot")
+    "references use the explicit table name"
+  let specs := Entity.specs A.Snapshot ++ Entity.specs B.Snapshot
+  check (specs.any (·.name == "workspace_snapshot_entries")) "child table uses explicit parent name"
+  let path : System.FilePath := ".lake" / "leandb_test_table_names.sqlite"
+  if ← path.pathExists then IO.FS.removeFile path
+  discard <| expectOk (← withDb path specs do
+    let parent ← insert A.Snapshot ⟨"workspace", [⟨"entry"⟩]⟩
+    discard <| insert B.Snapshot ⟨parent.ref⟩
+    let rows ← select [B.Snapshot, A.Snapshot]
+      (fun (b, a) => b.val.workspace == a.ref) .preserve
+    unless rows.map (fun (_, a) => (a.val.title, a.val.entries.map (·.value))) ==
+        #[("workspace", ["entry"])] do
+      throw (.sqlite "explicit table names: parent, child and join roundtrip"))
+    "named table storage"
+
+
 private def seed : DbM (Stored Author × Stored Author × Stored Book) := do
   let ada ← insert Author ⟨"Ada", 36⟩
   let alan ← insert Author ⟨"Alan", 41⟩
@@ -1467,6 +1523,49 @@ private def testMigrations : IO Unit := do
   expectErr (← migrate migDbPath [grown] (apply := false)) "migrate"
     "invalid stored schema metadata must be reported"
 
+
+/-! ## Missing schema metadata is not a fresh instance (#133) -/
+
+private def testMissingMigrationSchema : IO Unit := do
+  let path : System.FilePath := ".lake" / "leandb_test_missing_schema.sqlite"
+  -- Both a foreign file and an engine instance with lost metadata must
+  -- refuse preview and apply, even when the requested schema is empty.
+  for stamped in [false, true] do
+    if ← path.pathExists then IO.FS.removeFile path
+    let conn ← expectOk (← openDbRaw path) "open missing-schema fixture"
+    conn.raw.exec "CREATE TABLE author (id INTEGER PRIMARY KEY, incompatible TEXT)"
+    conn.raw.exec "INSERT INTO author VALUES (1, 'preserve me')"
+    if stamped then
+      writeMeta conn.raw "schema_fingerprint" "old-fingerprint"
+      writeMeta conn.raw "schema_version" "7"
+    for specs in [[Entity.spec Author], []] do
+      for apply in [false, true] do
+        match ← migrateOn conn specs { apply } with
+        | .ok _ => throw <| IO.userError "FAIL: missing schema metadata must refuse migration"
+        | .error e =>
+            check (e.code == "migrate" && (e.message.splitOn "schema_json").length > 1 &&
+              (e.message.splitOn "author").length > 1)
+              s!"missing schema refusal names metadata and existing table: {e}"
+        check ((← readStoredSchemaChecked conn).toOption == some none)
+          "refusal does not stamp schema_json"
+        check ((← readMeta conn.raw "schema_fingerprint") ==
+          if stamped then some "old-fingerprint" else none)
+          "refusal preserves fingerprint"
+        check ((← readMeta conn.raw "schema_version") == if stamped then some "7" else none)
+          "refusal preserves version"
+        let rows ← conn.raw.prepare "SELECT incompatible FROM author WHERE id = 1"
+        check (← rows.step) "refusal preserves the row"
+        check ((← rows.columnText 0) == "preserve me") "refusal preserves stored values"
+        let journal ← conn.raw.prepare "SELECT COUNT(*) FROM _leandb_migrations"
+        discard <| journal.step
+        check ((← journal.columnInt64 0) == 0) "refusal is not journaled"
+  -- Internal bookkeeping tables do not prevent a genuinely fresh migration.
+  if ← path.pathExists then IO.FS.removeFile path
+  let fresh ← expectOk (← openDbRaw path) "open fresh migration fixture"
+  discard <| expectOk (← migrateOn fresh [Entity.spec Author] {}) "preview fresh migration"
+  check ((← readStoredSchemaChecked fresh).toOption == some none) "preview does not stamp"
+  discard <| expectOk (← migrateOn fresh [Entity.spec Author] { apply := true }) "apply fresh migration"
+  discard <| expectOk (← fresh.verify [Entity.spec Author]) "fresh migration verifies"
 
 /-! ## Migration error paths restore the session PRAGMAs (#71)
 
@@ -2323,13 +2422,35 @@ private def testShapeMigration : IO Unit := do
   | .error e =>
       check ((e.splitOn "type changed from `Nat` to `String`").length == 2)
         s!"refusal names the type change, got {e}"
-  -- shape declared where the stored schema had none: nothing to compare, restamp
+  -- #134: without two shapes there is no compatibility proof. A typed
+  -- transform may cover the table, but metadata alone cannot bless it.
   let unshaped : TableSpec := ⟨"gadget", (Entity.columns Gadget).map fun c => { c with shape := none }, #[], none⟩
-  match planMigration [unshaped] [old] with
-  | .ok plan =>
-      check (plan.steps.length == 2 && plan.steps.all (· matches .restampShape ..))
-        "a newly declared shape restamps"
-  | .error e => throw <| IO.userError s!"FAIL: newly declared shape refused: {e}"
+  for (source, target) in [(unshaped, old), (old, unshaped)] do
+    match planMigration [source] [target] with
+    | .ok _ => throw <| IO.userError "FAIL: adding or dropping a shape needs a transform"
+    | .error e =>
+        check (e.contains "gadget" && e.contains "shape" && e.contains "typed transform")
+          s!"shape boundary refusal names the table, column and remedy: {e}"
+    check ((planMigration [source] [target] ["gadget"]).isOk)
+      "an explicit typed transform covers a shape boundary"
+    let path : System.FilePath := ".lake" / "leandb_test_shape_boundary.sqlite"
+    if ← path.pathExists then IO.FS.removeFile path
+    discard <| expectOk (← withDb path [source] (pure ())) "create shape boundary fixture"
+    let conn ← expectOk (← openDbRaw path) "open shape boundary fixture"
+    conn.raw.exec "INSERT INTO gadget (name, shape) VALUES ('legacy', 'old encoding')"
+    for apply in [false, true] do
+      expectErr (← migrateOn conn [target] { apply, allowDestructive := true }) "migrate"
+        "shape boundary refuses preview and apply even with destructive changes allowed"
+      check ((← readStoredSchemaChecked conn).toOption == some (some [source]))
+        "shape boundary refusal preserves schema metadata"
+      check ((← readMeta conn.raw "schema_fingerprint") == some (fingerprint [source]))
+        "shape boundary refusal preserves fingerprint"
+      let row ← conn.raw.prepare "SELECT shape FROM gadget WHERE name = 'legacy'"
+      check (← row.step) "shape boundary refusal preserves the row"
+      check ((← row.columnText 0) == "old encoding") "shape boundary refusal preserves the value"
+      let journal ← conn.raw.prepare "SELECT COUNT(*) FROM _leandb_migrations"
+      discard <| journal.step
+      check ((← journal.columnInt64 0) == 0) "shape boundary refusal is not journaled"
   -- end to end: the restamp is journaled and moves the fingerprint; the old
   -- code then sees a mismatch at open, the refusal leaves the file untouched
   if ← shapeDbPath.pathExists then IO.FS.removeFile shapeDbPath
@@ -3913,6 +4034,34 @@ private def testRestoreSafety : IO Unit := do
 
 private def resilienceDbPath : System.FilePath := ".lake" / "leandb_test_restore_resilience.sqlite"
 
+/-- #60: committed WAL frames must survive restore, while the source's
+    uncommitted transaction must stay out of the restored snapshot. -/
+private def testRestoreWalSource : IO Unit := do
+  let src : System.FilePath := ".lake" / "leandb_test_restore_wal_source.sqlite"
+  let dest : System.FilePath := ".lake" / "leandb_test_restore_wal_dest.sqlite"
+  for path in [src, dest] do
+    if ← path.pathExists then IO.FS.removeFile path
+  let source ← expectOk (← openDb src [Entity.spec Probe]) "open WAL restore source"
+  source.raw.exec "PRAGMA wal_autocheckpoint = 0"
+  source.raw.exec "PRAGMA wal_checkpoint(TRUNCATE)"
+  discard <| expectOk (← (insert Probe ⟨"committed in WAL"⟩).run source) "commit after checkpoint"
+  let wal : System.FilePath := src.toString ++ "-wal"
+  check ((← wal.metadata).byteSize > 0) "source has committed WAL frames"
+  discard <| expectOk (← withDb dest [Entity.spec Probe] do
+    discard <| insert Probe ⟨"replace this"⟩) "create WAL restore destination"
+  source.raw.exec "BEGIN IMMEDIATE"
+  source.raw.exec "INSERT INTO probe (label) VALUES ('uncommitted')"
+  try
+    discard <| expectOk (← Restore.swapFile dest src) "restore a live WAL source"
+    let rows ← expectOk (← withDb dest [Entity.spec Probe] (fetchAll Probe)) "read WAL restore"
+    check (rows.map (·.val.label) == #["committed in WAL"])
+      "restore includes committed WAL data and excludes uncommitted writes"
+    let pending ← source.raw.prepare "SELECT COUNT(*) FROM probe"
+    discard <| pending.step
+    check ((← pending.columnInt64 0) == 2) "restore leaves the source transaction intact"
+  finally
+    source.raw.exec "ROLLBACK"
+
 /-- #59/#77: restore failure paths leave the session consistent. The
     transient case (first reopen fails, retry succeeds) cannot be forced
     deterministically, so the gate recompute is proven on the reachable
@@ -4294,6 +4443,53 @@ private def testAdoptAffinity : IO Unit := do
   discard <| st.step
   check ((← st.columnType 0) == .null) "the added column is NULL for the old row"
 /-! ## Footprints: what a query reads, statically; the log as data; impact -/
+
+/-- Cross-database nominal reference: stored as `INTEGER` with no local FK constraint. -/
+structure ExtNote where
+  target : ExtRef Author
+  label : String
+  deriving Repr, LeanDb.Entity
+
+-- Nominal safety: `ExtRef Book` cannot satisfy `ExtRef Author`.
+#check_failure (⟨(⟨1⟩ : ExtRef Book), "x"⟩ : ExtNote)
+
+def notesForExtAuthor (author : ExtRef Author) : DbM (Array (Stored ExtNote)) :=
+  select [ExtNote] (fun n => n.val.target == author) (.key (·.val.label))
+
+def importedNotesWrapper (needle : String) : DbM (Array (Stored TestsLdb24.Note)) :=
+  TestsLdb24.notesMatching needle
+
+private def extDbPath : System.FilePath := ".lake" / "leandb_test_extref.sqlite"
+
+private def testExtRefAndCrossPkgFootprint : IO Unit := do
+  -- Schema: ExtRef is INTEGER NOT NULL with fkTable = none and no REFERENCES clause.
+  let cols := Entity.columns ExtNote
+  check ((cols.getD 0 default).fkTable == none) "ExtRef column has no local fkTable"
+  let ddl := (Entity.spec ExtNote).ddl
+  check ((ddl.splitOn "REFERENCES").length == 1) s!"ExtRef DDL must omit REFERENCES, got {ddl}"
+  -- validateSchema passes even though Author is absent from this base's tables.
+  let _ ← expectOk (validateSchema [Entity.spec ExtNote]) "validateSchema accepts ExtRef without target table"
+  -- Cross-module/package queryFootprint picks up helper plans from TestsLdb24.
+  let qImported : QueryEntry := query% importedNotesWrapper
+  check (qImported.footprint.columns.contains ("TestsLdb24.Note", "text"))
+    s!"cross-module queryFootprint missing TestsLdb24.Note.text: {qImported.footprint.columns}"
+  -- Storage + ExtRef/Id conversions + CLI arg/render + equality predicate.
+  let aId : LeanDb.Id Author := ⟨42⟩
+  let aExt : ExtRef Author := aId.extRef
+  check (aExt.id == aId && aExt.positive && aExt.toNat == 42) "ExtRef/Id conversion helpers"
+  check (LeanDb.CliRender.render aExt == "42") "CliRender ExtRef"
+  check ((LeanDb.Cli.CliArg.parse "42" : Except String (ExtRef Author)).toOption == some aExt) "CliArg ExtRef"
+  if ← extDbPath.pathExists then IO.FS.removeFile extDbPath
+  let b : Base := { name := "ext", tables := [CliTable.of ExtNote], queries := [query% notesForExtAuthor] }
+  let inst := Instance.ofPath extDbPath
+  let sess ← expectOk (← Cli.Session.open b inst) "open ext base"
+  discard <| b.handle inst sess ["insert", "ext_note", "{\"target\":42,\"label\":\"alpha\"}"]
+  discard <| b.handle inst sess ["insert", "ext_note", "{\"target\":7,\"label\":\"beta\"}"]
+  let res ← b.handle inst sess ["query", "notesForExtAuthor", "42"]
+  check ((res.getObjValAs? Bool "ok").toOption == some true) s!"notesForExtAuthor ran: {res}"
+  let arr := (res.getObjValAs? (Array Lean.Json) "result").toOption.getD #[]
+  check (arr.size == 1 && (arr[0]!.getObjValAs? String "label").toOption == some "alpha")
+    s!"ExtRef equality filter returned matching row: {res}"
 
 /-- A query over both fixtures: a join, a null test, and a residual. -/
 def unratedByAuthor (a : Ref Author) : DbM (Array (Stored Book × Stored Author)) :=
@@ -5168,6 +5364,7 @@ def main : IO UInt32 := do
   testSession
   testMcpRpc
   testRestoreSafety
+  testRestoreWalSource
   testRestoreResilience
   testHandleBoundary
   testRestoreWriterGuard
@@ -5175,7 +5372,9 @@ def main : IO UInt32 := do
   testChain
   testStatusRebuildWarning
   testFootprints
+  testExtRefAndCrossPkgFootprint
   testDerivedSpec
+  testExplicitTableNames
   testSortBy
   testPlans
   testTypedPred
@@ -5194,6 +5393,7 @@ def main : IO UInt32 := do
   testParamSplitEndToEnd
   testQuantifiersEndToEnd
   testMigrations
+  testMissingMigrationSchema
   testMigrationErrorPragmas
   testCustomStepTxGuard
   testSqlQuoting

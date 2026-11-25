@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- Restore snapshots the source through SQLite, preserving committed WAL
+  data (#60). It opens the source read-only, validates the staged copy
+  before swapping, and excludes uncommitted source writes.
+- Refuse migration preview and apply when `schema_json` is missing from a
+  file with application tables (#133). Existing data and metadata remain
+  untouched; genuinely fresh files still initialize normally.
+- Adding or removing a JSON column shape now requires an explicit typed
+  transform instead of re-stamping unchecked stored values (#134).
+- `@[leandb_table "workspace_snapshot"]` selects an explicit SQL table
+  name before deriving an entity (#140). References and child tables use
+  that name; default names of existing entities are unchanged.
+- Avoid the Lean 4.33 compiler panic in derived `wireDefaults` for record
+  defaults, including `Option Record := none` (#141). Generated encoding
+  agreement proofs still check the original field default.
+- Add nominal `ExtRef α` foreign-key references (`BEq`, `Ord`, `ColCodec`,
+  `LawfulColCodec`, `SqlOrd`, `NonNullCodec`, `CliArg`, `CliRender`) that
+  erase SQLite schema targets while preserving domain-type distinction.
+- Support cross-package `queryFootprint` queries by walking imported package
+  roots with recorded footprints (`PlanElab.footprintModuleRoots`).
+
 ## 0.8.0 - 2026-11-24
 
 - Ship `LeanDbHttp` as an opt-in Lake package under the LeanDB release tag.

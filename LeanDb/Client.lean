@@ -27,6 +27,7 @@ instance : CliRender Nat := ⟨toString⟩
 instance : CliRender Int64 := ⟨toString⟩
 instance : CliRender String := ⟨id⟩
 instance : CliRender (Id α) := ⟨fun i => toString i.toInt64⟩
+instance : CliRender (ExtRef α) := ⟨fun r => toString r.toInt64⟩
 instance [ClosedEnum α] : CliRender α := ⟨ClosedEnum.encodeName⟩
 
 /-- How a query result decodes from its JSON (the inverse of `QueryOut`). -/
